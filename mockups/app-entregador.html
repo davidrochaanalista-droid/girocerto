@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>App do entregador — GiroCerto</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{
+    --teal-1:#14B8A0; --teal-2:#0B5C50;
+    --ink:#0B2A26; --gray:#5B6B69; --gray-soft:#9AA6A4;
+    --bg:#F1F3F2; --card:#FFFFFF; --border:#E7ECEB;
+    --amber:#F5A623; --amber-ink:#A9720C; --amber-soft:#FDF1DC;
+    --red:#B84343; --red-soft:#FBEAEA; --green-soft:#E3F5F1;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',-apple-system,sans-serif;-webkit-font-smoothing:antialiased;}
+  h1,h2,h3{font-family:'Sora',sans-serif;margin:0;}
+
+  .phone{max-width:440px;margin:0 auto;background:#fff;min-height:100vh;position:relative;}
+
+  .topbar{display:flex;align-items:center;gap:10px;padding:18px 20px;border-bottom:1px solid var(--border);}
+  .badge{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--teal-1),var(--teal-2));display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .brand{font-family:'Sora',sans-serif;font-weight:700;font-size:17px;}
+  .brand span{color:var(--teal-1);}
+
+  .view{display:none;padding:22px 20px 100px;}
+  .view.active{display:block;animation:fade .2s ease;}
+  @keyframes fade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+
+  .field{margin-bottom:14px;}
+  .field label{display:block;font-size:12.5px;font-weight:600;color:var(--gray);margin-bottom:5px;}
+  input[type=text],input[type=email],input[type=password],input[type=date],select{
+    width:100%;padding:12px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;background:#fff;
+  }
+  input:focus,select:focus{outline:none;border-color:var(--teal-1);}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+
+  .upload{border:1.5px dashed var(--border);border-radius:12px;padding:16px;text-align:center;cursor:pointer;font-size:13px;color:var(--gray);}
+  .upload input{display:none;}
+  .upload .fname{color:var(--teal-2);font-weight:600;margin-top:4px;font-size:12px;}
+
+  button{font-family:'Inter',sans-serif;font-weight:700;font-size:14.5px;border:none;border-radius:14px;padding:14px 18px;cursor:pointer;}
+  button:active{transform:scale(.98);}
+  .btn-primary{width:100%;background:linear-gradient(135deg,var(--teal-1),var(--teal-2));color:#fff;}
+  .btn-outline{width:100%;background:#fff;border:2px solid var(--amber);color:var(--amber-ink);}
+  .btn-ghost{width:100%;background:var(--bg);color:var(--gray);}
+  .btn-danger{width:100%;background:var(--red);color:#fff;}
+  .btn-primary:disabled{opacity:.5;}
+  .link-btn{background:none;border:none;color:var(--teal-2);font-weight:700;font-size:13.5px;cursor:pointer;padding:0;}
+
+  .msg{padding:11px 13px;border-radius:10px;font-size:13px;margin-bottom:14px;display:none;}
+  .msg.error{background:var(--red-soft);color:var(--red);display:block;}
+
+  .toggle-tipo{display:flex;gap:10px;margin-bottom:18px;}
+  .tipo-opt{flex:1;border:1.5px solid var(--border);border-radius:12px;padding:14px;text-align:center;cursor:pointer;font-weight:700;font-size:14px;color:var(--gray);}
+  .tipo-opt.sel{border-color:var(--teal-1);background:var(--green-soft);color:var(--teal-2);}
+
+  .cond{display:none;}
+  .cond.show{display:block;}
+
+  /* -------- turno home -------- */
+  .header-turno{background:linear-gradient(135deg,var(--teal-1),var(--teal-2));border-radius:18px;padding:20px;color:#fff;margin-bottom:18px;}
+  .header-turno .nome{font-size:19px;font-weight:700;font-family:'Sora',sans-serif;}
+  .header-turno .sub{font-size:13px;opacity:.9;margin-top:2px;}
+  .status-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#4ADE80;margin-right:6px;}
+
+  .stats-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;}
+  .stat-card{border:1px solid var(--border);border-radius:14px;padding:14px;}
+  .stat-card .lbl{font-size:11.5px;color:var(--gray);}
+  .stat-card .val{font-size:22px;font-weight:700;font-family:'Sora',sans-serif;display:flex;align-items:center;gap:8px;}
+  .eye{cursor:pointer;opacity:.5;}
+
+  .waiting-box{border:1.5px dashed var(--border);border-radius:16px;padding:34px 20px;text-align:center;color:var(--gray);margin-bottom:18px;}
+  .waiting-box .ic{width:44px;height:44px;border-radius:50%;background:var(--green-soft);margin:0 auto 12px;display:flex;align-items:center;justify-content:center;}
+
+  .emerg-row{display:flex;gap:10px;margin-bottom:18px;}
+  .emerg-btn{flex:1;background:var(--red-soft);color:var(--red);border-radius:12px;padding:12px;text-align:center;font-weight:700;font-size:13.5px;text-decoration:none;display:block;}
+
+  /* -------- rota / paradas -------- */
+  .stop-card{border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px;}
+  .stop-head{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+  .stop-num{width:26px;height:26px;border-radius:50%;background:var(--teal-1);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .stop-addr{font-weight:700;font-size:14.5px;}
+  .stop-meta{font-size:12px;color:var(--gray);margin-left:36px;}
+  .pay-pill{display:inline-block;margin-left:36px;margin-top:8px;padding:4px 10px;border-radius:10px;font-size:11.5px;font-weight:700;}
+  .pay-pill.pix{background:var(--green-soft);color:var(--teal-2);}
+  .pay-pill.qrcode{background:var(--amber-soft);color:var(--amber-ink);}
+
+  /* -------- entrega/pagamento -------- */
+  .qr-card{border:1px solid var(--border);border-radius:16px;padding:20px;text-align:center;margin-bottom:16px;}
+  .qr-placeholder{width:170px;height:170px;margin:14px auto;background:var(--bg);border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--gray-soft);font-size:12px;}
+  .status-aguardando{background:var(--amber-soft);color:var(--amber-ink);border-radius:20px;padding:10px 16px;font-weight:700;font-size:13px;display:inline-block;}
+  .status-confirmado{background:var(--green-soft);color:var(--teal-2);border-radius:20px;padding:10px 16px;font-weight:700;font-size:13px;display:inline-block;}
+  .codigo-box{margin-top:16px;}
+  .codigo-box input{text-align:center;font-size:22px;letter-spacing:6px;font-weight:700;}
+
+  /* -------- modais de fadiga -------- */
+  .overlay{position:fixed;inset:0;background:rgba(11,42,38,.45);display:none;align-items:center;justify-content:center;z-index:50;}
+  .overlay.show{display:flex;}
+  .modal{background:#fff;border-radius:20px;padding:26px 22px;width:88%;max-width:340px;text-align:center;}
+  .modal .ic{width:52px;height:52px;border-radius:50%;margin:0 auto 16px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;}
+  .modal h3{font-size:17px;margin-bottom:8px;}
+  .modal p{font-size:13.5px;color:var(--gray);margin-bottom:20px;line-height:1.5;}
+  .modal button{margin-bottom:10px;}
+</style>
+</head>
+<body>
+<div class="phone">
+
+  <div class="topbar">
+    <div class="badge"><svg width="15" height="15" viewBox="0 0 18 18"><path d="M3 9 L7 13 L15 3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <div class="brand">Giro<span>Certo</span></div>
+  </div>
+
+  <!-- ===================== VIEW: LOGIN ===================== -->
+  <div class="view active" id="view-login">
+    <h2 style="margin-bottom:4px;">Entrar</h2>
+    <p style="color:var(--gray);font-size:13.5px;margin:0 0 20px;">Use o e-mail e senha do seu cadastro.</p>
+    <div class="msg" id="loginMsg"></div>
+    <div class="field"><label>E-mail</label><input type="email" id="li_email"></div>
+    <div class="field"><label>Senha</label><input type="password" id="li_senha"></div>
+    <button class="btn-primary" onclick="login()">Entrar</button>
+    <p style="text-align:center;margin-top:16px;font-size:13.5px;color:var(--gray);">
+      Não tem conta? <button class="link-btn" onclick="mostrar('view-cadastro')">Cadastre-se</button>
+    </p>
+  </div>
+
+  <!-- ===================== VIEW: CADASTRO ===================== -->
+  <div class="view" id="view-cadastro">
+    <h2 style="margin-bottom:4px;">Cadastro do entregador</h2>
+    <p style="color:var(--gray);font-size:13.5px;margin:0 0 18px;">Leva uns minutos — documentos entram em avaliação (até 7 dias).</p>
+    <div class="msg" id="cadMsg"></div>
+
+    <div class="toggle-tipo">
+      <div class="tipo-opt sel" id="opt-moto" onclick="setTipo('moto')">🛵 Moto</div>
+      <div class="tipo-opt" id="opt-bike" onclick="setTipo('bicicleta')">🚲 Bicicleta</div>
+    </div>
+
+    <div class="field"><label>Nome completo</label><input type="text" id="c_nome"></div>
+    <div class="field"><label>E-mail</label><input type="email" id="c_email"></div>
+    <div class="field"><label>Senha</label><input type="password" id="c_senha"></div>
+    <div class="field"><label>Data de nascimento</label><input type="date" id="c_nasc"></div>
+
+    <div class="row2">
+      <div class="field"><label>Endereço</label><input type="text" id="c_end"></div>
+      <div class="field"><label>Número</label><input type="text" id="c_num"></div>
+    </div>
+    <div class="field"><label>CEP</label><input type="text" id="c_cep"></div>
+    <div class="field"><label>Chave Pix</label><input type="text" id="c_pix"></div>
+
+    <!-- campos MOTO -->
+    <div class="cond show" id="cond-moto">
+      <div class="field"><label>CPF</label><input type="text" id="c_cpf"></div>
+      <div class="row2">
+        <div class="field"><label>Número da CNH</label><input type="text" id="c_cnh_num"></div>
+        <div class="field"><label>Validade da CNH</label><input type="date" id="c_cnh_val"></div>
+      </div>
+      <div class="field"><label>Foto da CNH</label>
+        <label class="upload"><input type="file" id="c_cnh_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_cnh_foto_n"></div></label>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Placa</label><input type="text" id="c_placa"></div>
+        <div class="field"><label>Validade do CRLV</label><input type="date" id="c_crlv_val"></div>
+      </div>
+      <div class="field"><label>Foto do CRLV</label>
+        <label class="upload"><input type="file" id="c_crlv_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_crlv_foto_n"></div></label>
+      </div>
+    </div>
+
+    <!-- campos BICICLETA -->
+    <div class="cond" id="cond-bike">
+      <div class="field"><label>Número do RG</label><input type="text" id="c_rg"></div>
+      <div class="field"><label>Foto do RG</label>
+        <label class="upload"><input type="file" id="c_rg_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_rg_foto_n"></div></label>
+      </div>
+      <div class="field"><label>Foto segurando o RG</label>
+        <label class="upload"><input type="file" id="c_rg_segurando" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_rg_segurando_n"></div></label>
+      </div>
+      <div class="field"><label>Foto da bicicleta</label>
+        <label class="upload"><input type="file" id="c_bike_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_bike_foto_n"></div></label>
+      </div>
+      <div class="field"><label>Nome do responsável (se menor de 18 anos)</label><input type="text" id="c_responsavel"></div>
+    </div>
+
+    <div class="field"><label>Comprovante de residência</label>
+      <label class="upload"><input type="file" id="c_comprovante" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_comprovante_n"></div></label>
+    </div>
+
+    <div class="field" style="margin-top:6px;">
+      <label style="display:flex;gap:8px;font-weight:400;align-items:flex-start;">
+        <input type="checkbox" id="c_lgpd" style="width:17px;height:17px;margin-top:1px;">
+        <span style="font-size:13px;">Aceito os termos de tratamento de dados (LGPD).</span>
+      </label>
+    </div>
+
+    <button class="btn-primary" id="btnCadastrar" onclick="enviarCadastro()">Enviar cadastro</button>
+    <p style="text-align:center;margin-top:14px;font-size:13.5px;">
+      <button class="link-btn" onclick="mostrar('view-login')">Já tenho conta</button>
+    </p>
+  </div>
+
+  <!-- ===================== VIEW: EM AVALIAÇÃO ===================== -->
+  <div class="view" id="view-avaliacao">
+    <div style="text-align:center;padding:40px 10px;">
+      <div style="width:60px;height:60px;border-radius:50%;background:var(--amber-soft);margin:0 auto 18px;display:flex;align-items:center;justify-content:center;font-size:26px;">⏳</div>
+      <h2>Documentos em avaliação</h2>
+      <p style="color:var(--gray);font-size:13.5px;margin-top:8px;">Resposta em até 7 dias. Avisamos assim que aprovar.</p>
+    </div>
+  </div>
+
+  <!-- ===================== VIEW: TURNO (home) ===================== -->
+  <div class="view" id="view-turno">
+    <div class="header-turno">
+      <div class="nome" id="t_nome">—</div>
+      <div class="sub" id="t_status_sub"><span class="status-dot"></span>Offline</div>
+    </div>
+
+    <div class="emerg-row">
+      <a class="emerg-btn" href="tel:190">🚓 190 — Polícia</a>
+      <a class="emerg-btn" href="tel:193">🚒 193 — Bombeiros</a>
+    </div>
+
+    <div id="turnoOffline">
+      <button class="btn-primary" onclick="iniciarTurno()">Iniciar turno</button>
+    </div>
+
+    <div id="turnoAtivo" style="display:none;">
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="lbl">Entregas hoje</div>
+          <div class="val" id="t_entregas">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="lbl">Ganho no turno</div>
+          <div class="val">
+            <span id="t_ganho">R$ 0,00</span>
+            <span class="eye" onclick="toggleGanho()">👁️</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="semRota">
+        <div class="waiting-box">
+          <div class="ic">📍</div>
+          Aguardando a próxima rota<br>Você será chamado no momento certo
+        </div>
+      </div>
+
+      <div id="comRota" style="display:none;">
+        <button class="btn-primary" onclick="mostrar('view-rota')" style="margin-bottom:12px;">Ver rota ativa</button>
+      </div>
+
+      <button class="btn-outline" onclick="clicarPausar()" style="margin-bottom:10px;">Pausar</button>
+      <button class="btn-ghost" onclick="clicarFinalizar()">Finalizar turno</button>
+    </div>
+  </div>
+
+  <!-- ===================== VIEW: ROTA (paradas) ===================== -->
+  <div class="view" id="view-rota">
+    <button class="link-btn" onclick="mostrar('view-turno')" style="margin-bottom:14px;">← Voltar</button>
+    <h2 style="margin-bottom:4px;">Rota ativa</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 18px;" id="r_resumo">—</p>
+    <div id="paradasBox"></div>
+  </div>
+
+  <!-- ===================== VIEW: ENTREGA (pagamento) ===================== -->
+  <div class="view" id="view-entrega">
+    <button class="link-btn" onclick="mostrar('view-rota')" style="margin-bottom:14px;">← Voltar pra rota</button>
+    <p style="color:var(--gray);font-size:13px;">Parada <span id="e_indice">1</span></p>
+    <h2 id="e_endereco" style="margin-bottom:16px;">—</h2>
+
+    <div class="qr-card" id="e_pixCard">
+      <div style="font-weight:700;color:var(--teal-2);font-size:13px;">COBRANÇA VIA PIX · <span id="e_valor">R$ 0,00</span></div>
+      <div class="qr-placeholder">QR Code Pix<br>(gerado pelo provedor de pagamento)</div>
+      <div id="e_statusPix" class="status-aguardando">Aguardando pagamento...</div>
+      <p style="font-size:11.5px;color:var(--gray-soft);margin-top:12px;">O valor cai direto na conta da loja — você não precisa levar troco.</p>
+    </div>
+
+    <div class="field codigo-box">
+      <label style="text-align:center;">Código que o cliente vai te falar</label>
+      <input type="text" id="e_codigoInput" maxlength="4" placeholder="0000">
+    </div>
+
+    <div class="field">
+      <label>Foto da entrega</label>
+      <label class="upload"><input type="file" id="e_foto" accept="image/*" capture="environment"><div>Toque pra tirar a foto</div><div class="fname" id="e_foto_n"></div></label>
+    </div>
+
+    <div class="msg" id="entregaMsg"></div>
+    <button class="btn-primary" onclick="confirmarEntrega()">Confirmar entrega</button>
+  </div>
+
+</div>
+
+<!-- ===================== MODAL: FADIGA — PASSO 1 ===================== -->
+<div class="overlay" id="modalFadiga1">
+  <div class="modal">
+    <div class="ic" style="background:var(--amber-soft);">!</div>
+    <h3>Você está ativo há mais de 8 horas sem pausa</h3>
+    <p>Que tal descansar um pouco antes de continuar?</p>
+    <button class="btn-outline" onclick="pausarPeloModal()">Pausar agora</button>
+    <button class="btn-ghost" onclick="abrirModalFadiga2()">Finalizar turno mesmo assim</button>
+  </div>
+</div>
+
+<!-- ===================== MODAL: FADIGA — PASSO 2 ===================== -->
+<div class="overlay" id="modalFadiga2">
+  <div class="modal">
+    <div class="ic" style="background:var(--red-soft);color:var(--red);">!</div>
+    <h3>Atenção antes de finalizar</h3>
+    <p>Como você ficou ativo por muito tempo sem pausa, ao finalizar você não vai poder ficar ativo de novo pelas próximas <span id="horasDescanso">8</span> horas.</p>
+    <button class="btn-ghost" onclick="fecharModais()">Voltar e pausar</button>
+    <button class="btn-danger" onclick="finalizarDeVez()">Finalizar mesmo assim</button>
+  </div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'SUA_CHAVE_ANON_AQUI';
+// Enquanto não existe convite/descoberta de loja (fase 2, seção 31), o piloto
+// usa um único tenant fixo — troque pelo id real da Cartel Burguer no Supabase
+const TENANT_ID = 'COLE_AQUI_O_ID_DO_TENANT';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let entregadorId = null;
+let turnoAtualId = null;
+let turnoIniciadoEm = null;
+let tenantConfig = { horas_alerta_fadiga: 8, horas_descanso_obrigatorio: 8 };
+let ganhoVisivel = true;
+let paradaAtualPedidoId = null;
+
+function mostrar(id){
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+// ------------------------------------------------------------
+// CADASTRO
+// ------------------------------------------------------------
+function setTipo(tipo){
+  document.getElementById('opt-moto').classList.toggle('sel', tipo==='moto');
+  document.getElementById('opt-bike').classList.toggle('sel', tipo==='bicicleta');
+  document.getElementById('cond-moto').classList.toggle('show', tipo==='moto');
+  document.getElementById('cond-bike').classList.toggle('show', tipo==='bicicleta');
+  window._tipoVeiculo = tipo;
+}
+setTipo('moto');
+
+document.querySelectorAll('.upload input[type=file]').forEach(inp => {
+  inp.addEventListener('change', e => {
+    const nameEl = document.getElementById(inp.id + '_n');
+    if(nameEl) nameEl.textContent = e.target.files[0] ? e.target.files[0].name : '';
+  });
+});
+
+async function uploadDoc(file, pasta){
+  if(!file) return null;
+  const path = `${pasta}/${Date.now()}_${file.name}`;
+  const { data, error } = await supabaseClient.storage.from('documentos-privados').upload(path, file);
+  if(error) throw error;
+  return data.path;
+}
+
+async function enviarCadastro(){
+  const msg = document.getElementById('cadMsg');
+  msg.className = 'msg';
+  if(!document.getElementById('c_lgpd').checked){
+    msg.textContent = 'Precisa aceitar os termos de tratamento de dados.'; msg.className = 'msg error'; return;
+  }
+  const btn = document.getElementById('btnCadastrar');
+  btn.disabled = true; btn.textContent = 'Enviando...';
+
+  try{
+    const { data: authData, error: authError } = await supabaseClient.auth.signUp({
+      email: document.getElementById('c_email').value,
+      password: document.getElementById('c_senha').value,
+    });
+    if(authError) throw authError;
+
+    const tipo = window._tipoVeiculo;
+    const payload = {
+      auth_user_id: authData.user.id,
+      tenant_id: TENANT_ID,
+      email: document.getElementById('c_email').value,
+      nome: document.getElementById('c_nome').value,
+      tipo_veiculo: tipo,
+      data_nascimento: document.getElementById('c_nasc').value,
+      endereco: document.getElementById('c_end').value,
+      numero_residencia: document.getElementById('c_num').value,
+      cep: document.getElementById('c_cep').value,
+      chave_pix: document.getElementById('c_pix').value,
+      comprovante_residencia_foto_url: await uploadDoc(document.getElementById('c_comprovante').files[0], 'comprovante'),
+      verificacao_enviada_em: new Date().toISOString(),
+      consentimento_lgpd_aceito_em: new Date().toISOString(),
+    };
+
+    if(tipo === 'moto'){
+      payload.cpf = document.getElementById('c_cpf').value;
+      payload.cnh_numero = document.getElementById('c_cnh_num').value;
+      payload.cnh_validade = document.getElementById('c_cnh_val').value;
+      payload.cnh_foto_url = await uploadDoc(document.getElementById('c_cnh_foto').files[0], 'cnh');
+      payload.placa = document.getElementById('c_placa').value;
+      payload.crlv_validade = document.getElementById('c_crlv_val').value;
+      payload.crlv_foto_url = await uploadDoc(document.getElementById('c_crlv_foto').files[0], 'crlv');
+    } else {
+      payload.rg_numero = document.getElementById('c_rg').value;
+      payload.foto_rg_url = await uploadDoc(document.getElementById('c_rg_foto').files[0], 'rg');
+      payload.foto_rg_segurando_url = await uploadDoc(document.getElementById('c_rg_segurando').files[0], 'rg_segurando');
+      payload.foto_bicicleta_url = await uploadDoc(document.getElementById('c_bike_foto').files[0], 'bicicleta');
+      payload.responsavel_nome = document.getElementById('c_responsavel').value || null;
+    }
+
+    const { error: insertError } = await supabaseClient.from('entregadores').insert(payload);
+    if(insertError) throw insertError;
+
+    mostrar('view-avaliacao');
+  } catch(err){
+    console.error(err);
+    msg.textContent = 'Não deu pra concluir: ' + (err.message || 'tenta de novo.');
+    msg.className = 'msg error';
+    btn.disabled = false; btn.textContent = 'Enviar cadastro';
+  }
+}
+
+// ------------------------------------------------------------
+// LOGIN
+// ------------------------------------------------------------
+async function login(){
+  const msg = document.getElementById('loginMsg');
+  msg.className = 'msg';
+  const { error } = await supabaseClient.auth.signInWithPassword({
+    email: document.getElementById('li_email').value,
+    password: document.getElementById('li_senha').value,
+  });
+  if(error){ msg.textContent = 'E-mail ou senha incorretos.'; msg.className = 'msg error'; return; }
+  await carregarEntregador();
+}
+
+async function carregarEntregador(){
+  const { data: { user } } = await supabaseClient.auth.getUser();
+  if(!user) return;
+
+  const { data: entregador, error } = await supabaseClient
+    .from('entregadores')
+    .select('*, tenants(horas_alerta_fadiga, horas_descanso_obrigatorio)')
+    .eq('auth_user_id', user.id)
+    .single();
+
+  if(error || !entregador){ mostrar('view-login'); return; }
+
+  entregadorId = entregador.id;
+  if(entregador.tenants){
+    tenantConfig.horas_alerta_fadiga = entregador.tenants.horas_alerta_fadiga;
+    tenantConfig.horas_descanso_obrigatorio = entregador.tenants.horas_descanso_obrigatorio;
+  }
+
+  if(entregador.status_verificacao !== 'aprovado'){
+    mostrar('view-avaliacao');
+    return;
+  }
+
+  document.getElementById('t_nome').textContent = 'Olá, ' + entregador.nome.split(' ')[0];
+  mostrar('view-turno');
+  await checarTurnoAtivo();
+}
+
+// ------------------------------------------------------------
+// TURNO
+// ------------------------------------------------------------
+async function checarTurnoAtivo(){
+  const { data: turno } = await supabaseClient
+    .from('turnos')
+    .select('*')
+    .eq('entregador_id', entregadorId)
+    .eq('status', 'ativo')
+    .maybeSingle();
+
+  if(turno){
+    turnoAtualId = turno.id;
+    turnoIniciadoEm = new Date(turno.iniciado_em);
+    document.getElementById('turnoOffline').style.display = 'none';
+    document.getElementById('turnoAtivo').style.display = 'block';
+    document.getElementById('t_status_sub').innerHTML =
+      '<span class="status-dot"></span>Turno ativo desde ' + turnoIniciadoEm.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+    atualizarStatsTurno();
+    verificarRotaAtiva();
+  } else {
+    document.getElementById('turnoOffline').style.display = 'block';
+    document.getElementById('turnoAtivo').style.display = 'none';
+  }
+}
+
+async function iniciarTurno(){
+  const { data: entregador } = await supabaseClient.from('entregadores').select('bloqueado_ate').eq('id', entregadorId).single();
+  if(entregador.bloqueado_ate && new Date(entregador.bloqueado_ate) > new Date()){
+    alert('Você ainda está no período de descanso obrigatório. Tente novamente mais tarde.');
+    return;
+  }
+  const { data, error } = await supabaseClient.from('turnos').insert({ entregador_id: entregadorId }).select().single();
+  if(error){ alert('Não deu pra iniciar o turno: ' + error.message); return; }
+  await supabaseClient.from('entregadores').update({ status: 'disponivel' }).eq('id', entregadorId);
+  turnoAtualId = data.id;
+  turnoIniciadoEm = new Date(data.iniciado_em);
+  checarTurnoAtivo();
+}
+
+async function atualizarStatsTurno(){
+  const { data: repasses } = await supabaseClient.from('repasses').select('valor').eq('turno_id', turnoAtualId);
+  const total = (repasses || []).reduce((s,r) => s + Number(r.valor), 0);
+  document.getElementById('t_entregas').textContent = (repasses || []).length;
+  document.getElementById('t_ganho').textContent = ganhoVisivel ? formatarReal(total) : 'R$ ••••';
+  window._ganhoTotal = total;
+}
+
+function toggleGanho(){
+  ganhoVisivel = !ganhoVisivel;
+  document.getElementById('t_ganho').textContent = ganhoVisivel ? formatarReal(window._ganhoTotal || 0) : 'R$ ••••';
+}
+
+function formatarReal(v){ return 'R$ ' + v.toFixed(2).replace('.', ','); }
+
+// ---- pausar ----
+async function clicarPausar(){
+  await supabaseClient.from('entregadores').update({ status: 'pausado' }).eq('id', entregadorId);
+  alert('Turno pausado. Toque em "Voltar" quando estiver pronto (tela reaproveitada do botão Iniciar).');
+  checarTurnoAtivo();
+}
+async function pausarPeloModal(){
+  fecharModais();
+  await clicarPausar();
+}
+
+// ---- finalizar, com checagem de fadiga ----
+function clicarFinalizar(){
+  const horasAtivo = (new Date() - turnoIniciadoEm) / 1000 / 3600;
+  supabaseClient.from('turnos').select('teve_pausa').eq('id', turnoAtualId).single().then(({data}) => {
+    if(horasAtivo >= tenantConfig.horas_alerta_fadiga && !data.teve_pausa){
+      document.getElementById('modalFadiga1').classList.add('show');
+    } else {
+      finalizarTurnoDeVerdade(false);
+    }
+  });
+}
+function abrirModalFadiga2(){
+  document.getElementById('modalFadiga1').classList.remove('show');
+  document.getElementById('horasDescanso').textContent = tenantConfig.horas_descanso_obrigatorio;
+  document.getElementById('modalFadiga2').classList.add('show');
+}
+function fecharModais(){
+  document.getElementById('modalFadiga1').classList.remove('show');
+  document.getElementById('modalFadiga2').classList.remove('show');
+}
+async function finalizarDeVez(){
+  fecharModais();
+  await finalizarTurnoDeVerdade(true);
+}
+async function finalizarTurnoDeVerdade(comBloqueio){
+  const { data: repasses } = await supabaseClient.from('repasses').select('valor').eq('turno_id', turnoAtualId);
+  const total = (repasses || []).reduce((s,r) => s + Number(r.valor), 0);
+
+  await supabaseClient.from('turnos').update({
+    status: 'finalizado',
+    finalizado_em: new Date().toISOString(),
+    total_entregas: (repasses || []).length,
+    total_repassado: total,
+  }).eq('id', turnoAtualId);
+
+  const updateEntregador = { status: 'offline' };
+  if(comBloqueio){
+    const bloqueadoAte = new Date(Date.now() + tenantConfig.horas_descanso_obrigatorio * 3600 * 1000);
+    updateEntregador.bloqueado_ate = bloqueadoAte.toISOString();
+  }
+  await supabaseClient.from('entregadores').update(updateEntregador).eq('id', entregadorId);
+
+  turnoAtualId = null;
+  checarTurnoAtivo();
+}
+
+// ------------------------------------------------------------
+// ROTA / PARADAS
+// ------------------------------------------------------------
+async function verificarRotaAtiva(){
+  const { data: rotas } = await supabaseClient
+    .from('rotas_entrega')
+    .select('*, pedidos(*)')
+    .eq('entregador_id', entregadorId)
+    .in('status', ['a_caminho_da_loja','em_entrega'])
+    .order('criado_em', { ascending:false })
+    .limit(1);
+
+  if(rotas && rotas.length){
+    document.getElementById('semRota').style.display = 'none';
+    document.getElementById('comRota').style.display = 'block';
+    montarRota(rotas[0]);
+  } else {
+    document.getElementById('semRota').style.display = 'block';
+    document.getElementById('comRota').style.display = 'none';
+  }
+}
+
+function montarRota(rota){
+  const pedidos = (rota.pedidos || []).sort((a,b) => (a.ordem_na_rota||0) - (b.ordem_na_rota||0));
+  document.getElementById('r_resumo').textContent =
+    pedidos.length + ' parada(s) · código de retirada ' + rota.codigo_retirada;
+
+  document.getElementById('paradasBox').innerHTML = pedidos.map((p,i) => `
+    <div class="stop-card">
+      <div class="stop-head">
+        <div class="stop-num">${i+1}</div>
+        <div class="stop-addr">${p.endereco}</div>
+      </div>
+      <div class="stop-meta">${p.cliente_nome || 'Cliente'}</div>
+      <div class="pay-pill ${p.pago_antecipado ? 'pix' : 'qrcode'}">
+        ${p.pago_antecipado ? 'Pix · já pago' : 'Pix QR Code · a cobrar'}
+      </div>
+      <button class="btn-primary" style="margin-top:12px;" onclick="abrirEntrega('${p.id}','${p.endereco}',${p.valor_pedido},${i+1})">
+        ${p.status === 'entregue' ? 'Entregue ✓' : 'Ir pra essa parada'}
+      </button>
+    </div>
+  `).join('');
+}
+
+// ------------------------------------------------------------
+// ENTREGA / PAGAMENTO
+// ------------------------------------------------------------
+function abrirEntrega(pedidoId, endereco, valor, indice){
+  paradaAtualPedidoId = pedidoId;
+  document.getElementById('e_endereco').textContent = endereco;
+  document.getElementById('e_valor').textContent = formatarReal(Number(valor));
+  document.getElementById('e_indice').textContent = indice;
+  document.getElementById('e_codigoInput').value = '';
+  document.getElementById('entregaMsg').className = 'msg';
+  mostrar('view-entrega');
+}
+
+async function confirmarEntrega(){
+  const msg = document.getElementById('entregaMsg');
+  msg.className = 'msg';
+
+  const { data: pedido } = await supabaseClient.from('pedidos').select('codigo_entrega').eq('id', paradaAtualPedidoId).single();
+  const codigoDigitado = document.getElementById('e_codigoInput').value.trim();
+  const codigoCorreto = codigoDigitado === pedido.codigo_entrega;
+
+  const foto = document.getElementById('e_foto').files[0];
+  if(!foto){ msg.textContent = 'Tira a foto da entrega antes de confirmar.'; msg.className = 'msg error'; return; }
+
+  let fotoUrl = null;
+  try{
+    const path = `entregas/${paradaAtualPedidoId}_${Date.now()}_${foto.name}`;
+    const { data, error } = await supabaseClient.storage.from('comprovantes').upload(path, foto);
+    if(error) throw error;
+    fotoUrl = data.path;
+  } catch(err){
+    msg.textContent = 'Não deu pra subir a foto: ' + err.message; msg.className = 'msg error'; return;
+  }
+
+  await supabaseClient.from('comprovantes_entrega').insert({
+    pedido_id: paradaAtualPedidoId,
+    foto_url: fotoUrl,
+    codigo_confirmado: codigoCorreto,
+  });
+
+  await supabaseClient.from('pedidos').update({ status: 'entregue', entregue_em: new Date().toISOString() }).eq('id', paradaAtualPedidoId);
+
+  mostrar('view-rota');
+  verificarRotaAtiva();
+  atualizarStatsTurno();
+}
+
+// ------------------------------------------------------------
+// sessão já ativa?
+// ------------------------------------------------------------
+supabaseClient.auth.getSession().then(({ data:{ session } }) => {
+  if(session) carregarEntregador();
+});
+</script>
+</body>
+</html>

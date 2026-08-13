@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cadastro da loja — GiroCerto</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{
+    --teal-1:#14B8A0; --teal-2:#0B5C50;
+    --ink:#0B2A26; --gray:#5B6B69; --gray-soft:#9AA6A4;
+    --bg:#F6F8F8; --card:#FFFFFF; --border:#E7ECEB;
+    --amber:#F5A623; --amber-ink:#A9720C; --amber-soft:#FDF1DC;
+    --red:#B84343; --red-soft:#FBEAEA;
+    --radius:16px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:'Inter',-apple-system,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3,.display{font-family:'Sora',sans-serif;}
+
+  .topbar{
+    display:flex; align-items:center; gap:10px;
+    padding:20px 24px; background:#fff; border-bottom:1px solid var(--border);
+  }
+  .badge{
+    width:32px;height:32px;border-radius:9px;
+    background:linear-gradient(135deg,var(--teal-1),var(--teal-2));
+    display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  }
+  .brand{font-family:'Sora',sans-serif;font-weight:700;font-size:18px;}
+  .brand span{color:var(--teal-1);}
+
+  .wrap{max-width:640px;margin:0 auto;padding:32px 20px 120px;}
+
+  /* progress ring stepper — ecoa o giro que se fecha */
+  .stepper{display:flex;justify-content:space-between;align-items:center;margin-bottom:36px;position:relative;}
+  .stepper::before{
+    content:'';position:absolute;top:15px;left:16px;right:16px;height:2px;background:var(--border);z-index:0;
+  }
+  .step{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;gap:8px;flex:1;}
+  .step-dot{
+    width:32px;height:32px;border-radius:50%;background:#fff;border:2px solid var(--border);
+    display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:var(--gray-soft);
+    transition:.2s;
+  }
+  .step.active .step-dot{border-color:var(--teal-1);color:var(--teal-2);background:#E3F5F1;}
+  .step.done .step-dot{border-color:var(--teal-2);background:linear-gradient(135deg,var(--teal-1),var(--teal-2));color:#fff;}
+  .step-label{font-size:11px;color:var(--gray-soft);text-align:center;max-width:70px;font-weight:600;}
+  .step.active .step-label{color:var(--ink);}
+
+  .panel{
+    background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+    padding:28px 24px;display:none;
+  }
+  .panel.active{display:block;animation:fade .25s ease;}
+  @keyframes fade{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
+
+  .panel h2{margin:0 0 4px;font-size:20px;}
+  .panel .sub{color:var(--gray);font-size:13.5px;margin:0 0 24px;line-height:1.5;}
+
+  .field{margin-bottom:16px;}
+  .field label{display:block;font-size:13px;font-weight:600;color:var(--gray);margin-bottom:6px;}
+  .field .hint{font-size:12px;color:var(--gray-soft);margin-top:5px;}
+  input[type=text],input[type=email],input[type=password],input[type=date],input[type=time],select{
+    width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:10px;
+    font-family:'Inter',sans-serif;font-size:14.5px;color:var(--ink);background:#fff;
+  }
+  input:focus,select:focus{outline:none;border-color:var(--teal-1);}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .row3{display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px;}
+
+  .upload{
+    border:1.5px dashed var(--border);border-radius:12px;padding:20px;text-align:center;cursor:pointer;
+    transition:.15s;
+  }
+  .upload:hover{border-color:var(--teal-1);background:#FAFDFC;}
+  .upload input{display:none;}
+  .upload .icon{width:38px;height:38px;border-radius:50%;background:var(--bg);margin:0 auto 10px;display:flex;align-items:center;justify-content:center;}
+  .upload .fname{font-size:12.5px;color:var(--teal-2);font-weight:600;margin-top:6px;}
+
+  /* horários */
+  .dia-row{border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:10px;}
+  .dia-head{display:flex;align-items:center;justify-content:space-between;}
+  .dia-nome{font-weight:700;font-size:14px;}
+  .switch{position:relative;width:42px;height:24px;flex-shrink:0;}
+  .switch input{opacity:0;width:0;height:0;}
+  .slider{position:absolute;inset:0;background:var(--border);border-radius:24px;cursor:pointer;transition:.2s;}
+  .slider::before{content:'';position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s;}
+  .switch input:checked + .slider{background:var(--teal-1);}
+  .switch input:checked + .slider::before{transform:translateX(18px);}
+  .periodos{margin-top:12px;display:none;}
+  .dia-row.aberto .periodos{display:block;}
+  .periodo{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+  .periodo input{flex:1;}
+  .periodo .ate{color:var(--gray-soft);font-size:13px;}
+  .add-periodo{background:none;border:none;color:var(--teal-2);font-weight:600;font-size:13px;cursor:pointer;padding:4px 0;}
+  .rm-periodo{background:none;border:none;color:var(--gray-soft);cursor:pointer;font-size:18px;line-height:1;padding:0 4px;}
+
+  .pix-box{
+    background:var(--amber-soft);border:1px solid #F0DBA8;border-radius:12px;padding:16px;margin-top:8px;
+    font-size:13px;color:var(--amber-ink);line-height:1.5;
+  }
+
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:24px;}
+  button{
+    font-family:'Inter',sans-serif;font-weight:700;font-size:14.5px;border:none;border-radius:12px;
+    padding:14px 22px;cursor:pointer;transition:.15s;
+  }
+  button:active{transform:scale(.98);}
+  .btn-primary{background:linear-gradient(135deg,var(--teal-1),var(--teal-2));color:#fff;flex:1;}
+  .btn-ghost{background:var(--bg);color:var(--gray);}
+  .btn-primary:disabled{opacity:.5;cursor:not-allowed;}
+
+  .msg{padding:12px 14px;border-radius:10px;font-size:13.5px;margin-bottom:16px;display:none;}
+  .msg.error{background:var(--red-soft);color:var(--red);display:block;}
+  .msg.success{background:#E3F5F1;color:var(--teal-2);display:block;}
+
+  .required{color:var(--red);}
+  .review-item{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);font-size:13.5px;}
+  .review-item .k{color:var(--gray);}
+  .review-item .v{font-weight:600;text-align:right;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="badge">
+    <svg width="16" height="16" viewBox="0 0 18 18"><path d="M3 9 L7 13 L15 3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </div>
+  <div class="brand">Giro<span>Certo</span></div>
+</div>
+
+<div class="wrap">
+
+  <div class="stepper" id="stepper"></div>
+
+  <div id="globalMsg" class="msg"></div>
+
+  <!-- PASSO 1 — ACESSO -->
+  <div class="panel active" data-step="0">
+    <h2>Criar acesso</h2>
+    <p class="sub">É o e-mail e senha que você vai usar pra entrar no painel depois.</p>
+
+    <div class="field">
+      <label>E-mail <span class="required">*</span></label>
+      <input type="email" id="f_email" placeholder="voce@suaLoja.com.br" autocomplete="email">
+    </div>
+    <div class="field">
+      <label>Senha <span class="required">*</span></label>
+      <input type="password" id="f_senha" placeholder="mínimo 8 caracteres" autocomplete="new-password">
+      <div class="hint">Use letra maiúscula, número e pelo menos 8 caracteres.</div>
+    </div>
+
+    <div class="nav">
+      <span></span>
+      <button class="btn-primary" onclick="proximo()">Continuar</button>
+    </div>
+  </div>
+
+  <!-- PASSO 2 — PROPRIETÁRIO -->
+  <div class="panel" data-step="1">
+    <h2>Dados do proprietário</h2>
+    <p class="sub">Quem responde legalmente pela loja.</p>
+
+    <div class="field">
+      <label>Nome completo <span class="required">*</span></label>
+      <input type="text" id="f_prop_nome" placeholder="Nome como está no documento">
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label>CPF <span class="required">*</span></label>
+        <input type="text" id="f_prop_cpf" placeholder="000.000.000-00" maxlength="14">
+      </div>
+      <div class="field">
+        <label>Data de nascimento <span class="required">*</span></label>
+        <input type="date" id="f_prop_nasc">
+      </div>
+    </div>
+    <div class="row3">
+      <div class="field">
+        <label>Endereço <span class="required">*</span></label>
+        <input type="text" id="f_prop_end" placeholder="Rua, bairro">
+      </div>
+      <div class="field">
+        <label>Número <span class="required">*</span></label>
+        <input type="text" id="f_prop_num">
+      </div>
+      <div class="field">
+        <label>CEP <span class="required">*</span></label>
+        <input type="text" id="f_prop_cep" placeholder="00000-000">
+      </div>
+    </div>
+    <div class="field">
+      <label>Foto do documento (RG ou CNH) <span class="required">*</span></label>
+      <label class="upload">
+        <input type="file" id="f_prop_doc" accept="image/*,.pdf">
+        <div class="icon">📄</div>
+        <div>Toque pra escolher o arquivo</div>
+        <div class="fname" id="f_prop_doc_name"></div>
+      </label>
+    </div>
+
+    <div class="nav">
+      <button class="btn-ghost" onclick="anterior()">Voltar</button>
+      <button class="btn-primary" onclick="proximo()">Continuar</button>
+    </div>
+  </div>
+
+  <!-- PASSO 3 — LOJA -->
+  <div class="panel" data-step="2">
+    <h2>Dados da loja</h2>
+    <p class="sub">As informações do negócio em si.</p>
+
+    <div class="field">
+      <label>Nome da loja <span class="required">*</span></label>
+      <input type="text" id="f_loja_nome" placeholder="Ex: Cartel Burguer">
+    </div>
+    <div class="field">
+      <label>Segmento <span class="required">*</span></label>
+      <select id="f_loja_segmento">
+        <option value="">Selecione</option>
+        <option value="acai_sorveteria">Açaí / Sorveteria</option>
+        <option value="padaria">Padaria</option>
+        <option value="hamburgueria">Hamburgueria</option>
+        <option value="pizzaria">Pizzaria</option>
+        <option value="salgaderia">Salgaderia</option>
+        <option value="lanchonete">Lanchonete</option>
+        <option value="doceria_bolos">Doceria / Bolos</option>
+        <option value="sushi_japonesa">Sushi / Comida japonesa</option>
+        <option value="outro">Outro</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>CNPJ <span class="required">*</span></label>
+      <input type="text" id="f_loja_cnpj" placeholder="00.000.000/0000-00" maxlength="18">
+    </div>
+    <div class="row3">
+      <div class="field">
+        <label>Endereço da loja <span class="required">*</span></label>
+        <input type="text" id="f_loja_end" placeholder="Rua, bairro">
+      </div>
+      <div class="field">
+        <label>Número <span class="required">*</span></label>
+        <input type="text" id="f_loja_num">
+      </div>
+      <div class="field">
+        <label>CEP <span class="required">*</span></label>
+        <input type="text" id="f_loja_cep" placeholder="00000-000">
+      </div>
+    </div>
+    <div class="field">
+      <label>Foto do cartão CNPJ ou contrato social <span class="required">*</span></label>
+      <label class="upload">
+        <input type="file" id="f_loja_doc" accept="image/*,.pdf">
+        <div class="icon">🧾</div>
+        <div>Toque pra escolher o arquivo</div>
+        <div class="fname" id="f_loja_doc_name"></div>
+      </label>
+    </div>
+    <div class="field">
+      <label>Tempo médio de preparo dos pedidos (minutos) <span class="required">*</span></label>
+      <input type="text" id="f_loja_preparo" placeholder="Ex: 12" inputmode="numeric">
+      <div class="hint">Só um ponto de partida — o sistema ajusta sozinho com o tempo (seção 32).</div>
+    </div>
+
+    <div class="nav">
+      <button class="btn-ghost" onclick="anterior()">Voltar</button>
+      <button class="btn-primary" onclick="proximo()">Continuar</button>
+    </div>
+  </div>
+
+  <!-- PASSO 4 — HORÁRIO DE FUNCIONAMENTO -->
+  <div class="panel" data-step="3">
+    <h2>Horário de funcionamento</h2>
+    <p class="sub">O GiroCerto só despacha motoboy dentro desses horários — mesmo que outra plataforma esteja marcada como aberta.</p>
+
+    <div id="diasContainer"></div>
+
+    <div class="nav">
+      <button class="btn-ghost" onclick="anterior()">Voltar</button>
+      <button class="btn-primary" onclick="proximo()">Continuar</button>
+    </div>
+  </div>
+
+  <!-- PASSO 5 — FINANCEIRO -->
+  <div class="panel" data-step="4">
+    <h2>Dados bancários</h2>
+    <p class="sub">Pra onde o Pix dos pedidos vai cair.</p>
+
+    <div class="field">
+      <label>Chave Pix da loja <span class="required">*</span></label>
+      <input type="text" id="f_pix" placeholder="CPF, CNPJ, e-mail, telefone ou chave aleatória">
+    </div>
+
+    <div class="pix-box">
+      O GiroCerto não tem acesso ao seu banco — só uma permissão específica e revogável pra enviar Pix
+      de repasse aos motoboys, quando você configurar isso com seu provedor de pagamento. Você pode
+      revogar quando quiser, direto no app do seu banco.
+    </div>
+
+    <div class="nav">
+      <button class="btn-ghost" onclick="anterior()">Voltar</button>
+      <button class="btn-primary" onclick="proximo()">Revisar cadastro</button>
+    </div>
+  </div>
+
+  <!-- PASSO 6 — REVISÃO -->
+  <div class="panel" data-step="5">
+    <h2>Confira antes de enviar</h2>
+    <p class="sub">Dá pra voltar e corrigir qualquer campo antes de confirmar.</p>
+
+    <div id="reviewBox"></div>
+
+    <div class="field" style="margin-top:20px;">
+      <label style="display:flex;align-items:flex-start;gap:10px;font-weight:400;">
+        <input type="checkbox" id="f_lgpd" style="width:18px;height:18px;margin-top:1px;">
+        <span>Li e aceito os termos de tratamento de dados (LGPD) do GiroCerto.</span>
+      </label>
+    </div>
+
+    <div class="nav">
+      <button class="btn-ghost" onclick="anterior()">Voltar</button>
+      <button class="btn-primary" id="btnEnviar" onclick="enviarCadastro()">Concluir cadastro</button>
+    </div>
+  </div>
+
+  <!-- CONFIRMAÇÃO -->
+  <div class="panel" data-step="6">
+    <div style="text-align:center;padding:20px 0;">
+      <div style="width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,var(--teal-1),var(--teal-2));display:flex;align-items:center;justify-content:center;margin:0 auto 20px;">
+        <svg width="30" height="30" viewBox="0 0 18 18"><path d="M3 9 L7 13 L15 3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <h2>Cadastro enviado</h2>
+      <p class="sub">Sua loja já está registrada. Assim que confirmar o e-mail, o painel operacional libera.</p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ============================================================
+// CONFIGURAÇÃO — troque pelos dados do seu projeto Supabase
+// ============================================================
+const SUPABASE_URL = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'SUA_CHAVE_ANON_AQUI';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ------------------------------------------------------------
+// Stepper
+// ------------------------------------------------------------
+const steps = ['Acesso','Dono','Loja','Horário','Financeiro','Revisão'];
+let atual = 0;
+
+function montarStepper(){
+  const el = document.getElementById('stepper');
+  el.innerHTML = steps.map((s,i)=>`
+    <div class="step ${i===atual?'active':''} ${i<atual?'done':''}" data-i="${i}">
+      <div class="step-dot">${i<atual ? '✓' : i+1}</div>
+      <div class="step-label">${s}</div>
+    </div>`).join('');
+}
+
+function mostrarPasso(i){
+  document.querySelectorAll('.panel').forEach(p=>{
+    p.classList.toggle('active', Number(p.dataset.step) === i);
+  });
+  atual = i;
+  montarStepper();
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+function validarPasso(i){
+  const req = {
+    0: ['f_email','f_senha'],
+    1: ['f_prop_nome','f_prop_cpf','f_prop_nasc','f_prop_end','f_prop_num','f_prop_cep'],
+    2: ['f_loja_nome','f_loja_segmento','f_loja_cnpj','f_loja_end','f_loja_num','f_loja_cep','f_loja_preparo'],
+    4: ['f_pix'],
+  }[i] || [];
+  for(const id of req){
+    const el = document.getElementById(id);
+    if(!el.value.trim()){
+      mostrarMsg('Preenche "'+el.previousElementSibling.textContent.replace(' *','')+'" antes de continuar.', 'error');
+      el.focus();
+      return false;
+    }
+  }
+  return true;
+}
+
+function proximo(){
+  if(!validarPasso(atual)) return;
+  esconderMsg();
+  if(atual === 5){ return; } // revisão já usa botão próprio
+  if(atual === 4){ montarRevisao(); }
+  mostrarPasso(atual+1);
+}
+function anterior(){ esconderMsg(); mostrarPasso(atual-1); }
+
+function mostrarMsg(t,tipo){
+  const el = document.getElementById('globalMsg');
+  el.textContent = t; el.className = 'msg '+tipo;
+}
+function esconderMsg(){
+  const el = document.getElementById('globalMsg');
+  el.className = 'msg';
+}
+
+// ------------------------------------------------------------
+// Preview de arquivo
+// ------------------------------------------------------------
+['f_prop_doc','f_loja_doc'].forEach(id=>{
+  document.getElementById(id).addEventListener('change', e=>{
+    const f = e.target.files[0];
+    document.getElementById(id+'_name').textContent = f ? f.name : '';
+  });
+});
+
+// ------------------------------------------------------------
+// Horário de funcionamento
+// ------------------------------------------------------------
+const DIAS = ['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'];
+
+function montarDias(){
+  const c = document.getElementById('diasContainer');
+  c.innerHTML = DIAS.map((nome,i)=>`
+    <div class="dia-row" id="dia_${i}">
+      <div class="dia-head">
+        <span class="dia-nome">${nome}</span>
+        <label class="switch">
+          <input type="checkbox" onchange="toggleDia(${i}, this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="periodos" id="periodos_${i}"></div>
+    </div>`).join('');
+}
+
+function toggleDia(i, aberto){
+  const row = document.getElementById('dia_'+i);
+  row.classList.toggle('aberto', aberto);
+  const cont = document.getElementById('periodos_'+i);
+  if(aberto && cont.children.length === 0){
+    adicionarPeriodo(i);
+  }
+}
+
+function adicionarPeriodo(i){
+  const cont = document.getElementById('periodos_'+i);
+  const div = document.createElement('div');
+  div.className = 'periodo';
+  div.innerHTML = `
+    <input type="time" value="11:00">
+    <span class="ate">até</span>
+    <input type="time" value="15:30">
+    <button type="button" class="rm-periodo" onclick="this.parentElement.remove()">×</button>`;
+  cont.appendChild(div);
+  if(cont.children.length === 1){
+    const add = document.createElement('button');
+    add.type='button'; add.className='add-periodo'; add.textContent='+ adicionar outro período';
+    add.onclick = ()=> adicionarPeriodo(i);
+    cont.appendChild(add);
+  } else {
+    cont.appendChild(cont.querySelector('.add-periodo'));
+  }
+}
+
+function coletarHorarios(){
+  const linhas = [];
+  DIAS.forEach((_,i)=>{
+    const row = document.getElementById('dia_'+i);
+    if(!row.classList.contains('aberto')) return;
+    document.querySelectorAll('#periodos_'+i+' .periodo').forEach(p=>{
+      const [ini,fim] = p.querySelectorAll('input');
+      linhas.push({ dia_semana:i, periodo_inicio:ini.value, periodo_fim:fim.value });
+    });
+  });
+  return linhas;
+}
+
+// ------------------------------------------------------------
+// Revisão
+// ------------------------------------------------------------
+function montarRevisao(){
+  const horarios = coletarHorarios();
+  const horariosTxt = horarios.length
+    ? horarios.map(h=> DIAS[h.dia_semana]+': '+h.periodo_inicio+'–'+h.periodo_fim).join(' · ')
+    : 'Nenhum horário definido';
+
+  const itens = [
+    ['E-mail de acesso', document.getElementById('f_email').value],
+    ['Proprietário', document.getElementById('f_prop_nome').value],
+    ['CPF', document.getElementById('f_prop_cpf').value],
+    ['Loja', document.getElementById('f_loja_nome').value],
+    ['Segmento', document.getElementById('f_loja_segmento').selectedOptions[0]?.textContent || ''],
+    ['CNPJ', document.getElementById('f_loja_cnpj').value],
+    ['Tempo de preparo padrão', document.getElementById('f_loja_preparo').value+' min'],
+    ['Horários', horariosTxt],
+    ['Chave Pix', document.getElementById('f_pix').value],
+  ];
+  document.getElementById('reviewBox').innerHTML = itens.map(([k,v])=>
+    `<div class="review-item"><span class="k">${k}</span><span class="v">${v||'—'}</span></div>`
+  ).join('');
+}
+
+// ------------------------------------------------------------
+// Envio final — cria usuário, sobe documentos, grava tenant +
+// usuarios_loja + horarios_funcionamento
+// ------------------------------------------------------------
+async function uploadDocumento(file, pasta){
+  if(!file) return null;
+  const nomeArquivo = `${pasta}/${Date.now()}_${file.name}`;
+  const { data, error } = await supabaseClient.storage
+    .from('documentos-privados')   // bucket PRIVADO (seção 37) — nunca público
+    .upload(nomeArquivo, file);
+  if(error) throw error;
+  return data.path;
+}
+
+async function enviarCadastro(){
+  if(!document.getElementById('f_lgpd').checked){
+    mostrarMsg('Precisa aceitar os termos de tratamento de dados pra continuar.', 'error');
+    return;
+  }
+  const btn = document.getElementById('btnEnviar');
+  btn.disabled = true; btn.textContent = 'Enviando...';
+  esconderMsg();
+
+  try {
+    // 1) cria o usuário de acesso
+    const { data: authData, error: authError } = await supabaseClient.auth.signUp({
+      email: document.getElementById('f_email').value,
+      password: document.getElementById('f_senha').value,
+    });
+    if(authError) throw authError;
+
+    // 2) sobe os documentos pro bucket privado
+    const propDoc = await uploadDocumento(document.getElementById('f_prop_doc').files[0], 'proprietario');
+    const lojaDoc = await uploadDocumento(document.getElementById('f_loja_doc').files[0], 'loja');
+
+    // 3) cria o tenant
+    const { data: tenant, error: tenantError } = await supabaseClient
+      .from('tenants')
+      .insert({
+        nome: document.getElementById('f_loja_nome').value,
+        proprietario_nome: document.getElementById('f_prop_nome').value,
+        proprietario_cpf: document.getElementById('f_prop_cpf').value,
+        proprietario_data_nascimento: document.getElementById('f_prop_nasc').value,
+        proprietario_endereco: document.getElementById('f_prop_end').value,
+        proprietario_numero_endereco: document.getElementById('f_prop_num').value,
+        proprietario_cep: document.getElementById('f_prop_cep').value,
+        proprietario_documento_foto_url: propDoc,
+        cnpj: document.getElementById('f_loja_cnpj').value,
+        cnpj_documento_foto_url: lojaDoc,
+        endereco_loja: document.getElementById('f_loja_end').value,
+        numero_loja: document.getElementById('f_loja_num').value,
+        cep_loja: document.getElementById('f_loja_cep').value,
+        segmento: document.getElementById('f_loja_segmento').value,
+        tempo_preparo_padrao_min: Number(document.getElementById('f_loja_preparo').value) || null,
+        chave_pix: document.getElementById('f_pix').value,
+        consentimento_lgpd_aceito_em: new Date().toISOString(),
+      })
+      .select()
+      .single();
+    if(tenantError) throw tenantError;
+
+    // 4) vincula o usuário logado como dono desse tenant
+    const { error: userError } = await supabaseClient.from('usuarios_loja').insert({
+      tenant_id: tenant.id,
+      auth_user_id: authData.user.id,
+      nome: document.getElementById('f_prop_nome').value,
+      papel: 'dono',
+    });
+    if(userError) throw userError;
+
+    // 5) grava o horário de funcionamento
+    const horarios = coletarHorarios().map(h => ({ ...h, tenant_id: tenant.id }));
+    if(horarios.length){
+      const { error: horarioError } = await supabaseClient.from('horarios_funcionamento').insert(horarios);
+      if(horarioError) throw horarioError;
+    }
+
+    mostrarPasso(6);
+  } catch(err){
+    console.error(err);
+    mostrarMsg('Não deu pra concluir: ' + (err.message || 'tenta de novo em instantes.'), 'error');
+    btn.disabled = false; btn.textContent = 'Concluir cadastro';
+  }
+}
+
+// init
+montarDias();
+montarStepper();
+</script>
+</body>
+</html>

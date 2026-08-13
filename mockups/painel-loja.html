@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Painel operacional — GiroCerto</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{
+    --teal-1:#14B8A0; --teal-2:#0B5C50;
+    --ink:#0B2A26; --gray:#5B6B69; --gray-soft:#9AA6A4;
+    --bg:#F6F8F8; --card:#FFFFFF; --border:#E7ECEB;
+    --amber:#F5A623; --amber-ink:#A9720C; --amber-soft:#FDF1DC;
+    --green-soft:#E3F5F1;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:#fff;color:var(--ink);font-family:'Inter',-apple-system,sans-serif;}
+  h1,h2,h3{font-family:'Sora',sans-serif;}
+
+  /* ---------- LOGIN GATE ---------- */
+  #loginGate{
+    min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);
+  }
+  .login-card{background:#fff;border:1px solid var(--border);border-radius:18px;padding:36px 32px;width:360px;max-width:90vw;}
+  .login-card .badge{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--teal-1),var(--teal-2));display:flex;align-items:center;justify-content:center;margin-bottom:18px;}
+  .login-card h2{margin:0 0 4px;font-size:20px;}
+  .login-card p{color:var(--gray);font-size:13.5px;margin:0 0 22px;}
+  .login-card input{width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;margin-bottom:12px;font-family:'Inter',sans-serif;}
+  .login-card input:focus{outline:none;border-color:var(--teal-1);}
+  .login-card button{width:100%;padding:13px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--teal-1),var(--teal-2));color:#fff;font-weight:700;font-size:14.5px;cursor:pointer;}
+  .login-msg{font-size:13px;color:#B84343;margin-bottom:10px;min-height:16px;}
+
+  /* ---------- APP ---------- */
+  #app{display:none;}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;border-bottom:1px solid var(--border);}
+  .brand-group{display:flex;align-items:center;gap:10px;}
+  .badge{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--teal-1),var(--teal-2));display:flex;align-items:center;justify-content:center;}
+  .brand{font-family:'Sora',sans-serif;font-weight:700;font-size:18px;}
+  .brand span{color:var(--teal-1);}
+  .loja-nome{color:var(--gray);font-size:14px;}
+
+  .layout{display:flex;min-height:calc(100vh - 65px);}
+  .sidebar{width:210px;background:var(--bg);border-right:1px solid var(--border);padding:20px 14px;flex-shrink:0;}
+  .nav-item{padding:11px 16px;border-radius:9px;font-size:14px;color:var(--gray);margin-bottom:6px;cursor:default;}
+  .nav-item.active{background:var(--green-soft);color:var(--teal-2);font-weight:700;}
+
+  .main{flex:1;padding:32px 28px;max-width:1100px;}
+  .main h1{font-size:24px;margin:0 0 20px;}
+
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:28px;}
+  .stat-card{background:#fff;border:1px solid var(--border);border-radius:12px;padding:18px 18px;}
+  .stat-card .label{font-size:12.5px;color:var(--gray);margin-bottom:6px;}
+  .stat-card .value{font-size:26px;font-weight:700;font-family:'Sora',sans-serif;}
+  .stat-card .value.teal{color:var(--teal-1);}
+
+  .cols{display:grid;grid-template-columns:1.5fr 1fr;gap:24px;}
+  .col h2{font-size:17px;margin:0 0 14px;}
+
+  .card{background:#fff;border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:14px;}
+  .card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
+  .card-title{font-weight:700;font-size:15px;}
+  .pill{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11.5px;font-weight:700;margin-left:8px;}
+  .pill.em_entrega,.pill.a_caminho_da_loja{background:var(--green-soft);color:var(--teal-2);}
+  .pill.planejada{background:#F1F3F2;color:var(--gray);}
+  .pill.ativo{background:var(--green-soft);color:var(--teal-2);}
+  .pill.pausado{background:var(--amber-soft);color:var(--amber-ink);}
+  .pill.offline{background:#F1F3F2;color:var(--gray-soft);}
+  .card-meta{font-size:12.5px;color:var(--gray);}
+  .empty{color:var(--gray-soft);font-size:13.5px;padding:24px 0;text-align:center;}
+  .stop-line{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;color:var(--ink);}
+  .stop-line .addr{color:var(--gray);}
+
+  #globalLoading{padding:60px;text-align:center;color:var(--gray-soft);}
+
+  /* ---------- pedidos ---------- */
+  .pedidos-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px;}
+  .pedidos-head h1{margin:0;}
+  .btn-primary{background:linear-gradient(135deg,var(--teal-1),var(--teal-2));color:#fff;border:none;border-radius:11px;padding:12px 18px;font-weight:700;font-size:14px;cursor:pointer;font-family:'Inter',sans-serif;}
+  .btn-ghost{background:var(--bg);color:var(--gray);border:none;border-radius:11px;padding:12px 18px;font-weight:700;font-size:14px;cursor:pointer;font-family:'Inter',sans-serif;}
+
+  .pedido-card{background:#fff;border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:16px;}
+  .pedido-info .nome{font-weight:700;font-size:14.5px;}
+  .pedido-info .end{font-size:13px;color:var(--gray);margin-top:2px;}
+  .pedido-info .meta{font-size:12px;color:var(--gray-soft);margin-top:4px;}
+  .pedido-status{display:flex;flex-direction:column;align-items:flex-end;gap:8px;}
+  .status-pill{padding:5px 12px;border-radius:12px;font-size:11.5px;font-weight:700;}
+  .status-pill.recebido{background:var(--amber-soft);color:var(--amber-ink);}
+  .status-pill.em_preparo{background:#EFE9FB;color:#6C3FB5;}
+  .status-pill.pronto{background:var(--green-soft);color:var(--teal-2);}
+  .status-pill.entregue{background:#F1F3F2;color:var(--gray);}
+  .status-pill.cancelado{background:#FBEAEA;color:#B84343;}
+  .action-btn{background:var(--teal-1);color:#fff;border:none;border-radius:9px;padding:9px 14px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;}
+  .action-btn.pronto{background:#6C3FB5;}
+
+  /* ---------- modal ---------- */
+  .overlay{position:fixed;inset:0;background:rgba(11,42,38,.4);display:none;align-items:center;justify-content:center;z-index:50;}
+  .overlay.show{display:flex;}
+  .modal-card{background:#fff;border-radius:18px;padding:26px 26px;width:420px;max-width:90vw;max-height:88vh;overflow-y:auto;}
+  .modal-card .field{margin-bottom:14px;}
+  .modal-card label{display:block;font-size:12.5px;font-weight:600;color:var(--gray);margin-bottom:5px;}
+  .modal-card input,.modal-card select{width:100%;padding:11px 13px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;font-family:'Inter',sans-serif;}
+  .modal-card input:focus,.modal-card select:focus{outline:none;border-color:var(--teal-1);}
+  .row2f{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .nav2{display:flex;justify-content:flex-end;gap:10px;margin-top:6px;}
+  .msg{padding:10px 13px;border-radius:9px;font-size:13px;margin-bottom:14px;display:none;}
+  .msg.error{background:#FBEAEA;color:#B84343;display:block;}
+  .msg.success{background:var(--green-soft);color:var(--teal-2);display:block;}
+</style>
+</head>
+<body>
+
+<!-- ===================== LOGIN ===================== -->
+<div id="loginGate">
+  <div class="login-card">
+    <div class="badge">
+      <svg width="16" height="16" viewBox="0 0 18 18"><path d="M3 9 L7 13 L15 3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <h2>Entrar no painel</h2>
+    <p>Use o e-mail e senha do cadastro da loja.</p>
+    <div class="login-msg" id="loginMsg"></div>
+    <input type="email" id="loginEmail" placeholder="E-mail">
+    <input type="password" id="loginSenha" placeholder="Senha">
+    <button onclick="login()">Entrar</button>
+  </div>
+</div>
+
+<!-- ===================== APP ===================== -->
+<div id="app">
+  <div class="topbar">
+    <div class="brand-group">
+      <div class="badge">
+        <svg width="16" height="16" viewBox="0 0 18 18"><path d="M3 9 L7 13 L15 3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="brand">Giro<span>Certo</span></div>
+    </div>
+    <div class="loja-nome" id="lojaNome">—</div>
+  </div>
+
+  <div class="layout">
+    <div class="sidebar">
+      <div class="nav-item active" data-view="pedidos" onclick="trocarView('pedidos')">Pedidos</div>
+      <div class="nav-item" data-view="operacional" onclick="trocarView('operacional')">Painel operacional</div>
+      <div class="nav-item" data-view="entregadores" onclick="trocarView('entregadores')">Entregadores</div>
+      <div class="nav-item" data-view="relatorios" onclick="trocarView('relatorios')">Relatórios</div>
+      <div class="nav-item" id="navIntegracoes" data-view="integracoes" onclick="abrirIntegracoes()" style="display:none;">Integrações</div>
+    </div>
+
+    <!-- ---------- VIEW: PEDIDOS ---------- -->
+    <div class="main mainview" id="mv-pedidos">
+      <div class="pedidos-head">
+        <h1>Pedidos</h1>
+        <button class="btn-primary" onclick="abrirNovoPedido()">+ Novo pedido</button>
+      </div>
+      <div id="pedidosMsg" class="msg"></div>
+      <div id="pedidosBox"><div class="empty">Carregando…</div></div>
+    </div>
+
+    <!-- ---------- VIEW: PAINEL OPERACIONAL ---------- -->
+    <div class="main mainview" id="mv-operacional" style="display:none;">
+      <h1>Painel operacional</h1>
+
+      <div class="stats">
+        <div class="stat-card">
+          <div class="label">Pedidos hoje</div>
+          <div class="value" id="statPedidos">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Rotas ativas</div>
+          <div class="value teal" id="statRotas">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Motoboys ativos</div>
+          <div class="value" id="statMotoboys">—</div>
+        </div>
+      </div>
+
+      <div class="cols">
+        <div class="col">
+          <h2>Rotas ativas</h2>
+          <div id="rotasBox"><div class="empty">Carregando…</div></div>
+        </div>
+        <div class="col">
+          <h2>Motoboys hoje</h2>
+          <div id="motoboysBox"><div class="empty">Carregando…</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- VIEWS AINDA NÃO CONSTRUÍDAS ---------- -->
+    <div class="main mainview" id="mv-entregadores" style="display:none;">
+      <h1>Entregadores</h1>
+      <div class="empty">Essa tela ainda não foi construída.</div>
+    </div>
+    <div class="main mainview" id="mv-relatorios" style="display:none;">
+      <h1>Relatórios</h1>
+      <div class="empty">Essa tela ainda não foi construída.</div>
+    </div>
+
+    <!-- ---------- VIEW: INTEGRAÇÕES (só dono, atrás do PIN) ---------- -->
+    <div class="main mainview" id="mv-integracoes" style="display:none;">
+      <h1>Integrações</h1>
+      <p style="color:var(--gray);font-size:13.5px;margin:-12px 0 24px;">Credenciais de API — visível só pra você, o dono da loja.</p>
+      <div id="integMsg" class="msg"></div>
+
+      <div class="field"><label>Chave de integração com a Brendi</label><input type="text" id="int_brendi"></div>
+
+      <h2 style="font-size:15px;margin:22px 0 12px;">WhatsApp Business API</h2>
+      <div class="field"><label>Phone Number ID</label><input type="text" id="int_wa_phone"></div>
+      <div class="field"><label>Access Token</label><input type="text" id="int_wa_token"></div>
+      <div class="field"><label>Webhook Verify Token</label><input type="text" id="int_wa_verify"></div>
+
+      <h2 style="font-size:15px;margin:22px 0 12px;">Provedor de pagamento (Pix)</h2>
+      <div class="field">
+        <label>Provedor</label>
+        <select id="int_pix_provider">
+          <option value="mercado_pago">Mercado Pago</option>
+          <option value="asaas">Asaas</option>
+          <option value="stone">Stone</option>
+          <option value="outro">Outro</option>
+        </select>
+      </div>
+      <div class="field"><label>Chave de API</label><input type="text" id="int_pix_key"></div>
+
+      <button class="btn-primary" onclick="salvarIntegracoes()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- MODAL: PIN DE INTEGRAÇÕES ---------- -->
+<div class="overlay" id="modalPin">
+  <div class="modal-card" style="width:340px;">
+    <h2 id="pinTitulo" style="margin-bottom:4px;">Confirme o PIN</h2>
+    <p id="pinSub" style="color:var(--gray);font-size:13px;margin:0 0 18px;">Só o dono da loja acessa essa aba.</p>
+    <div class="msg" id="pinMsg"></div>
+    <div class="field"><input type="password" id="pinInput" maxlength="6" placeholder="••••" style="text-align:center;font-size:20px;letter-spacing:8px;"></div>
+    <div class="field" id="pinConfirmarWrap" style="display:none;"><input type="password" id="pinConfirmar" maxlength="6" placeholder="confirme o PIN" style="text-align:center;font-size:20px;letter-spacing:8px;"></div>
+    <div class="nav2">
+      <button class="btn-ghost" onclick="fecharModalPin()">Cancelar</button>
+      <button class="btn-primary" id="pinBtn" onclick="confirmarPin()">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- MODAL: NOVO PEDIDO ---------- -->
+<div class="overlay" id="modalNovoPedido">
+  <div class="modal-card">
+    <h2 style="margin-bottom:4px;">Novo pedido</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 18px;">Entrada manual — enquanto a integração com a Brendi não está pronta (seção 7).</p>
+
+    <div class="field"><label>Nome do cliente</label><input type="text" id="np_nome"></div>
+    <div class="field"><label>Telefone do cliente (WhatsApp)</label><input type="text" id="np_telefone" placeholder="11999999999"></div>
+    <div class="field"><label>Endereço de entrega</label><input type="text" id="np_endereco"></div>
+    <div class="row2f">
+      <div class="field"><label>Valor do pedido (R$)</label><input type="text" id="np_valor" inputmode="decimal" placeholder="38,00"></div>
+      <div class="field"><label>Tempo de preparo (min)</label><input type="text" id="np_preparo" inputmode="numeric" placeholder="12"></div>
+    </div>
+    <div class="field">
+      <label>Forma de pagamento</label>
+      <select id="np_pagamento">
+        <option value="pix_antecipado">Pix — já pago</option>
+        <option value="pix_entrega">Pix — cobrar na entrega (QR Code)</option>
+      </select>
+    </div>
+
+    <div class="nav2">
+      <button class="btn-ghost" onclick="fecharModalPedido()">Cancelar</button>
+      <button class="btn-primary" onclick="criarPedido()">Criar pedido</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://SEU-PROJETO.supabase.co';
+const SUPABASE_ANON_KEY = 'SUA_CHAVE_ANON_AQUI';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let tenantId = null;
+let userRole = null;
+
+async function login(){
+  const email = document.getElementById('loginEmail').value;
+  const password = document.getElementById('loginSenha').value;
+  const msg = document.getElementById('loginMsg');
+  msg.textContent = '';
+  const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  if(error){ msg.textContent = 'E-mail ou senha incorretos.'; return; }
+  iniciarApp();
+}
+
+async function iniciarApp(){
+  const { data: { user } } = await supabaseClient.auth.getUser();
+  if(!user) return;
+
+  const { data: vinculo, error } = await supabaseClient
+    .from('usuarios_loja')
+    .select('tenant_id, papel, tenants(nome)')
+    .eq('auth_user_id', user.id)
+    .single();
+
+  if(error || !vinculo){
+    document.getElementById('loginMsg').textContent = 'Não achamos uma loja vinculada a esse login.';
+    return;
+  }
+
+  tenantId = vinculo.tenant_id;
+  userRole = vinculo.papel;
+  document.getElementById('lojaNome').textContent = vinculo.tenants.nome;
+  document.getElementById('loginGate').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+
+  if(userRole === 'dono'){
+    document.getElementById('navIntegracoes').style.display = 'block';
+  }
+
+  carregarPedidos();
+  carregarDados();
+}
+
+// ------------------------------------------------------------
+// Navegação entre views
+// ------------------------------------------------------------
+function trocarView(nome){
+  document.querySelectorAll('.mainview').forEach(v => v.style.display = 'none');
+  document.getElementById('mv-' + nome).style.display = 'block';
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === nome));
+}
+
+// ------------------------------------------------------------
+// Modal novo pedido
+// ------------------------------------------------------------
+function abrirNovoPedido(){
+  ['np_nome','np_telefone','np_endereco','np_valor','np_preparo'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('pedidosMsg').className = 'msg';
+  document.getElementById('modalNovoPedido').classList.add('show');
+}
+function fecharModalPedido(){
+  document.getElementById('modalNovoPedido').classList.remove('show');
+}
+
+async function criarPedido(){
+  const msg = document.getElementById('pedidosMsg');
+  const endereco = document.getElementById('np_endereco').value.trim();
+  const valorTxt = document.getElementById('np_valor').value.trim();
+  const preparoTxt = document.getElementById('np_preparo').value.trim();
+
+  if(!endereco || !valorTxt || !preparoTxt){
+    msg.textContent = 'Preenche endereço, valor e tempo de preparo antes de criar.';
+    msg.className = 'msg error';
+    return;
+  }
+
+  const formaSelecionada = document.getElementById('np_pagamento').value;
+  const valor = Number(valorTxt.replace(',', '.'));
+  const preparoMin = Number(preparoTxt);
+  const agora = new Date();
+  const previsto = new Date(agora.getTime() + preparoMin * 60000);
+
+  const { error } = await supabaseClient.from('pedidos').insert({
+    tenant_id: tenantId,
+    origem: 'manual',
+    cliente_nome: document.getElementById('np_nome').value.trim() || null,
+    cliente_telefone: document.getElementById('np_telefone').value.trim() || null,
+    endereco: endereco,
+    valor_pedido: valor,
+    forma_pagamento: 'pix',
+    pago_antecipado: formaSelecionada === 'pix_antecipado',
+    tempo_preparo_estimado_min: preparoMin,
+    pronto_previsto_em: previsto.toISOString(),
+    status: 'recebido',
+  });
+
+  if(error){
+    console.error(error);
+    msg.textContent = 'Não deu pra criar o pedido: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+
+  fecharModalPedido();
+  carregarPedidos();
+}
+
+// ------------------------------------------------------------
+// Lista de pedidos + ações (aceitar / marcar pronto)
+// ------------------------------------------------------------
+async function carregarPedidos(){
+  const box = document.getElementById('pedidosBox');
+  const { data: pedidos, error } = await supabaseClient
+    .from('pedidos')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('criado_em', { ascending:false })
+    .limit(50);
+
+  if(error){ box.innerHTML = '<div class="empty">Não deu pra carregar os pedidos.</div>'; return; }
+
+  if(!pedidos || pedidos.length === 0){
+    box.innerHTML = '<div class="empty">Nenhum pedido ainda. Toque em "+ Novo pedido" pra testar.</div>';
+    return;
+  }
+
+  box.innerHTML = pedidos.map(p => `
+    <div class="pedido-card">
+      <div class="pedido-info">
+        <div class="nome">${p.cliente_nome || 'Cliente não identificado'}</div>
+        <div class="end">${p.endereco}</div>
+        <div class="meta">R$ ${Number(p.valor_pedido).toFixed(2).replace('.',',')} · ${legendaPagamentoPedido(p)} · preparo ${p.tempo_preparo_estimado_min} min</div>
+      </div>
+      <div class="pedido-status">
+        <span class="status-pill ${p.status}">${legendaStatusPedido(p.status)}</span>
+        ${botaoAcaoPedido(p)}
+      </div>
+    </div>
+  `).join('');
+}
+
+function legendaStatusPedido(s){
+  return { recebido:'Recebido', em_preparo:'Em preparo', pronto:'Pronto', a_caminho:'A caminho', entregue:'Entregue', cancelado:'Cancelado' }[s] || s;
+}
+function legendaPagamentoPedido(p){
+  if(p.forma_pagamento !== 'pix') return p.forma_pagamento;
+  return p.pago_antecipado ? 'Pix já pago' : 'Pix na entrega (QR Code)';
+}
+function botaoAcaoPedido(p){
+  if(p.status === 'recebido') return `<button class="action-btn" onclick="aceitarPedido('${p.id}')">Aceitar pedido</button>`;
+  if(p.status === 'em_preparo') return `<button class="action-btn pronto" onclick="marcarPronto('${p.id}')">Marcar pronto</button>`;
+  return '';
+}
+
+async function aceitarPedido(id){
+  await supabaseClient.from('pedidos').update({ status: 'em_preparo' }).eq('id', id);
+  carregarPedidos();
+}
+async function marcarPronto(id){
+  await supabaseClient.from('pedidos').update({ status: 'pronto', pronto_em: new Date().toISOString() }).eq('id', id);
+  carregarPedidos();
+  carregarDados(); // atualiza os contadores do painel operacional também
+}
+
+async function carregarDados(){
+  await Promise.all([ carregarRotas(), carregarMotoboys() ]);
+}
+
+async function carregarRotas(){
+  const inicioHoje = new Date(); inicioHoje.setHours(0,0,0,0);
+
+  const { data: rotas } = await supabaseClient
+    .from('rotas_entrega')
+    .select('*, entregadores(nome), pedidos(endereco, forma_pagamento, valor_troco)')
+    .eq('tenant_id', tenantId)
+    .in('status', ['planejada','a_caminho_da_loja','em_entrega'])
+    .order('criado_em', { ascending:false });
+
+  const { count: pedidosHoje } = await supabaseClient
+    .from('pedidos')
+    .select('id', { count:'exact', head:true })
+    .eq('tenant_id', tenantId)
+    .gte('criado_em', inicioHoje.toISOString());
+
+  document.getElementById('statPedidos').textContent = pedidosHoje ?? 0;
+  document.getElementById('statRotas').textContent = rotas ? rotas.length : 0;
+
+  const box = document.getElementById('rotasBox');
+  if(!rotas || rotas.length === 0){
+    box.innerHTML = '<div class="card"><div class="empty">Nenhuma rota ativa agora. Assim que um pedido entrar, aparece aqui.</div></div>';
+    return;
+  }
+
+  box.innerHTML = rotas.map(r => `
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <span class="card-title">Rota</span>
+          <span class="pill ${r.status}">${legendaStatusRota(r.status)}</span>
+        </div>
+        <div class="card-meta">${r.entregadores ? r.entregadores.nome : 'aguardando motoboy'} · código ${r.codigo_retirada}</div>
+      </div>
+      ${(r.pedidos||[]).map(p => `
+        <div class="stop-line">
+          <span class="addr">${p.endereco}</span>
+          <span>${legendaPagamento(p)}</span>
+        </div>`).join('') || '<div class="empty">Sem paradas ainda</div>'}
+    </div>
+  `).join('');
+}
+
+async function carregarMotoboys(){
+  const { data: entregadores } = await supabaseClient
+    .from('entregadores')
+    .select('id, nome, status, turnos(status, iniciado_em)')
+    .eq('tenant_id', tenantId);
+
+  document.getElementById('statMotoboys').textContent =
+    (entregadores || []).filter(e => e.status !== 'offline').length + ' / ' + (entregadores ? entregadores.length : 0);
+
+  const box = document.getElementById('motoboysBox');
+  if(!entregadores || entregadores.length === 0){
+    box.innerHTML = '<div class="card"><div class="empty">Nenhum motoboy cadastrado ainda.</div></div>';
+    return;
+  }
+
+  box.innerHTML = entregadores.map(e => {
+    const turnoAtivo = (e.turnos || []).find(t => t.status === 'ativo');
+    return `
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">${e.nome}</span>
+        <span class="pill ${e.status === 'offline' ? 'offline' : (e.status === 'pausado' ? 'pausado' : 'ativo')}">${legendaStatusEntregador(e.status)}</span>
+      </div>
+      <div class="card-meta">${turnoAtivo ? 'Turno desde ' + new Date(turnoAtivo.iniciado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : 'Sem turno ativo'}</div>
+    </div>`;
+  }).join('');
+}
+
+function legendaStatusRota(s){
+  return { planejada:'Planejada', a_caminho_da_loja:'A caminho da loja', em_entrega:'Em entrega' }[s] || s;
+}
+function legendaStatusEntregador(s){
+  return { disponivel:'Disponível', a_caminho_da_loja:'A caminho', em_rota:'Em rota', na_loja:'Na loja', pausado:'Pausado', offline:'Offline' }[s] || s;
+}
+function legendaPagamento(p){
+  if(p.forma_pagamento === 'pix') return 'Pix';
+  if(p.forma_pagamento === 'dinheiro') return 'Dinheiro' + (p.valor_troco ? ' · troco R$'+p.valor_troco : '');
+  if(p.forma_pagamento === 'cartao') return 'Cartão';
+  return p.forma_pagamento;
+}
+
+// ------------------------------------------------------------
+// Integrações — só o dono, atrás de um PIN separado da senha de
+// login (nunca guardado em texto puro — ver funções no schema)
+// ------------------------------------------------------------
+let pinModo = 'confirmar'; // 'criar' ou 'confirmar'
+
+async function abrirIntegracoes(){
+  if(userRole !== 'dono') return; // segurança extra além de esconder o botão
+
+  const { data: temPin } = await supabaseClient.rpc('tem_pin_integracoes');
+  pinModo = temPin ? 'confirmar' : 'criar';
+
+  document.getElementById('pinInput').value = '';
+  document.getElementById('pinConfirmar').value = '';
+  document.getElementById('pinMsg').className = 'msg';
+
+  if(pinModo === 'criar'){
+    document.getElementById('pinTitulo').textContent = 'Crie um PIN pra essa aba';
+    document.getElementById('pinSub').textContent = 'Diferente da sua senha de login — só você vai usar isso.';
+    document.getElementById('pinConfirmarWrap').style.display = 'block';
+  } else {
+    document.getElementById('pinTitulo').textContent = 'Confirme o PIN';
+    document.getElementById('pinSub').textContent = 'Só o dono da loja acessa essa aba.';
+    document.getElementById('pinConfirmarWrap').style.display = 'none';
+  }
+
+  document.getElementById('modalPin').classList.add('show');
+}
+
+function fecharModalPin(){
+  document.getElementById('modalPin').classList.remove('show');
+}
+
+async function confirmarPin(){
+  const msg = document.getElementById('pinMsg');
+  const pin = document.getElementById('pinInput').value.trim();
+
+  if(pin.length < 4){
+    msg.textContent = 'O PIN precisa ter pelo menos 4 dígitos.'; msg.className = 'msg error'; return;
+  }
+
+  if(pinModo === 'criar'){
+    const confirmacao = document.getElementById('pinConfirmar').value.trim();
+    if(pin !== confirmacao){
+      msg.textContent = 'Os dois PINs não são iguais.'; msg.className = 'msg error'; return;
+    }
+    const { error } = await supabaseClient.rpc('set_pin_integracoes', { novo_pin: pin });
+    if(error){ msg.textContent = 'Não deu pra salvar o PIN: ' + error.message; msg.className = 'msg error'; return; }
+    fecharModalPin();
+    trocarView('integracoes');
+    carregarIntegracoes();
+    return;
+  }
+
+  const { data: correto } = await supabaseClient.rpc('verificar_pin_integracoes', { tentativa: pin });
+  if(!correto){
+    msg.textContent = 'PIN incorreto.'; msg.className = 'msg error'; return;
+  }
+  fecharModalPin();
+  trocarView('integracoes');
+  carregarIntegracoes();
+}
+
+async function carregarIntegracoes(){
+  const { data } = await supabaseClient.from('integracoes').select('*').eq('tenant_id', tenantId).maybeSingle();
+  if(!data) return;
+  document.getElementById('int_brendi').value = data.brendi_api_key || '';
+  document.getElementById('int_wa_phone').value = data.whatsapp_phone_number_id || '';
+  document.getElementById('int_wa_token').value = data.whatsapp_access_token || '';
+  document.getElementById('int_wa_verify').value = data.whatsapp_webhook_verify_token || '';
+  document.getElementById('int_pix_provider').value = data.pix_provider || 'mercado_pago';
+  document.getElementById('int_pix_key').value = data.pix_provider_api_key || '';
+}
+
+async function salvarIntegracoes(){
+  const msg = document.getElementById('integMsg');
+  const payload = {
+    tenant_id: tenantId,
+    brendi_api_key: document.getElementById('int_brendi').value || null,
+    whatsapp_phone_number_id: document.getElementById('int_wa_phone').value || null,
+    whatsapp_access_token: document.getElementById('int_wa_token').value || null,
+    whatsapp_webhook_verify_token: document.getElementById('int_wa_verify').value || null,
+    pix_provider: document.getElementById('int_pix_provider').value,
+    pix_provider_api_key: document.getElementById('int_pix_key').value || null,
+    atualizado_em: new Date().toISOString(),
+  };
+  const { error } = await supabaseClient.from('integracoes').upsert(payload, { onConflict: 'tenant_id' });
+  if(error){ msg.textContent = 'Não deu pra salvar: ' + error.message; msg.className = 'msg error'; return; }
+  msg.textContent = 'Salvo com sucesso.'; msg.className = 'msg success';
+}
+
+// se já tiver sessão ativa (voltou pra página), entra direto
+supabaseClient.auth.getSession().then(({ data:{ session } }) => {
+  if(session) iniciarApp();
+});
+</script>
+</body>
+</html>
