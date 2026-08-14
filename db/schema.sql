@@ -393,7 +393,10 @@ create trigger trg_codigo_retirada_unico
 create table if not exists tentativas_despacho (
   id uuid primary key default gen_random_uuid(),
   rota_id uuid not null references rotas_entrega(id) on delete cascade,
-  entregador_id uuid not null references entregadores(id),
+  -- sem on delete cascade aqui, apagar um tenant travava com FK violation assim
+  -- que o entregador tivesse alguma tentativa de despacho registrada — achado
+  -- real ao rodar a suíte de testes de despacho contra o banco hospedado.
+  entregador_id uuid not null references entregadores(id) on delete cascade,
   notificado_em timestamptz not null default now(),
   resultado text
     check (resultado in ('aceito', 'recusado', 'sem_resposta')),
