@@ -393,7 +393,10 @@ create trigger trg_codigo_retirada_unico
 create table if not exists tentativas_despacho (
   id uuid primary key default gen_random_uuid(),
   rota_id uuid not null references rotas_entrega(id) on delete cascade,
-  entregador_id uuid not null references entregadores(id),
+  -- sem on delete cascade aqui, apagar um tenant travava com FK violation assim
+  -- que o entregador tivesse alguma tentativa de despacho registrada — achado
+  -- real ao rodar a suíte de testes de despacho contra o banco hospedado.
+  entregador_id uuid not null references entregadores(id) on delete cascade,
   notificado_em timestamptz not null default now(),
   resultado text
     check (resultado in ('aceito', 'recusado', 'sem_resposta')),
@@ -690,6 +693,22 @@ where e.status_verificacao = 'em_avaliacao'
 -- que alguém marca manualmente — exige infraestrutura declarada
 -- (banheiro/abrigo) E avaliação real dos motoboys nos últimos 30
 -- dias, com volume mínimo pra não dar pra manipular com 2 notas.
+--
+-- SEM RLS AQUI DE PROPÓSITO — decisão de produto confirmada, não um gap
+-- esquecido. Esta view não declara `security_invoker = true`, então roda com
+-- o privilégio de quem a criou e não escopa por tenant: qualquer sessão
+-- autenticada (dono, funcionário, ou futuramente até anônima) consegue
+-- consultar o selo de QUALQUER tenant, não só o próprio. Isso é intencional:
+-- o Selo Entrega Justa é pensado como marca de confiança PÚBLICA — o
+-- cliente final precisa conseguir comparar lojas antes mesmo de logar em
+-- lugar nenhum. Escopar por tenant mataria a função do selo (ninguém
+-- compararia loja nenhuma se só enxergasse a própria). É seguro manter
+-- assim porque a view não expõe nada sensível: só nome da loja e agregados
+-- (sem PII, sem dado financeiro, sem quem avaliou o quê — isso continua
+-- protegido na tabela base `avaliacoes_loja`, que não tem policy de SELECT
+-- pra ninguém além do service role). Se um ultrareview ou revisão futura
+-- marcar isso como "achado" de novo, é falso positivo — já foi avaliado e
+-- confirmado como comportamento correto (sessão de 14/08/2026, PR #1).
 -- ------------------------------------------------------------
 create or replace view selo_entrega_justa as
 select

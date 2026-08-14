@@ -1,0 +1,13 @@
+{
+  "name": "girocerto-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Suíte de testes de integração do GiroCerto contra o Supabase hospedado real (não são testes unitários mockados).",
+  "scripts": {
+    "test": "node run-all.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "pg": "^8.12.0"
+  }
+}
