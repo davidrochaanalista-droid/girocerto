@@ -332,6 +332,65 @@ let tenantConfig = { horas_alerta_fadiga: 8, horas_descanso_obrigatorio: 8 };
 let ganhoVisivel = true;
 let paradaAtualPedidoId = null;
 
+// ------------------------------------------------------------
+// B1: rastreio de posição real — antes disso, localizacoes_entregador
+// nunca recebia uma linha sequer (confirmado por grep: nenhum dos 3
+// mockups chamava navigator.geolocation em lugar nenhum). Sem posição
+// real, os alertas de segurança (motoboy parado, desvio de rota — ver
+// db/schema.sql) não tinham dado nenhum pra funcionar.
+// ------------------------------------------------------------
+let watchId = null;
+let rotaAtivaId = null; // atualizado por verificarRotaAtiva(); null = turno ativo mas sem rota no momento
+let ultimoEnvioPosicaoEm = 0;
+// Throttle client-side: watchPosition pode disparar bem mais rápido que
+// isso. Não existe backend Node aqui pra bufferizar em lote (padrão do
+// Torre) — o equivalente possível numa arquitetura Supabase-direto é
+// controlar a cadência já na origem, no próprio navegador.
+const INTERVALO_MIN_ENVIO_POSICAO_MS = 12000;
+
+// Fica ativo o turno INTEIRO (turnos.status = 'ativo'), inclusive
+// durante uma pausa (clicarPausar() só muda entregadores.status, não
+// mexe no turno) — de propósito: quem decide se uma posição parada
+// importa é o trigger de segurança no banco (avaliar_alertas_
+// seguranca_localizacao em db/schema.sql), que já só considera
+// "motoboy parado" alerta durante rota em_entrega de verdade. Rastrear
+// também na pausa não tem custo de alerta indevido, e mantém histórico
+// de posição consistente.
+function iniciarRastreioPosicao(){
+  if(watchId !== null) return; // já rastreando, não duplica o watch
+  if(!navigator.geolocation){ console.warn('Geolocalização não suportada neste navegador.'); return; }
+
+  watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const agora = Date.now();
+      if(agora - ultimoEnvioPosicaoEm < INTERVALO_MIN_ENVIO_POSICAO_MS) return;
+      ultimoEnvioPosicaoEm = agora;
+      enviarPosicao(pos.coords.latitude, pos.coords.longitude);
+    },
+    (err) => console.warn('Erro de geolocalização:', err.message),
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+  );
+}
+
+function pararRastreioPosicao(){
+  if(watchId !== null){
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+}
+
+async function enviarPosicao(lat, lng){
+  if(!entregadorId) return;
+  const { error } = await supabaseClient.from('localizacoes_entregador').insert({
+    entregador_id: entregadorId,
+    rota_id: rotaAtivaId,
+    lat, lng,
+  });
+  // Falha de envio de posição não deveria interromper o fluxo do
+  // entregador (ele nem veria isso na tela) — só loga pra debug.
+  if(error) console.warn('Não deu pra gravar a posição:', error.message);
+}
+
 function mostrar(id){
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -393,7 +452,16 @@ async function enviarCadastro(){
       cep: document.getElementById('c_cep').value,
       chave_pix: document.getElementById('c_pix').value,
       comprovante_residencia_foto_url: await uploadDoc(document.getElementById('c_comprovante').files[0], 'comprovante'),
+      // A1: verificacao_prazo_limite deixou de ser coluna gerada no banco
+      // (timestamptz + interval não é IMMUTABLE pro Postgres — erro 42P17
+      // na criação da tabela, ver db/schema.sql). Precisa ser calculado
+      // e gravado aqui, junto com verificacao_enviada_em, na MESMA
+      // escrita — se algum dia existir um fluxo de reenvio de documentos
+      // (ex: depois de reprovação por documento_ilegivel/
+      // informacao_divergente), esse recálculo precisa acontecer lá
+      // também, não só aqui no cadastro inicial.
       verificacao_enviada_em: new Date().toISOString(),
+      verificacao_prazo_limite: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       consentimento_lgpd_aceito_em: new Date().toISOString(),
     };
 
@@ -445,16 +513,24 @@ async function carregarEntregador(){
 
   const { data: entregador, error } = await supabaseClient
     .from('entregadores')
-    .select('*, tenants(horas_alerta_fadiga, horas_descanso_obrigatorio)')
+    .select('*')
     .eq('auth_user_id', user.id)
     .single();
 
   if(error || !entregador){ mostrar('view-login'); return; }
 
   entregadorId = entregador.id;
-  if(entregador.tenants){
-    tenantConfig.horas_alerta_fadiga = entregador.tenants.horas_alerta_fadiga;
-    tenantConfig.horas_descanso_obrigatorio = entregador.tenants.horas_descanso_obrigatorio;
+  // RPC dedicada em vez de join aninhado com tenants: a policy de select em
+  // tenants só cobre usuarios_loja (dono/funcionário), não entregadores — o
+  // join `tenants(...)` sempre devolvia null aqui (achado real, validado
+  // contra banco de verdade em 14/08/2026; o fallback abaixo evitava crash,
+  // mas ignorava em silêncio a configuração de fadiga que a loja definiu).
+  // A função devolve só os 2 campos necessários, nunca a linha inteira do
+  // tenant (que tem CPF/chave Pix/etc do proprietário).
+  const { data: fadiga } = await supabaseClient.rpc('config_fadiga_do_meu_tenant');
+  if(fadiga && fadiga[0]){
+    tenantConfig.horas_alerta_fadiga = fadiga[0].horas_alerta_fadiga;
+    tenantConfig.horas_descanso_obrigatorio = fadiga[0].horas_descanso_obrigatorio;
   }
 
   if(entregador.status_verificacao !== 'aprovado'){
@@ -487,9 +563,11 @@ async function checarTurnoAtivo(){
       '<span class="status-dot"></span>Turno ativo desde ' + turnoIniciadoEm.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
     atualizarStatsTurno();
     verificarRotaAtiva();
+    iniciarRastreioPosicao(); // B1 — ativo enquanto turnos.status = 'ativo', pausa inclusa (ver nota na função)
   } else {
     document.getElementById('turnoOffline').style.display = 'block';
     document.getElementById('turnoAtivo').style.display = 'none';
+    pararRastreioPosicao();
   }
 }
 
@@ -576,6 +654,8 @@ async function finalizarTurnoDeVerdade(comBloqueio){
   await supabaseClient.from('entregadores').update(updateEntregador).eq('id', entregadorId);
 
   turnoAtualId = null;
+  rotaAtivaId = null;
+  pararRastreioPosicao();
   checarTurnoAtivo();
 }
 
@@ -592,10 +672,12 @@ async function verificarRotaAtiva(){
     .limit(1);
 
   if(rotas && rotas.length){
+    rotaAtivaId = rotas[0].id; // B1 — a próxima posição enviada já sai vinculada a essa rota
     document.getElementById('semRota').style.display = 'none';
     document.getElementById('comRota').style.display = 'block';
     montarRota(rotas[0]);
   } else {
+    rotaAtivaId = null;
     document.getElementById('semRota').style.display = 'block';
     document.getElementById('comRota').style.display = 'none';
   }

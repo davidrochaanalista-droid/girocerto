@@ -544,9 +544,17 @@ async function enviarCadastro(){
     const lojaDoc = await uploadDocumento(document.getElementById('f_loja_doc').files[0], 'loja');
 
     // 3) cria o tenant
-    const { data: tenant, error: tenantError } = await supabaseClient
+    // id gerado no cliente (em vez de deixar o default gen_random_uuid() do
+    // banco e ler de volta com .select()): a policy de SELECT em tenants
+    // exige já estar vinculado via usuarios_loja, o que só acontece no passo
+    // 4 — encadear .select() aqui falharia com RLS mesmo o insert tendo
+    // funcionado (achado real, validado contra banco de verdade em
+    // 14/08/2026: toda tentativa de cadastro de loja quebrava nesse ponto).
+    const tenantId = crypto.randomUUID();
+    const { error: tenantError } = await supabaseClient
       .from('tenants')
       .insert({
+        id: tenantId,
         nome: document.getElementById('f_loja_nome').value,
         proprietario_nome: document.getElementById('f_prop_nome').value,
         proprietario_cpf: document.getElementById('f_prop_cpf').value,
@@ -564,14 +572,12 @@ async function enviarCadastro(){
         tempo_preparo_padrao_min: Number(document.getElementById('f_loja_preparo').value) || null,
         chave_pix: document.getElementById('f_pix').value,
         consentimento_lgpd_aceito_em: new Date().toISOString(),
-      })
-      .select()
-      .single();
+      });
     if(tenantError) throw tenantError;
 
     // 4) vincula o usuário logado como dono desse tenant
     const { error: userError } = await supabaseClient.from('usuarios_loja').insert({
-      tenant_id: tenant.id,
+      tenant_id: tenantId,
       auth_user_id: authData.user.id,
       nome: document.getElementById('f_prop_nome').value,
       papel: 'dono',
@@ -579,7 +585,7 @@ async function enviarCadastro(){
     if(userError) throw userError;
 
     // 5) grava o horário de funcionamento
-    const horarios = coletarHorarios().map(h => ({ ...h, tenant_id: tenant.id }));
+    const horarios = coletarHorarios().map(h => ({ ...h, tenant_id: tenantId }));
     if(horarios.length){
       const { error: horarioError } = await supabaseClient.from('horarios_funcionamento').insert(horarios);
       if(horarioError) throw horarioError;

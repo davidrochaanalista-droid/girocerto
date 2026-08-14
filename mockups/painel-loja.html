@@ -74,6 +74,17 @@
 
   #globalLoading{padding:60px;text-align:center;color:var(--gray-soft);}
 
+  /* ---------- B2: alertas de segurança ao vivo ---------- */
+  #alertasBanner{background:#FBEAEA;border-bottom:1px solid #E7B8B8;padding:10px 28px;}
+  .alerta-item{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;font-size:13.5px;color:#7A2E2E;}
+  .alerta-item:not(:last-child){border-bottom:1px solid #F0D5D5;}
+  .alerta-msg{font-weight:700;}
+  .alerta-meta{font-weight:400;color:#9A5252;font-size:12px;margin-left:8px;}
+  .alerta-acoes{display:flex;gap:8px;flex-shrink:0;}
+  .alerta-btn{border:1.5px solid #B84343;background:#fff;color:#B84343;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;}
+  .alerta-btn.escalar{background:#B84343;color:#fff;}
+  .posicao-freshness{font-size:11px;color:var(--gray-soft);margin-top:3px;}
+
   /* ---------- pedidos ---------- */
   .pedidos-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px;}
   .pedidos-head h1{margin:0;}
@@ -138,12 +149,15 @@
     <div class="loja-nome" id="lojaNome">—</div>
   </div>
 
+  <!-- ---------- B2: banner de alertas de segurança ao vivo ---------- -->
+  <div id="alertasBanner" style="display:none;"></div>
+
   <div class="layout">
     <div class="sidebar">
       <div class="nav-item active" data-view="pedidos" onclick="trocarView('pedidos')">Pedidos</div>
       <div class="nav-item" data-view="operacional" onclick="trocarView('operacional')">Painel operacional</div>
       <div class="nav-item" data-view="entregadores" onclick="trocarView('entregadores')">Entregadores</div>
-      <div class="nav-item" data-view="relatorios" onclick="trocarView('relatorios')">Relatórios</div>
+      <div class="nav-item" data-view="relatorios" onclick="abrirRelatorios()">Relatórios</div>
       <div class="nav-item" id="navIntegracoes" data-view="integracoes" onclick="abrirIntegracoes()" style="display:none;">Integrações</div>
     </div>
 
@@ -195,7 +209,7 @@
     </div>
     <div class="main mainview" id="mv-relatorios" style="display:none;">
       <h1>Relatórios</h1>
-      <div class="empty">Essa tela ainda não foi construída.</div>
+      <div id="relatoriosBox"><div class="empty">Carregando…</div></div>
     </div>
 
     <!-- ---------- VIEW: INTEGRAÇÕES (só dono, atrás do PIN) ---------- -->
@@ -279,6 +293,90 @@ const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_
 let tenantId = null;
 let userRole = null;
 
+// ------------------------------------------------------------
+// B2: tempo real no painel via Supabase Realtime, com polling como
+// rede de segurança — mesmo princípio do WebSocket+polling do Torre
+// (fleet-orchestrator), só que aqui o "WebSocket" é o Realtime nativo
+// do Supabase (assinatura de mudanças no Postgres) em vez de um hub
+// customizado, já que não existe backend Node aqui. RLS já restringe
+// os eventos recebidos ao tenant certo (mesmas policies de SELECT já
+// escopam o que este usuário pode ver), não precisa filtrar de novo
+// no cliente.
+// ------------------------------------------------------------
+const POLL_INTERVAL_MS = 15000;
+let posicoesPorEntregador = {}; // entregador_id -> {lat, lng, registrado_em}
+let alertasAtivos = [];
+
+function iniciarAtualizacoesAoVivo(){
+  supabaseClient
+    .channel('localizacoes-ao-vivo')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'localizacoes_entregador' }, (payload) => {
+      posicoesPorEntregador[payload.new.entregador_id] = payload.new;
+      if(document.getElementById('mv-operacional').style.display !== 'none') carregarMotoboys();
+    })
+    .subscribe();
+
+  supabaseClient
+    .channel('alertas-ao-vivo')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'alertas_seguranca' }, () => carregarAlertasSeguranca())
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'alertas_seguranca' }, () => carregarAlertasSeguranca())
+    .subscribe();
+
+  carregarAlertasSeguranca();
+
+  // Fallback: roda os mesmos carregamentos por polling independente do
+  // Realtime estar conectado ou não — se a assinatura cair silenciosamente,
+  // o painel não fica cego esperando um evento que pode nunca chegar.
+  setInterval(() => {
+    carregarAlertasSeguranca();
+    if(document.getElementById('mv-operacional').style.display !== 'none') carregarMotoboys();
+  }, POLL_INTERVAL_MS);
+}
+
+async function carregarAlertasSeguranca(){
+  const { data, error } = await supabaseClient
+    .from('alertas_seguranca')
+    .select('*, entregadores(nome)')
+    .eq('status', 'aguardando_confirmacao')
+    .order('criado_em', { ascending: false });
+
+  if(error){ console.warn('Não deu pra carregar alertas de segurança:', error.message); return; }
+
+  alertasAtivos = data || [];
+  renderizarAlertasBanner();
+}
+
+function legendaAlerta(a){
+  if(a.tipo === 'desvio_rota') return 'Desvio de rota' + (a.distancia_desvio_km ? ` (${Number(a.distancia_desvio_km).toFixed(1)} km)` : '');
+  if(a.tipo === 'motoboy_parado') return 'Motoboy parado sem se mexer';
+  if(a.tipo === 'sos_manual') return 'SOS acionado manualmente';
+  return a.tipo;
+}
+
+function renderizarAlertasBanner(){
+  const box = document.getElementById('alertasBanner');
+  if(!alertasAtivos.length){ box.style.display = 'none'; box.innerHTML = ''; return; }
+
+  box.style.display = 'block';
+  box.innerHTML = alertasAtivos.map(a => `
+    <div class="alerta-item">
+      <div>
+        <span class="alerta-msg">⚠ ${legendaAlerta(a)}</span>
+        <span class="alerta-meta">${a.entregadores ? a.entregadores.nome : 'entregador'} · ${new Date(a.criado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</span>
+      </div>
+      <div class="alerta-acoes">
+        <button class="alerta-btn" onclick="resolverAlerta('${a.id}','confirmado_ok')">Confirmar OK</button>
+        <button class="alerta-btn escalar" onclick="resolverAlerta('${a.id}','escalado_loja')">Escalar</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function resolverAlerta(id, novoStatus){
+  await supabaseClient.from('alertas_seguranca').update({ status: novoStatus, resolvido_em: new Date().toISOString() }).eq('id', id);
+  carregarAlertasSeguranca();
+}
+
 async function login(){
   const email = document.getElementById('loginEmail').value;
   const password = document.getElementById('loginSenha').value;
@@ -316,6 +414,7 @@ async function iniciarApp(){
 
   carregarPedidos();
   carregarDados();
+  iniciarAtualizacoesAoVivo();
 }
 
 // ------------------------------------------------------------
@@ -429,6 +528,53 @@ function botaoAcaoPedido(p){
   return '';
 }
 
+// ------------------------------------------------------------
+// B6: nearest-neighbor pra ordem das paradas. NÃO encontrei nenhum
+// fluxo de "criar rota"/"montar rotas_entrega" em nenhum dos 3
+// mockups (nem aqui, nem em app-entregador.html/cadastro-loja.html) —
+// só leitura de ordem_na_rota (ver montarRota() em app-entregador.html),
+// nunca escrita. A montagem de rota/despacho é responsabilidade do
+// "motor de despacho" que o próprio db/schema.sql já documenta como
+// tarefa do futuro backend Node.js (seção 4 do README), não das telas
+// estáticas atuais. Por isso, em vez de inventar uma tela nova de
+// "criar rota" (fora do que foi pedido), fica só o algoritmo puro e
+// reaproveitável — pra ser chamado de onde quer que rotas_entrega/
+// ordem_na_rota passem a ser montados de verdade.
+//
+// Nearest-neighbor guloso: começa no ponto de partida (a loja) e, a
+// cada passo, escolhe a parada não visitada mais próxima da atual —
+// não é o TSP ótimo, mas é suficiente pra v1 (poucas paradas por rota).
+// ------------------------------------------------------------
+function distanciaAproximadaKm(lat1, lng1, lat2, lng2){
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// paradas: [{ ...qualquerCoisa, lat, lng }, ...] — devolve a mesma
+// lista reordenada; quem chamar decide o que fazer com a ordem
+// resultante (ex: gravar o índice em pedidos.ordem_na_rota).
+function ordenarParadasPorProximidade(paradas, origemLat, origemLng){
+  const restantes = paradas.slice();
+  const ordenadas = [];
+  let atualLat = origemLat, atualLng = origemLng;
+
+  while(restantes.length){
+    let melhorIndice = 0, melhorDist = Infinity;
+    restantes.forEach((p, i) => {
+      const d = distanciaAproximadaKm(atualLat, atualLng, p.lat, p.lng);
+      if(d < melhorDist){ melhorDist = d; melhorIndice = i; }
+    });
+    const proxima = restantes.splice(melhorIndice, 1)[0];
+    ordenadas.push(proxima);
+    atualLat = proxima.lat; atualLng = proxima.lng;
+  }
+
+  return ordenadas;
+}
+
 async function aceitarPedido(id){
   await supabaseClient.from('pedidos').update({ status: 'em_preparo' }).eq('id', id);
   carregarPedidos();
@@ -503,6 +649,7 @@ async function carregarMotoboys(){
 
   box.innerHTML = entregadores.map(e => {
     const turnoAtivo = (e.turnos || []).find(t => t.status === 'ativo');
+    const posicao = posicoesPorEntregador[e.id]; // B2 — atualizado ao vivo via Realtime, sem precisar recarregar a página
     return `
     <div class="card">
       <div class="card-head">
@@ -510,8 +657,93 @@ async function carregarMotoboys(){
         <span class="pill ${e.status === 'offline' ? 'offline' : (e.status === 'pausado' ? 'pausado' : 'ativo')}">${legendaStatusEntregador(e.status)}</span>
       </div>
       <div class="card-meta">${turnoAtivo ? 'Turno desde ' + new Date(turnoAtivo.iniciado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : 'Sem turno ativo'}</div>
+      ${posicao ? `<div class="posicao-freshness">📍 última posição às ${new Date(posicao.registrado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div>` : ''}
     </div>`;
   }).join('');
+}
+
+// ------------------------------------------------------------
+// B5: Relatórios — a aba já existia no menu, mas sem nenhuma função de
+// agregação por trás (só o link de navegação). Métricas básicas:
+// pedidos por dia, tempo médio de entrega, total repassado — últimos
+// 7 dias.
+// ------------------------------------------------------------
+function abrirRelatorios(){
+  trocarView('relatorios');
+  carregarRelatorios();
+}
+
+async function carregarRelatorios(){
+  const box = document.getElementById('relatoriosBox');
+  box.innerHTML = '<div class="empty">Carregando…</div>';
+
+  const seteDiasAtras = new Date();
+  seteDiasAtras.setDate(seteDiasAtras.getDate() - 7);
+  seteDiasAtras.setHours(0, 0, 0, 0);
+
+  const { data: pedidos, error: erroPedidos } = await supabaseClient
+    .from('pedidos')
+    .select('criado_em, status, entregue_em')
+    .eq('tenant_id', tenantId)
+    .gte('criado_em', seteDiasAtras.toISOString());
+
+  if(erroPedidos){ box.innerHTML = '<div class="empty">Não deu pra carregar os relatórios.</div>'; return; }
+
+  const { data: entregadoresDoTenant } = await supabaseClient
+    .from('entregadores')
+    .select('id')
+    .eq('tenant_id', tenantId);
+
+  let totalRepassado = 0;
+  const idsEntregadores = (entregadoresDoTenant || []).map(e => e.id);
+  if(idsEntregadores.length){
+    const { data: repasses } = await supabaseClient
+      .from('repasses')
+      .select('valor')
+      .eq('status', 'pago')
+      .in('entregador_id', idsEntregadores)
+      .gte('criado_em', seteDiasAtras.toISOString());
+    totalRepassado = (repasses || []).reduce((s, r) => s + Number(r.valor), 0);
+  }
+
+  const porDia = {};
+  (pedidos || []).forEach(p => {
+    const dia = p.criado_em.slice(0, 10);
+    porDia[dia] = (porDia[dia] || 0) + 1;
+  });
+
+  const entregues = (pedidos || []).filter(p => p.status === 'entregue' && p.entregue_em);
+  const tempoMedioMin = entregues.length
+    ? Math.round(entregues.reduce((s, p) => s + (new Date(p.entregue_em) - new Date(p.criado_em)) / 60000, 0) / entregues.length)
+    : null;
+
+  const diasOrdenados = Object.keys(porDia).sort();
+
+  box.innerHTML = `
+    <div class="stats" style="margin-bottom:28px;">
+      <div class="stat-card">
+        <div class="label">Pedidos (últimos 7 dias)</div>
+        <div class="value">${(pedidos || []).length}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Tempo médio de entrega</div>
+        <div class="value teal">${tempoMedioMin != null ? tempoMedioMin + ' min' : '—'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Total repassado a motoboys</div>
+        <div class="value">R$ ${totalRepassado.toFixed(2).replace('.', ',')}</div>
+      </div>
+    </div>
+    <h2 style="font-size:15px;margin-bottom:10px;">Pedidos por dia</h2>
+    <div class="card">
+      ${diasOrdenados.length ? diasOrdenados.map(d => `
+        <div class="stop-line">
+          <span class="addr">${new Date(d + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+          <span>${porDia[d]} pedido(s)</span>
+        </div>
+      `).join('') : '<div class="empty">Nenhum pedido nos últimos 7 dias.</div>'}
+    </div>
+  `;
 }
 
 function legendaStatusRota(s){

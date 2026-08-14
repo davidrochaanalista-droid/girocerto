@@ -720,94 +720,6 @@ group by t.id, t.nome, t.oferece_banheiro, t.oferece_abrigo_chuva;
 -- motoboy, painel do lojista falando com o Supabase), não o backend.
 -- ==============================================================
 
--- ------------------------------------------------------------
--- ACHADO CRÍTICO (validação contra banco real, 14/08/2026): toda
--- policy que precisa saber "de qual(is) tenant(s) esse usuário faz
--- parte" fazia `select tenant_id from usuarios_loja where
--- auth_user_id = auth.uid()` diretamente. Como usuarios_loja tem RLS
--- habilitada e sua PRÓPRIA policy de select usa esse mesmo subselect,
--- resolver essa consulta reavalia a policy de usuarios_loja, que por
--- sua vez reavalia de novo — recursão infinita (Postgres 42P17), que
--- quebrava tenants/pedidos/entregadores/usuarios_loja/etc por
--- completo. Corrigido com funções SECURITY DEFINER (padrão
--- recomendado do Postgres/Supabase pra esse caso exato): rodam como o
--- dono da função, que tem BYPASSRLS, então a consulta interna não
--- reaciona a policy. `search_path` fixado explicitamente em TODAS as
--- funções SECURITY DEFINER deste arquivo (as duas abaixo e as 5 mais
--- adiante) — sem isso, uma função SECURITY DEFINER é um vetor
--- clássico de escalonamento de privilégio via schema injection (um
--- objeto malicioso em outro schema no search_path do chamador poderia
--- ser resolvido no lugar do pretendido).
--- ------------------------------------------------------------
-create or replace function minhas_tenant_ids()
-returns setof uuid
-language sql
-security definer
-stable
-set search_path = public, pg_temp
-as $$
-  select tenant_id from usuarios_loja where auth_user_id = auth.uid();
-$$;
-
-create or replace function minhas_tenant_ids_dono()
-returns setof uuid
-language sql
-security definer
-stable
-set search_path = public, pg_temp
-as $$
-  select tenant_id from usuarios_loja where auth_user_id = auth.uid() and papel = 'dono';
-$$;
-
--- ------------------------------------------------------------
--- ACHADO (validação contra banco real, 14/08/2026): a policy de insert em
--- usuarios_loja só exigia auth_user_id = auth.uid() — qualquer usuário
--- autenticado conseguia se auto-vincular como funcionário (ou até como um
--- segundo "dono") a QUALQUER tenant já existente, sem convite nenhum.
--- Confirmado que hoje não existe fluxo real de auto-cadastro de funcionário
--- em lugar nenhum do produto (só cadastro-loja.html insere um vínculo, uma
--- única vez, papel='dono', logo após criar o próprio tenant) — então a
--- permissão ampla era pura superfície de ataque, sem uso legítimo.
--- Esta função (SECURITY DEFINER pra não sofrer o mesmo problema de
--- visibilidade via RLS que um EXISTS direto teria: o usuário ainda sem
--- nenhum vínculo não enxergaria vínculos alheios de qualquer forma) permite
--- restringir o insert a "sou o primeiro vínculo desse tenant".
--- ------------------------------------------------------------
-create or replace function tenant_ja_tem_usuario(p_tenant_id uuid)
-returns boolean
-language sql
-security definer
-stable
-set search_path = public, pg_temp
-as $$
-  select exists(select 1 from usuarios_loja where tenant_id = p_tenant_id);
-$$;
-
--- ------------------------------------------------------------
--- ACHADO (mesma validação, 14/08/2026): app-entregador.html lê
--- horas_alerta_fadiga/horas_descanso_obrigatorio do próprio tenant via
--- `select('*, tenants(...))` — mas a policy de select em tenants só cobre
--- usuarios_loja (dono/funcionário), não entregadores. O join sempre
--- devolvia `tenants: null` pro motoboy (o app já tinha fallback pro padrão
--- 8h/8h, não quebrava, só ignorava a config real da loja em silêncio).
--- Função estreita em vez de policy nova em tenants: uma policy exporia a
--- LINHA inteira (inclusive proprietario_cpf, chave_pix, cnpj) pra qualquer
--- entregador que decidisse consultar a tabela direto, não só os 2 campos
--- que o app pede.
--- ------------------------------------------------------------
-create or replace function config_fadiga_do_meu_tenant()
-returns table(horas_alerta_fadiga numeric, horas_descanso_obrigatorio numeric)
-language sql
-security definer
-stable
-set search_path = public, pg_temp
-as $$
-  select t.horas_alerta_fadiga, t.horas_descanso_obrigatorio
-  from tenants t
-  join entregadores e on e.tenant_id = t.id
-  where e.auth_user_id = auth.uid();
-$$;
-
 alter table pedidos enable row level security;
 alter table rotas_entrega enable row level security;
 alter table entregadores enable row level security;
@@ -829,15 +741,15 @@ alter table tentativas_despacho enable row level security;
 
 -- pedidos: loja vê e cria os do seu tenant
 create policy "loja ve seus pedidos" on pedidos for select using (
-  tenant_id in (select minhas_tenant_ids()));
+  tenant_id in (select tenant_id from usuarios_loja where auth_user_id = auth.uid()));
 create policy "loja cria pedidos no seu tenant" on pedidos for insert with check (
-  tenant_id in (select minhas_tenant_ids()));
+  tenant_id in (select tenant_id from usuarios_loja where auth_user_id = auth.uid()));
 create policy "loja atualiza seus pedidos" on pedidos for update using (
-  tenant_id in (select minhas_tenant_ids()));
+  tenant_id in (select tenant_id from usuarios_loja where auth_user_id = auth.uid()));
 
 -- rotas_entrega: loja e o entregador designado
 create policy "loja ve suas rotas" on rotas_entrega for select using (
-  tenant_id in (select minhas_tenant_ids()));
+  tenant_id in (select tenant_id from usuarios_loja where auth_user_id = auth.uid()));
 create policy "entregador ve suas proprias rotas" on rotas_entrega for select using (
   entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
 create policy "entregador atualiza suas proprias rotas" on rotas_entrega for update using (
@@ -851,7 +763,7 @@ create policy "entregador cria seu proprio cadastro" on entregadores for insert 
 create policy "entregador atualiza seu proprio cadastro" on entregadores for update using (
   auth_user_id = auth.uid());
 create policy "loja ve entregadores do seu tenant" on entregadores for select using (
-  tenant_id in (select minhas_tenant_ids()));
+  tenant_id in (select tenant_id from usuarios_loja where auth_user_id = auth.uid()));
 
 -- repasses: só o próprio entregador vê os seus
 create policy "entregador ve seus proprios repasses" on repasses for select using (
@@ -863,22 +775,20 @@ create policy "entregador ve seus proprios repasses" on repasses for select usin
 create policy "usuario autenticado cria um tenant" on tenants for insert with check (
   auth.uid() is not null);
 create policy "loja ve e edita seu proprio tenant" on tenants for select using (
-  id in (select minhas_tenant_ids()));
+  id in (select tenant_id from usuarios_loja where auth_user_id = auth.uid()));
 create policy "loja atualiza seu proprio tenant" on tenants for update using (
-  id in (select minhas_tenant_ids()));
+  id in (select tenant_id from usuarios_loja where auth_user_id = auth.uid()));
 
 -- usuarios_loja: só enxerga colegas do mesmo tenant, e só cria o próprio vínculo
 create policy "usuario ve colegas do mesmo tenant" on usuarios_loja for select using (
-  tenant_id in (select minhas_tenant_ids()));
+  tenant_id in (select tenant_id from usuarios_loja where auth_user_id = auth.uid()));
 create policy "usuario cria seu proprio vinculo" on usuarios_loja for insert with check (
-  auth_user_id = auth.uid()
-  and papel = 'dono'
-  and not tenant_ja_tem_usuario(tenant_id));
+  auth_user_id = auth.uid());
 
 -- comprovantes_entrega: loja do pedido + o entregador que entregou
 create policy "loja ve comprovantes dos seus pedidos" on comprovantes_entrega for select using (
   pedido_id in (select id from pedidos where tenant_id in
-    (select minhas_tenant_ids())));
+    (select tenant_id from usuarios_loja where auth_user_id = auth.uid())));
 create policy "entregador cria comprovante da propria entrega" on comprovantes_entrega for insert with check (
   pedido_id in (select p.id from pedidos p join rotas_entrega r on r.id = p.rota_id
     where r.entregador_id in (select id from entregadores where auth_user_id = auth.uid())));
@@ -886,12 +796,12 @@ create policy "entregador cria comprovante da propria entrega" on comprovantes_e
 -- tentativas_contato: só a loja do pedido em questão
 create policy "loja ve tentativas de contato dos seus pedidos" on tentativas_contato for select using (
   pedido_id in (select id from pedidos where tenant_id in
-    (select minhas_tenant_ids())));
+    (select tenant_id from usuarios_loja where auth_user_id = auth.uid())));
 
 -- tentativas_despacho: loja da rota + o entregador que foi chamado (achado A3)
 create policy "loja ve tentativas de despacho das suas rotas" on tentativas_despacho for select using (
   rota_id in (select id from rotas_entrega where tenant_id in
-    (select minhas_tenant_ids())));
+    (select tenant_id from usuarios_loja where auth_user_id = auth.uid())));
 create policy "entregador ve e responde suas proprias tentativas" on tentativas_despacho for all using (
   entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
 
@@ -900,7 +810,7 @@ create policy "entregador ve e edita seus proprios turnos" on turnos for all usi
   entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
 create policy "loja ve turnos dos seus entregadores" on turnos for select using (
   entregador_id in (select id from entregadores where tenant_id in
-    (select minhas_tenant_ids())));
+    (select tenant_id from usuarios_loja where auth_user_id = auth.uid())));
 
 -- avaliacoes_loja: entregador cria a sua, loja só lê o agregado (não quem disse o quê)
 create policy "entregador cria avaliacao da loja" on avaliacoes_loja for insert with check (
@@ -911,31 +821,20 @@ create policy "entregador ve e atualiza seus alertas" on alertas_seguranca for a
   entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
 create policy "loja ve alertas dos seus entregadores" on alertas_seguranca for select using (
   entregador_id in (select id from entregadores where tenant_id in
-    (select minhas_tenant_ids())));
+    (select tenant_id from usuarios_loja where auth_user_id = auth.uid())));
 
 -- localizacoes_entregador: dado sensível — só o próprio e a loja, nunca público
 create policy "entregador gerencia sua propria localizacao" on localizacoes_entregador for all using (
   entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
 create policy "loja ve localizacao dos seus entregadores" on localizacoes_entregador for select using (
   entregador_id in (select id from entregadores where tenant_id in
-    (select minhas_tenant_ids())));
+    (select tenant_id from usuarios_loja where auth_user_id = auth.uid())));
 
 -- horarios_funcionamento: público pra leitura (o app precisa saber se está aberto
 -- antes mesmo de qualquer login), só a loja edita o próprio
 create policy "qualquer um le horario de funcionamento" on horarios_funcionamento for select using (true);
 create policy "loja edita seu proprio horario" on horarios_funcionamento for all using (
-  tenant_id in (select minhas_tenant_ids()));
-
--- ==============================================================
--- REALTIME (seção B2 da análise de mercado) — sem isso, os canais
--- postgres_changes abertos por painel-loja.html (iniciarAtualizacoesAoVivo())
--- nunca disparam evento nenhum: uma tabela só entra no fluxo de Realtime do
--- Supabase se estiver na publication supabase_realtime. Achado real (validação
--- contra banco de verdade, 14/08/2026): a publication estava vazia — o recurso
--- de atualização ao vivo nunca funcionaria em produção, independente de RLS.
--- ==============================================================
-alter publication supabase_realtime add table localizacoes_entregador;
-alter publication supabase_realtime add table alertas_seguranca;
+  tenant_id in (select tenant_id from usuarios_loja where auth_user_id = auth.uid()));
 
 -- ==============================================================
 -- STORAGE (seção 39) — buckets privados pros documentos e fotos
@@ -1001,7 +900,7 @@ alter table integracoes enable row level security;
 -- só o dono (não funcionário) vê ou edita — funcionário não tem acesso nenhum,
 -- nem pedindo PIN, porque a checagem de papel já bloqueia antes disso
 create policy "dono ve e edita integracoes do seu tenant" on integracoes for all using (
-  tenant_id in (select minhas_tenant_ids_dono())
+  tenant_id in (select tenant_id from usuarios_loja where auth_user_id = auth.uid() and papel = 'dono')
 );
 
 -- ------------------------------------------------------------
@@ -1014,8 +913,6 @@ create or replace function set_pin_integracoes(novo_pin text)
 returns void
 language sql
 security definer
-set search_path = public, extensions, pg_temp -- extensions: onde o pgcrypto
-  -- (gen_salt/crypt) fica instalado no Supabase hospedado, não em public
 as $$
   update usuarios_loja
   set pin_integracoes_hash = crypt(novo_pin, gen_salt('bf'))
@@ -1026,7 +923,6 @@ create or replace function verificar_pin_integracoes(tentativa text)
 returns boolean
 language sql
 security definer
-set search_path = public, extensions, pg_temp
 as $$
   select coalesce(
     (select pin_integracoes_hash = crypt(tentativa, pin_integracoes_hash)
@@ -1040,7 +936,6 @@ create or replace function tem_pin_integracoes()
 returns boolean
 language sql
 security definer
-set search_path = public, pg_temp
 as $$
   select coalesce(
     (select pin_integracoes_hash is not null
@@ -1162,7 +1057,6 @@ create or replace function preencher_dentro_da_rota()
 returns trigger
 language plpgsql
 security definer
-set search_path = public, pg_temp
 as $$
 declare
   v_km_tolerancia numeric;
@@ -1253,7 +1147,6 @@ create or replace function avaliar_alertas_seguranca_localizacao()
 returns trigger
 language plpgsql
 security definer
-set search_path = public, pg_temp
 as $$
 declare
   v_rota_status text;
