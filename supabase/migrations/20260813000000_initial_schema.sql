@@ -1220,11 +1220,20 @@ declare
   v_ultima record;
   v_plato_desde timestamptz;
   v_tolerancia_metros constant numeric := 15;
+  v_iniciada_em timestamptz;
   rec record;
 begin
+  -- achado ultrareview (bug_004): sem esse corte, o walk pra trás incluía a
+  -- espera na loja (motoboy já grava posição em a_caminho_da_loja, mesmo
+  -- rota_id) — o próprio ciclo ocioso que o produto ataca virava alerta de
+  -- "motoboy parado" assim que a rota virava em_entrega. iniciada_em =
+  -- motoboy saiu da loja com os pedidos, é o início real do platô que importa.
+  select iniciada_em into v_iniciada_em from rotas_entrega where id = p_rota_id;
+
   select lat, lng, registrado_em into v_ultima
   from localizacoes_entregador
   where entregador_id = p_entregador_id and rota_id = p_rota_id
+    and registrado_em >= coalesce(v_iniciada_em, '-infinity'::timestamptz)
   order by registrado_em desc
   limit 1;
 
@@ -1239,6 +1248,7 @@ begin
     from localizacoes_entregador
     where entregador_id = p_entregador_id and rota_id = p_rota_id
       and registrado_em < v_ultima.registrado_em
+      and registrado_em >= coalesce(v_iniciada_em, '-infinity'::timestamptz)
     order by registrado_em desc
     limit 200 -- teto de segurança, não precisa varrer histórico infinito
   loop
