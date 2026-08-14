@@ -152,19 +152,79 @@ Torre, que tem Express completo). Caminho local: C:\Users\Usuário\Projetos\giro
    total é fisicamente insuficiente pra rodar a stack completa de 12 serviços) — o
    projeto passa a depender de Supabase hospedado pra qualquer teste de integração
    futuro nesta máquina.
+6. **`/ultrareview` na branch master rodado e 6 achados corrigidos** (14/08/2026),
+   nesta ordem de prioridade (segurança/regressão primeiro, depois fluxos quebrados,
+   depois o resto):
+   - **XSS armazenado** (`painel-loja.html`: `carregarPedidos`, `renderizarAlertasBanner`,
+     `carregarRotas`, `carregarMotoboys`; `app-entregador.html`: `montarRota`) —
+     `cliente_nome`/`endereco`/`entregadores.nome` iam direto pra `innerHTML`, e
+     `app-entregador.html` ainda montava um `onclick` por concatenação de string (quebrava
+     com apóstrofo em endereço, ex: "Rua d'Ávila"). Corrigido com um helper `escapeHtml()`
+     em cada mockup + troca do `onclick` inline por `data-*` e `addEventListener`
+     delegado.
+   - **`supabase/migrations/20260813000000_initial_schema.sql` estava obsoleto**: era
+     uma cópia pré-auditoria (sem os 4 helpers `SECURITY DEFINER`, sem `search_path`, sem
+     a policy restrita de `usuarios_loja`, sem a publication do Realtime) — `supabase db
+     push`/`db reset` reintroduziria todos os bugs já corrigidos no item 5. Corrigido
+     sincronizando o arquivo com `db/schema.sql` (cópia integral — os dois arquivos são
+     idênticos agora; `db/schema.sql` continua sendo a fonte de verdade editada
+     primeiro).
+   - **`alertas_seguranca` sem policy de UPDATE pra loja**: "Confirmar OK"/"Escalar" no
+     painel batiam contra RLS, filtravam pra 0 linhas em silêncio (sem erro do
+     PostgREST) — o alerta nunca saía de `aguardando_confirmacao`. Corrigido com a
+     policy `"loja resolve alertas dos seus entregadores"` (mesmo predicado da policy de
+     SELECT já existente); `resolverAlerta()` no painel agora também loga `error` em vez
+     de engolir silenciosamente.
+   - **`pedidos` sem policy nenhuma pro entregador**: `app-entregador.html` sempre via a
+     rota com 0 paradas, e `confirmarEntrega()` quebrava com null deref. Corrigido com
+     policy de SELECT (escopo `rota_id -> rotas_entrega -> entregadores.auth_user_id`) e
+     UPDATE com `WITH CHECK (status = 'entregue')` — restringe à única transição que o
+     app realmente faz, não abre brecha pra reverter/cancelar via update direto.
+   - **`calcular_segundos_parado` contava a espera na loja como "motoboy parado"**: o
+     walk pra trás não recortava por `rotas_entrega.iniciada_em`, então o platô de
+     espera normal na loja (o próprio ciclo ocioso que o produto ataca) virava alerta de
+     segurança assim que a rota entrava em `em_entrega`. Corrigido filtrando por
+     `registrado_em >= iniciada_em` nas duas consultas da função.
+   - **Fluxo de pausa do motoboy era um beco sem saída**: `clicarPausar()` nunca setava
+     `turnos.teve_pausa`, então o gate de fadiga sempre disparava no finalize
+     independente de quantas pausas o motoboy tivesse feito; e não existia botão pra
+     "despausar" (`checarTurnoAtivo()` só olhava `turnos.status`, nunca
+     `entregadores.status`). Corrigido: `clicarPausar()` agora grava `teve_pausa=true`;
+     botão "Continuar" novo, visível quando `entregadores.status='pausado'`, chama
+     `clicarContinuar()` que volta pra `disponivel`.
+
+   **Deploy + testes reais**: as mudanças de policy/função foram aplicadas no Supabase
+   hospedado (`ntmxkwzhumiqspxijuln`) via script Node/`pg`, e um novo lote de 18 testes
+   de integração rodou contra o banco real antes do commit — cobrindo especificamente
+   RLS multi-tenant nas policies novas (SELECT/UPDATE de `pedidos` por entregador,
+   UPDATE de `alertas_seguranca` por loja, isolamento cross-tenant sob concorrência) e
+   um cenário de carga (3 tenants, 45 inserts concorrentes de pedidos sem colisão de
+   `codigo_entrega`, confirmações de entrega simultâneas de 6 entregadores + tentativas
+   cross-tenant concorrentes bloqueadas). 18/18 passou. Script ficou só no scratchpad da
+   sessão (não commitado), tenants/usuários de teste removidos ao final (cascade).
 
 ## Pendências reais no momento
 - [ ] Testar `db/schema.sql` num ambiente com mais RAM (ex: Supabase local em outra
       máquina) se algum dia for necessário comparar comportamento local vs hospedado —
       não é bloqueio, hospedado já cobre tudo.
 - [ ] Nenhum teste de integração pendente no momento — todos os itens da rodada
-      anterior (constraints, RLS, A1, A2, selo, PIN, carga, B2) foram executados contra
-      banco real e estão documentados acima.
+      anterior (constraints, RLS, A1, A2, selo, PIN, carga, B2) e da rodada do item 6
+      (RLS das policies novas + carga com 45 pedidos/confirmações concorrentes) foram
+      executados contra banco real e estão documentados acima.
 - [ ] Freelance multi-loja (mesma pessoa em 2+ tenants) não é suportado pelo schema
       atual (`idx_entregadores_auth_user` é único) — decisão de produto em aberto, não
       é bug.
 - [ ] `.env` local tem as credenciais do projeto Supabase hospedado
       (`ntmxkwzhumiqspxijuln`) — nunca comitar, já está no `.gitignore`.
+- [ ] 3 nits do `/ultrareview` de 14/08/2026 ficaram de fora desta rodada (só os 6
+      achados de severidade "normal" foram corrigidos, por prioridade explícita do
+      usuário) — nenhum é bloqueio, mas seguem em aberto: `set_pin_integracoes` não
+      exige o PIN atual antes de sobrescrever (impacto prático baixo, dono já tem
+      SELECT direto em `integracoes` de qualquer forma); `pin_integracoes_hash` fica
+      exposto via SELECT normal de `usuarios_loja` (RLS é por linha, não por coluna —
+      contradiz o comentário no schema, mas hoje não há fluxo de funcionário pra
+      explorar); comentário no topo de `db/schema.sql` ainda diz "RLS entra na Fase 2",
+      contradizendo o schema logo abaixo (só afeta leitura/documentação).
 
 ## Convenções de trabalho estabelecidas
 - Nunca commitar nem dar push sem instrução explícita "commit e push", mesmo depois de
