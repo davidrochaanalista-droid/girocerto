@@ -834,6 +834,17 @@ create policy "loja cria pedidos no seu tenant" on pedidos for insert with check
   tenant_id in (select minhas_tenant_ids()));
 create policy "loja atualiza seus pedidos" on pedidos for update using (
   tenant_id in (select minhas_tenant_ids()));
+-- entregador: sem policy nenhuma aqui, o app-entregador.html quebrava (rota sem
+-- paradas visíveis, confirmarEntrega() com null deref) — achado ultrareview, bug_005.
+-- WITH CHECK restringe a única transição que o app faz (pedido -> entregue),
+-- pra não abrir brecha de reverter status ou cancelar via update direto.
+create policy "entregador ve pedidos das suas rotas" on pedidos for select using (
+  rota_id in (select id from rotas_entrega where entregador_id in
+    (select id from entregadores where auth_user_id = auth.uid())));
+create policy "entregador confirma entrega das suas rotas" on pedidos for update using (
+  rota_id in (select id from rotas_entrega where entregador_id in
+    (select id from entregadores where auth_user_id = auth.uid()))
+) with check (status = 'entregue');
 
 -- rotas_entrega: loja e o entregador designado
 create policy "loja ve suas rotas" on rotas_entrega for select using (
@@ -910,6 +921,12 @@ create policy "entregador cria avaliacao da loja" on avaliacoes_loja for insert 
 create policy "entregador ve e atualiza seus alertas" on alertas_seguranca for all using (
   entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
 create policy "loja ve alertas dos seus entregadores" on alertas_seguranca for select using (
+  entregador_id in (select id from entregadores where tenant_id in
+    (select minhas_tenant_ids())));
+-- sem isso, "Confirmar OK"/"Escalar" no painel-loja.html batiam contra RLS,
+-- filtravam pra 0 linhas em silêncio (sem erro do PostgREST) e o alerta nunca
+-- saía de aguardando_confirmacao — achado da revisão ultrareview, bug_013
+create policy "loja resolve alertas dos seus entregadores" on alertas_seguranca for update using (
   entregador_id in (select id from entregadores where tenant_id in
     (select minhas_tenant_ids())));
 
