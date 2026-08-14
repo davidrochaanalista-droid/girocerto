@@ -836,15 +836,23 @@ create policy "loja atualiza seus pedidos" on pedidos for update using (
   tenant_id in (select minhas_tenant_ids()));
 -- entregador: sem policy nenhuma aqui, o app-entregador.html quebrava (rota sem
 -- paradas visíveis, confirmarEntrega() com null deref) — achado ultrareview, bug_005.
--- WITH CHECK restringe a única transição que o app faz (pedido -> entregue),
--- pra não abrir brecha de reverter status ou cancelar via update direto.
+-- WITH CHECK restringe a única transição que o app faz (pedido -> entregue) E
+-- rechecha a posse de rota_id na linha resultante — achado da 2ª rodada de
+-- ultrareview (validando os commits desta sessão): WITH CHECK substitui o
+-- USING para a linha nova, então sem repetir a condição de posse aqui um
+-- UPDATE malicioso via PostgREST direto (fora da UI) podia trocar o rota_id
+-- do próprio pedido pra qualquer rota alheia junto com status='entregue'.
 create policy "entregador ve pedidos das suas rotas" on pedidos for select using (
   rota_id in (select id from rotas_entrega where entregador_id in
     (select id from entregadores where auth_user_id = auth.uid())));
 create policy "entregador confirma entrega das suas rotas" on pedidos for update using (
   rota_id in (select id from rotas_entrega where entregador_id in
     (select id from entregadores where auth_user_id = auth.uid()))
-) with check (status = 'entregue');
+) with check (
+  status = 'entregue'
+  and rota_id in (select id from rotas_entrega where entregador_id in
+    (select id from entregadores where auth_user_id = auth.uid()))
+);
 
 -- rotas_entrega: loja e o entregador designado
 create policy "loja ve suas rotas" on rotas_entrega for select using (
