@@ -203,6 +203,35 @@ Torre, que tem Express completo). Caminho local: C:\Users\Usuário\Projetos\giro
    cross-tenant concorrentes bloqueadas). 18/18 passou. Script ficou só no scratchpad da
    sessão (não commitado), tenants/usuários de teste removidos ao final (cascade).
 
+   Os 6 achados corrigidos viraram 5 commits atômicos no `master`: XSS (finding #5),
+   sync da migration + gaps de RLS em `alertas_seguranca`/`pedidos` (#2, #6),
+   `calcular_segundos_parado` (#1), fluxo de pausa + error-logging (#4), e a
+   atualização deste arquivo.
+7. **2ª rodada de `/ultrareview`** (14/08/2026), validando os 5 commits acima como um
+   todo. 3 achados; só 1 era acionável hoje:
+   - **Corrigido**: a policy `"entregador confirma entrega das suas rotas"` (item 6, on
+     `pedidos`) tinha `WITH CHECK (status = 'entregue')` sem rechecar posse de
+     `rota_id` — como `WITH CHECK` substitui o `USING` pra validar a linha resultante,
+     um UPDATE direto via PostgREST (fora da UI) podia trocar o `rota_id` do próprio
+     pedido pra qualquer rota alheia (inclusive de outro tenant) junto com a
+     confirmação de entrega. Corrigido reincluindo a mesma condição de posse de
+     `rota_id` dentro do `WITH CHECK`. Testado contra o banco real: confirmação
+     legítima continua funcionando, reatribuição pra rota de outro tenant agora é
+     bloqueada.
+   - **Não corrigido, registrado como limitação conhecida** (decisão consciente,
+     escolha explícita do usuário: só corrigir o achado acionável, não construir
+     feature nova pra validar os outros dois): o fix de `calcular_segundos_parado`
+     (item 6) depende de `rotas_entrega.iniciada_em`, que nenhum mockup escreve hoje —
+     fica inerte até existir motor de despacho de verdade (mesmo estado de
+     "adiantado em relação ao app" que o resto do subsistema de segurança já tem: o
+     próprio trigger só avalia quando `rotas_entrega.status = 'em_entrega'`, que
+     também não é setado por nenhum mockup). `clicarContinuar()` em
+     `app-entregador.html` sempre volta `entregadores.status` pra `'disponivel'` sem
+     lembrar o status anterior à pausa — inofensivo hoje porque `status` só transita
+     entre `offline/disponivel/pausado` no app atual (os status de rota em progresso
+     nunca são setados em lugar nenhum ainda); só vira risco real quando o despacho
+     de verdade existir.
+
 ## Pendências reais no momento
 - [ ] Testar `db/schema.sql` num ambiente com mais RAM (ex: Supabase local em outra
       máquina) se algum dia for necessário comparar comportamento local vs hospedado —
@@ -225,6 +254,14 @@ Torre, que tem Express completo). Caminho local: C:\Users\Usuário\Projetos\giro
       contradiz o comentário no schema, mas hoje não há fluxo de funcionário pra
       explorar); comentário no topo de `db/schema.sql` ainda diz "RLS entra na Fase 2",
       contradizendo o schema logo abaixo (só afeta leitura/documentação).
+- [ ] Duas limitações dormentes achadas na 2ª rodada de `/ultrareview` (item 7),
+      ambas condicionadas à existência de um motor de despacho real (não construído
+      ainda): `calcular_segundos_parado` só filtra a espera na loja corretamente
+      quando `rotas_entrega.iniciada_em` for populado por algo — hoje nada escreve
+      essa coluna; `clicarContinuar()` em `app-entregador.html` sempre volta
+      `entregadores.status` pra `'disponivel'`, perdendo um eventual status de rota
+      em progresso anterior à pausa. Retomar quando o fluxo de despacho/roteirização
+      for implementado.
 
 ## Convenções de trabalho estabelecidas
 - Nunca commitar nem dar push sem instrução explícita "commit e push", mesmo depois de
