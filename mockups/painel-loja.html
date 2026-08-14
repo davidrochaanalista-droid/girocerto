@@ -293,6 +293,10 @@ const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_
 let tenantId = null;
 let userRole = null;
 
+function escapeHtml(str){
+  return String(str ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+
 // ------------------------------------------------------------
 // B2: tempo real no painel via Supabase Realtime, com polling como
 // rede de segurança — mesmo princípio do WebSocket+polling do Torre
@@ -361,8 +365,8 @@ function renderizarAlertasBanner(){
   box.innerHTML = alertasAtivos.map(a => `
     <div class="alerta-item">
       <div>
-        <span class="alerta-msg">⚠ ${legendaAlerta(a)}</span>
-        <span class="alerta-meta">${a.entregadores ? a.entregadores.nome : 'entregador'} · ${new Date(a.criado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</span>
+        <span class="alerta-msg">⚠ ${escapeHtml(legendaAlerta(a))}</span>
+        <span class="alerta-meta">${escapeHtml(a.entregadores ? a.entregadores.nome : 'entregador')} · ${new Date(a.criado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</span>
       </div>
       <div class="alerta-acoes">
         <button class="alerta-btn" onclick="resolverAlerta('${a.id}','confirmado_ok')">Confirmar OK</button>
@@ -503,8 +507,8 @@ async function carregarPedidos(){
   box.innerHTML = pedidos.map(p => `
     <div class="pedido-card">
       <div class="pedido-info">
-        <div class="nome">${p.cliente_nome || 'Cliente não identificado'}</div>
-        <div class="end">${p.endereco}</div>
+        <div class="nome">${escapeHtml(p.cliente_nome || 'Cliente não identificado')}</div>
+        <div class="end">${escapeHtml(p.endereco)}</div>
         <div class="meta">R$ ${Number(p.valor_pedido).toFixed(2).replace('.',',')} · ${legendaPagamentoPedido(p)} · preparo ${p.tempo_preparo_estimado_min} min</div>
       </div>
       <div class="pedido-status">
@@ -621,11 +625,11 @@ async function carregarRotas(){
           <span class="card-title">Rota</span>
           <span class="pill ${r.status}">${legendaStatusRota(r.status)}</span>
         </div>
-        <div class="card-meta">${r.entregadores ? r.entregadores.nome : 'aguardando motoboy'} · código ${r.codigo_retirada}</div>
+        <div class="card-meta">${escapeHtml(r.entregadores ? r.entregadores.nome : 'aguardando motoboy')} · código ${r.codigo_retirada}</div>
       </div>
       ${(r.pedidos||[]).map(p => `
         <div class="stop-line">
-          <span class="addr">${p.endereco}</span>
+          <span class="addr">${escapeHtml(p.endereco)}</span>
           <span>${legendaPagamento(p)}</span>
         </div>`).join('') || '<div class="empty">Sem paradas ainda</div>'}
     </div>
@@ -653,7 +657,7 @@ async function carregarMotoboys(){
     return `
     <div class="card">
       <div class="card-head">
-        <span class="card-title">${e.nome}</span>
+        <span class="card-title">${escapeHtml(e.nome)}</span>
         <span class="pill ${e.status === 'offline' ? 'offline' : (e.status === 'pausado' ? 'pausado' : 'ativo')}">${legendaStatusEntregador(e.status)}</span>
       </div>
       <div class="card-meta">${turnoAtivo ? 'Turno desde ' + new Date(turnoAtivo.iniciado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : 'Sem turno ativo'}</div>

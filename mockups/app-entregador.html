@@ -325,6 +325,10 @@ const SUPABASE_ANON_KEY = 'SUA_CHAVE_ANON_AQUI';
 const TENANT_ID = 'COLE_AQUI_O_ID_DO_TENANT';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+function escapeHtml(str){
+  return String(str ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+
 let entregadorId = null;
 let turnoAtualId = null;
 let turnoIniciadoEm = null;
@@ -688,21 +692,28 @@ function montarRota(rota){
   document.getElementById('r_resumo').textContent =
     pedidos.length + ' parada(s) · código de retirada ' + rota.codigo_retirada;
 
-  document.getElementById('paradasBox').innerHTML = pedidos.map((p,i) => `
+  const paradasBox = document.getElementById('paradasBox');
+  paradasBox.innerHTML = pedidos.map((p,i) => `
     <div class="stop-card">
       <div class="stop-head">
         <div class="stop-num">${i+1}</div>
-        <div class="stop-addr">${p.endereco}</div>
+        <div class="stop-addr">${escapeHtml(p.endereco)}</div>
       </div>
-      <div class="stop-meta">${p.cliente_nome || 'Cliente'}</div>
+      <div class="stop-meta">${escapeHtml(p.cliente_nome || 'Cliente')}</div>
       <div class="pay-pill ${p.pago_antecipado ? 'pix' : 'qrcode'}">
         ${p.pago_antecipado ? 'Pix · já pago' : 'Pix QR Code · a cobrar'}
       </div>
-      <button class="btn-primary" style="margin-top:12px;" onclick="abrirEntrega('${p.id}','${p.endereco}',${p.valor_pedido},${i+1})">
+      <button class="btn-primary" style="margin-top:12px;" data-pedido-id="${escapeHtml(p.id)}" data-endereco="${escapeHtml(p.endereco)}" data-valor="${p.valor_pedido}" data-indice="${i+1}">
         ${p.status === 'entregue' ? 'Entregue ✓' : 'Ir pra essa parada'}
       </button>
     </div>
   `).join('');
+
+  paradasBox.querySelectorAll('button[data-pedido-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      abrirEntrega(btn.dataset.pedidoId, btn.dataset.endereco, Number(btn.dataset.valor), Number(btn.dataset.indice));
+    });
+  });
 }
 
 // ------------------------------------------------------------
