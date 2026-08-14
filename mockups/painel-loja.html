@@ -377,7 +377,8 @@ function renderizarAlertasBanner(){
 }
 
 async function resolverAlerta(id, novoStatus){
-  await supabaseClient.from('alertas_seguranca').update({ status: novoStatus, resolvido_em: new Date().toISOString() }).eq('id', id);
+  const { error } = await supabaseClient.from('alertas_seguranca').update({ status: novoStatus, resolvido_em: new Date().toISOString() }).eq('id', id);
+  if(error){ console.error('Não deu pra resolver o alerta:', error.message); }
   carregarAlertasSeguranca();
 }
 

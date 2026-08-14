@@ -253,7 +253,8 @@
         <button class="btn-primary" onclick="mostrar('view-rota')" style="margin-bottom:12px;">Ver rota ativa</button>
       </div>
 
-      <button class="btn-outline" onclick="clicarPausar()" style="margin-bottom:10px;">Pausar</button>
+      <button class="btn-primary" id="btnContinuar" onclick="clicarContinuar()" style="margin-bottom:10px;display:none;">Continuar</button>
+      <button class="btn-outline" id="btnPausar" onclick="clicarPausar()" style="margin-bottom:10px;">Pausar</button>
       <button class="btn-ghost" onclick="clicarFinalizar()">Finalizar turno</button>
     </div>
   </div>
@@ -565,6 +566,12 @@ async function checarTurnoAtivo(){
     document.getElementById('turnoAtivo').style.display = 'block';
     document.getElementById('t_status_sub').innerHTML =
       '<span class="status-dot"></span>Turno ativo desde ' + turnoIniciadoEm.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+
+    const { data: entregador } = await supabaseClient.from('entregadores').select('status').eq('id', entregadorId).single();
+    const pausado = entregador && entregador.status === 'pausado';
+    document.getElementById('btnPausar').style.display = pausado ? 'none' : 'block';
+    document.getElementById('btnContinuar').style.display = pausado ? 'block' : 'none';
+
     atualizarStatsTurno();
     verificarRotaAtiva();
     iniciarRastreioPosicao(); // B1 — ativo enquanto turnos.status = 'ativo', pausa inclusa (ver nota na função)
@@ -607,12 +614,16 @@ function formatarReal(v){ return 'R$ ' + v.toFixed(2).replace('.', ','); }
 // ---- pausar ----
 async function clicarPausar(){
   await supabaseClient.from('entregadores').update({ status: 'pausado' }).eq('id', entregadorId);
-  alert('Turno pausado. Toque em "Voltar" quando estiver pronto (tela reaproveitada do botão Iniciar).');
+  await supabaseClient.from('turnos').update({ teve_pausa: true }).eq('id', turnoAtualId);
   checarTurnoAtivo();
 }
 async function pausarPeloModal(){
   fecharModais();
   await clicarPausar();
+}
+async function clicarContinuar(){
+  await supabaseClient.from('entregadores').update({ status: 'disponivel' }).eq('id', entregadorId);
+  checarTurnoAtivo();
 }
 
 // ---- finalizar, com checagem de fadiga ----
