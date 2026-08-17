@@ -38,6 +38,19 @@ create table if not exists tenants (
   numero_loja text,
   cep_loja text,
 
+  -- localização real da loja (sessão de go-to-market, 15/08/2026) — achado
+  -- real: tenants não tinha lat/lng nenhum, então o motor de despacho não
+  -- tinha como calcular "entregador dentro do raio_chamada_motoboy_km".
+  -- Geocodificar endereco_loja exigiria contratar um provedor externo
+  -- (Google/Mapbox/Nominatim) — decisão de produto ainda não tomada, mesma
+  -- categoria de dependência do Pix. Resolvido SEM depender de terceiro:
+  -- captura via geolocalização do próprio navegador (mesmo mecanismo já
+  -- usado em entregadores), um botão em painel-loja.html que o dono aperta
+  -- uma vez no local físico da loja. Nullable — motor de despacho trata
+  -- null como "sem geofiltro, considera todos os disponíveis do tenant".
+  lat double precision,
+  lng double precision,
+
   -- segmento (seção 33) — alimenta um ponto de partida razoável de tempo de
   -- preparo antes de acumular histórico próprio (seção 32)
   segmento text
@@ -129,6 +142,15 @@ create table if not exists entregadores (
   telefone text,
   status text not null default 'offline'
     check (status in ('offline', 'disponivel', 'pausado', 'a_caminho_da_loja', 'em_rota', 'na_loja')),
+  -- achado real (sessão de go-to-market, 15/08/2026): clicarContinuar() em
+  -- app-entregador.html sempre resetava status pra 'disponivel', o que era
+  -- teórico até o motor de despacho real existir (agora usa a_caminho_da_loja/
+  -- em_rota de verdade) — pausar no meio de uma entrega e retomar fazia o
+  -- entregador parecer disponível pro motor enquanto ainda estava com um
+  -- pedido em mãos, podendo receber uma segunda oferta indevida. Guarda o
+  -- status de antes da pausa pra restaurar certo, não sempre 'disponivel'.
+  status_antes_pausa text
+    check (status_antes_pausa is null or status_antes_pausa in ('offline', 'disponivel', 'a_caminho_da_loja', 'em_rota', 'na_loja')),
   lat double precision,
   lng double precision,
   localizacao_atualizada_em timestamptz,
@@ -689,6 +711,104 @@ where e.status_verificacao = 'em_avaliacao'
   and e.verificacao_prazo_limite < now();
 
 -- ------------------------------------------------------------
+-- REPROVAÇÃO AUTOMÁTICA POR DOCUMENTO VENCIDO + AVISO PRÉVIO (sessão de
+-- resolução de pendências, 15/08/2026). Só se aplica a tipo_veiculo='moto'
+-- (cnh_validade/crlv_validade não existem pra bicicleta — RG não tem
+-- validade no mesmo sentido operacional). Também reprova quem já estava
+-- 'aprovado' e deixou o documento vencer depois, não só quem está
+-- 'em_avaliacao' — não faz sentido continuar liberado com CNH vencida só
+-- porque a aprovação inicial foi antes do vencimento.
+--
+-- Agendado via pg_cron (extensão confirmada disponível no Supabase
+-- hospedado, plano gratuito incluso) rodando de hora em hora — não é
+-- tempo-crítico como o motor de despacho, então polling horário é mais que
+-- suficiente. `v_dias_aviso_previo = 15` é uma escolha razoável, não veio
+-- de nenhum requisito explícito — ajustar se o negócio pedir outro prazo.
+--
+-- O aviso prévio (*_alerta_enviado_em) só MARCA que o aviso foi disparado —
+-- a entrega de verdade (WhatsApp/push) depende de integracoes.whatsapp_*,
+-- que não está implementado ainda (nenhuma chamada de API real existe hoje).
+-- Enquanto isso, o único canal real é o banner in-app em app-entregador.html
+-- (carregarEntregador()), mostrado quando o próprio entregador abre o app —
+-- não é simulação, é o canal que genuinamente existe hoje.
+-- ------------------------------------------------------------
+create or replace function verificar_documentos_vencidos()
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_dias_aviso_previo constant integer := 15;
+begin
+  update entregadores
+  set status_verificacao = 'reprovado', motivo_reprovacao = 'cnh_vencida'
+  where tipo_veiculo = 'moto'
+    and cnh_validade is not null
+    and cnh_validade < current_date
+    and status_verificacao <> 'reprovado';
+
+  update entregadores
+  set status_verificacao = 'reprovado', motivo_reprovacao = 'crlv_vencido'
+  where tipo_veiculo = 'moto'
+    and crlv_validade is not null
+    and crlv_validade < current_date
+    and status_verificacao <> 'reprovado';
+
+  update entregadores
+  set cnh_alerta_enviado_em = now()
+  where tipo_veiculo = 'moto'
+    and cnh_validade is not null
+    and cnh_validade >= current_date
+    and cnh_validade <= current_date + v_dias_aviso_previo
+    and cnh_alerta_enviado_em is null
+    and status_verificacao <> 'reprovado';
+
+  update entregadores
+  set crlv_alerta_enviado_em = now()
+  where tipo_veiculo = 'moto'
+    and crlv_validade is not null
+    and crlv_validade >= current_date
+    and crlv_validade <= current_date + v_dias_aviso_previo
+    and crlv_alerta_enviado_em is null
+    and status_verificacao <> 'reprovado';
+end;
+$$;
+
+-- reseta o "já avisei" quando a validade muda pra uma data futura (renovação
+-- de documento) — sem isso, alerta_enviado_em ficaria travado em true pra
+-- sempre e o entregador nunca seria avisado do PRÓXIMO vencimento.
+create or replace function resetar_alerta_documento_ao_renovar()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.cnh_validade is distinct from old.cnh_validade then
+    new.cnh_alerta_enviado_em := null;
+  end if;
+  if new.crlv_validade is distinct from old.crlv_validade then
+    new.crlv_alerta_enviado_em := null;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger trg_resetar_alerta_documento
+  before update on entregadores
+  for each row execute function resetar_alerta_documento_ao_renovar();
+
+create extension if not exists pg_cron;
+
+do $$
+begin
+  if not exists (select 1 from cron.job where jobname = 'verificar-documentos-vencidos') then
+    perform cron.schedule('verificar-documentos-vencidos', '0 * * * *', 'select verificar_documentos_vencidos()');
+  end if;
+end $$;
+
+-- ------------------------------------------------------------
 -- SELO_ENTREGA_JUSTA: view calculada em tempo real, não um campo
 -- que alguém marca manualmente — exige infraestrutura declarada
 -- (banheiro/abrigo) E avaliação real dos motoboys nos últimos 30
@@ -779,6 +899,28 @@ as $$
 $$;
 
 -- ------------------------------------------------------------
+-- ACHADO ultrareview (2ª rodada, sessão de go-to-market): mesma recursão
+-- infinita de RLS já documentada em usuarios_loja (42P17), agora entre
+-- rotas_entrega e tentativas_despacho — a policy nova de rotas_entrega
+-- ("entregador ve rota de tentativa pendente") faz subselect cru em
+-- tentativas_despacho, cuja própria policy de select da loja faz subselect
+-- cru de volta em rotas_entrega. Resolver um reaciona o outro, infinito.
+-- Mesmo padrão de correção: função SECURITY DEFINER quebra o ciclo (roda
+-- com BYPASSRLS do dono da função, a consulta interna não reaciona a
+-- policy de tentativas_despacho).
+-- ------------------------------------------------------------
+create or replace function rotas_com_tentativa_para_mim()
+returns setof uuid
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select rota_id from tentativas_despacho where entregador_id in
+    (select id from entregadores where auth_user_id = auth.uid());
+$$;
+
+-- ------------------------------------------------------------
 -- ACHADO (validação contra banco real, 14/08/2026): a policy de insert em
 -- usuarios_loja só exigia auth_user_id = auth.uid() — qualquer usuário
 -- autenticado conseguia se auto-vincular como funcionário (ou até como um
@@ -827,6 +969,119 @@ as $$
   where e.auth_user_id = auth.uid();
 $$;
 
+-- ------------------------------------------------------------
+-- Pausar/retomar turno preservando o status anterior (fix do achado do item
+-- 10 — ver comentário em entregadores.status_antes_pausa). Funções em vez de
+-- dois updates separados no client pra serem ATÔMICAS: ler e gravar
+-- status_antes_pausa=status numa única instrução evita corrida com o motor
+-- de despacho escrevendo entregadores.status no mesmo instante (ex: aceite
+-- de uma oferta concorrendo com o clique de pausar). Não precisa de
+-- SECURITY DEFINER — o entregador já tem UPDATE na própria linha via RLS
+-- ("entregador atualiza seu proprio cadastro"), só roda como invoker mesmo.
+-- ------------------------------------------------------------
+create or replace function pausar_entregador()
+returns void
+language sql
+as $$
+  update entregadores
+  set status_antes_pausa = status, status = 'pausado'
+  where auth_user_id = auth.uid() and status <> 'pausado';
+$$;
+
+create or replace function retomar_entregador()
+returns void
+language sql
+as $$
+  update entregadores
+  set status = coalesce(status_antes_pausa, 'disponivel'), status_antes_pausa = null
+  where auth_user_id = auth.uid() and status = 'pausado';
+$$;
+
+-- ------------------------------------------------------------
+-- Confirmar retirada na loja (fix ultrareview 2ª rodada): antes era 2 updates
+-- separados no client (rotas_entrega + entregadores), mesma classe de corrida
+-- que pausar_entregador()/retomar_entregador() foram criadas pra evitar —
+-- podia colidir com o dispatch-engine escrevendo entregadores.status no
+-- mesmo instante (ex: uma segunda oferta sendo processada). Uma função só,
+-- WHERE escopado pelo dono da rota via join com entregadores.
+-- ------------------------------------------------------------
+create or replace function confirmar_retirada_rota(p_rota_id uuid)
+returns void
+language plpgsql
+as $$
+begin
+  update rotas_entrega
+  set status = 'em_entrega', iniciada_em = now()
+  where id = p_rota_id
+    and status = 'a_caminho_da_loja'
+    and entregador_id in (select id from entregadores where auth_user_id = auth.uid());
+
+  update entregadores
+  set status = 'em_rota'
+  where auth_user_id = auth.uid()
+    and id in (select entregador_id from rotas_entrega where id = p_rota_id);
+end;
+$$;
+
+-- ------------------------------------------------------------
+-- Achado ultrareview (2ª rodada): a policy "entregador atualiza seu proprio
+-- cadastro" (FOR UPDATE, sem WITH CHECK) deixava o próprio entregador limpar
+-- bloqueado_ate via update direto — bypass total do bloqueio de descanso
+-- obrigatório que a policy de INSERT em turnos foi construída pra impor.
+-- Trigger em vez de WITH CHECK porque WITH CHECK não enxerga o valor ANTIGO
+-- da coluna na mesma expressão — precisa comparar old vs new pra saber se
+-- ainda está bloqueado. Reverte silenciosamente só o campo bloqueado_ate se
+-- alguém tentar mexer nele enquanto o bloqueio ainda vale; não bloqueia o
+-- resto do UPDATE (outros campos legítimos, tipo lat/lng, continuam
+-- passando normalmente).
+-- ------------------------------------------------------------
+create or replace function proteger_bloqueado_ate()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.bloqueado_ate is not null and old.bloqueado_ate > now()
+     and new.bloqueado_ate is distinct from old.bloqueado_ate then
+    new.bloqueado_ate := old.bloqueado_ate;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger trg_proteger_bloqueado_ate
+  before update on entregadores
+  for each row execute function proteger_bloqueado_ate();
+
+-- ------------------------------------------------------------
+-- Achado ultrareview (2ª rodada): a policy de UPDATE em turnos não tinha
+-- checagem de bloqueado_ate nenhuma — um entregador bloqueado podia reviver
+-- um turno antigo 'finalizado' de volta pra 'ativo' via update direto,
+-- contornando completamente a policy de INSERT que checa o bloqueio (só
+-- vale pra turno NOVO). Aqui sim vale barrar com exceção (não silenciar):
+-- essa transição nunca deveria acontecer via UPDATE de verdade, é sempre
+-- INSERT no fluxo real do app.
+-- ------------------------------------------------------------
+create or replace function proteger_reativacao_turno_bloqueado()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_bloqueado_ate timestamptz;
+begin
+  if new.status = 'ativo' and old.status is distinct from 'ativo' then
+    select bloqueado_ate into v_bloqueado_ate from entregadores where id = new.entregador_id;
+    if v_bloqueado_ate is not null and v_bloqueado_ate > now() then
+      raise exception 'Entregador está no período de descanso obrigatório até %', v_bloqueado_ate;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger trg_proteger_reativacao_turno_bloqueado
+  before update on turnos
+  for each row execute function proteger_reativacao_turno_bloqueado();
+
 alter table pedidos enable row level security;
 alter table rotas_entrega enable row level security;
 alter table entregadores enable row level security;
@@ -864,6 +1119,14 @@ create policy "loja atualiza seus pedidos" on pedidos for update using (
 create policy "entregador ve pedidos das suas rotas" on pedidos for select using (
   rota_id in (select id from rotas_entrega where entregador_id in
     (select id from entregadores where auth_user_id = auth.uid())));
+-- achado ultrareview (2ª rodada), mesma causa raiz da policy equivalente em
+-- rotas_entrega: mostrarOferta() em app-entregador.html embute pedidos(*) na
+-- mesma query que lê a rota — sem isso, a rota aparecia mas com pedidos=[]
+-- (a policy acima só libera depois que entregador_id já está preenchido).
+-- Reaproveita a mesma função SECURITY DEFINER já criada pra rotas_entrega —
+-- não introduz recursão nova porque a função não consulta pedidos.
+create policy "entregador ve pedido de tentativa pendente" on pedidos for select using (
+  rota_id in (select rotas_com_tentativa_para_mim()));
 create policy "entregador confirma entrega das suas rotas" on pedidos for update using (
   rota_id in (select id from rotas_entrega where entregador_id in
     (select id from entregadores where auth_user_id = auth.uid()))
@@ -878,6 +1141,15 @@ create policy "loja ve suas rotas" on rotas_entrega for select using (
   tenant_id in (select minhas_tenant_ids()));
 create policy "entregador ve suas proprias rotas" on rotas_entrega for select using (
   entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
+-- achado ultrareview (2ª rodada, sessão de go-to-market): sem isso, o modal de
+-- "nova oferta" em app-entregador.html não conseguia ler a rota antes de aceitar
+-- — a policy acima só libera depois que entregador_id já está preenchido, mas
+-- dispatch-engine cria a rota com entregador_id NULL até o aceite. Sem essa
+-- policy extra, mostrarOferta() sempre via `rota = null` e o modal nunca
+-- mostrava nada de verdade (os testes anteriores não pegaram porque escreviam
+-- o aceite direto, sem passar pela leitura que a UI real faz).
+create policy "entregador ve rota de tentativa pendente" on rotas_entrega for select using (
+  id in (select rotas_com_tentativa_para_mim()));
 create policy "entregador atualiza suas proprias rotas" on rotas_entrega for update using (
   entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
 
@@ -934,8 +1206,29 @@ create policy "entregador ve e responde suas proprias tentativas" on tentativas_
   entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
 
 -- turnos: o próprio entregador e a loja onde ele atua
-create policy "entregador ve e edita seus proprios turnos" on turnos for all using (
+-- achado real (sessão de resolução de pendências, 14/08/2026): o bloqueio de
+-- descanso obrigatório (entregadores.bloqueado_ate) só era checado no client
+-- (iniciarTurno() em app-entregador.html) — um INSERT direto em turnos via
+-- PostgREST, fora da UI, ignorava o bloqueio completamente. Split da antiga
+-- policy "for all" em comandos separados: SELECT/UPDATE/DELETE continuam só
+-- com checagem de posse; INSERT ganha uma policy própria, mais restrita, que
+-- também nega se bloqueado_ate ainda está no futuro. Não dá pra manter isso
+-- como WITH CHECK numa única policy FOR ALL — isso aplicaria a checagem de
+-- bloqueio também em UPDATE (pausar/finalizar um turno já em andamento não
+-- deveria travar por bloqueado_ate futuro, só abrir um turno NOVO deveria).
+create policy "entregador ve seus proprios turnos" on turnos for select using (
   entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
+create policy "entregador atualiza seus proprios turnos" on turnos for update using (
+  entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
+create policy "entregador deleta seus proprios turnos" on turnos for delete using (
+  entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
+create policy "entregador inicia turno se nao estiver bloqueado" on turnos for insert with check (
+  entregador_id in (select id from entregadores where auth_user_id = auth.uid())
+  and not exists (
+    select 1 from entregadores e
+    where e.id = entregador_id and e.bloqueado_ate is not null and e.bloqueado_ate > now()
+  )
+);
 create policy "loja ve turnos dos seus entregadores" on turnos for select using (
   entregador_id in (select id from entregadores where tenant_id in
     (select minhas_tenant_ids())));
@@ -980,6 +1273,10 @@ create policy "loja edita seu proprio horario" on horarios_funcionamento for all
 -- ==============================================================
 alter publication supabase_realtime add table localizacoes_entregador;
 alter publication supabase_realtime add table alertas_seguranca;
+-- tentativas_despacho (sessão de go-to-market, 15/08/2026): sem isso, o
+-- modal de "nova oferta de entrega" em app-entregador.html nunca dispararia
+-- — mesmo achado de padrão que os dois de cima, mesma causa raiz.
+alter publication supabase_realtime add table tentativas_despacho;
 
 -- ==============================================================
 -- STORAGE (seção 39) — buckets privados pros documentos e fotos
@@ -1373,3 +1670,92 @@ $$;
 create trigger trg_avaliar_alertas_seguranca_localizacao
   after insert on localizacoes_entregador
   for each row execute function avaliar_alertas_seguranca_localizacao();
+
+-- ==============================================================
+-- MOTOR DE DESPACHO — triggers de notificação (sessão de go-to-market,
+-- 15/08/2026). O motor em si roda fora do Postgres (serviço Node/Express,
+-- ver dispatch-engine/, hospedado no Railway) — essas duas triggers são só
+-- o "campainha": avisam o backend via LISTEN/NOTIFY (testado e confirmado
+-- confiável contra a conexão direta do Supabase hospedado, não o pooler
+-- transacional — ver CLAUDE.md) que algo mudou e precisa de ação. Nenhuma
+-- das duas é SECURITY DEFINER porque pg_notify() não exige privilégio
+-- elevado nenhum — dispara com o privilégio de quem já fez o UPDATE.
+-- ==============================================================
+
+create or replace function notificar_pedido_pronto()
+returns trigger
+language plpgsql
+as $$
+begin
+  perform pg_notify('pedido_pronto', new.id::text);
+  return new;
+end;
+$$;
+
+create trigger trg_notificar_pedido_pronto
+  after update on pedidos
+  for each row
+  when (new.status = 'pronto' and old.status is distinct from 'pronto')
+  execute function notificar_pedido_pronto();
+
+create or replace function notificar_resposta_despacho()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.resultado is not null and new.resultado is distinct from old.resultado then
+    perform pg_notify('tentativa_despacho_respondida', new.id::text);
+  end if;
+  return new;
+end;
+$$;
+
+create trigger trg_notificar_resposta_despacho
+  after update on tentativas_despacho
+  for each row execute function notificar_resposta_despacho();
+
+-- ------------------------------------------------------------
+-- Ao confirmar a entrega (pedidos.status -> 'entregue'), fecha o ciclo:
+-- rota concluída e entregador liberado pra próxima oferta. v1 só tem 1
+-- pedido por rota (sem agrupamento ainda, decisão consciente já registrada
+-- no schema), então "pedido entregue" e "rota concluída" são sempre o
+-- mesmo evento — se agrupamento de rota for implementado no futuro, essa
+-- trigger precisa checar se AINDA existem pedidos não-entregues na mesma
+-- rota antes de concluir. SECURITY DEFINER porque quem confirma a entrega
+-- é o entregador (RLS própria só cobre a própria linha de pedidos/rota),
+-- mas fechar o ciclo também precisa atualizar `entregadores`, que a policy
+-- de UPDATE do entregador já cobre pra si mesmo — mantido SECURITY DEFINER
+-- mesmo assim por RESILIÊNCIA: não pode depender só do client completar
+-- a chamada em duas tabelas separadas com sucesso.
+-- ------------------------------------------------------------
+create or replace function concluir_rota_ao_entregar()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_entregador_id uuid;
+begin
+  if new.status = 'entregue' and old.status is distinct from 'entregue' and new.rota_id is not null then
+    update rotas_entrega
+    set status = 'concluida', concluida_em = now()
+    where id = new.rota_id and status <> 'concluida'
+    returning entregador_id into v_entregador_id;
+
+    -- achado ultrareview (2ª rodada): não sobrescrever um 'pausado' explícito
+    -- — a mesma classe de bug que status_antes_pausa foi criado pra evitar em
+    -- clicarContinuar(), só que aqui do lado do trigger de conclusão de rota.
+    -- Uma confirmação de entrega atrasada/reenviada não deveria destravar
+    -- alguém que pausou nesse meio-tempo.
+    if v_entregador_id is not null then
+      update entregadores set status = 'disponivel' where id = v_entregador_id and status <> 'pausado';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger trg_concluir_rota_ao_entregar
+  after update on pedidos
+  for each row execute function concluir_rota_ao_entregar();
