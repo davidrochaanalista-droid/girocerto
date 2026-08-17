@@ -345,10 +345,13 @@
 
 <script>
 // ============================================================
-// CONFIGURAÇÃO — troque pelos dados do seu projeto Supabase
+// CONFIGURAÇÃO — chave "anon"/"publishable", segura pra embutir no client
+// por design (RLS no banco é a fronteira real de segurança, não o segredo
+// da chave). NUNCA colar aqui a service_role key nem a DATABASE_URL.
+// Conectado ao projeto hospedado real desde 15/08/2026.
 // ============================================================
-const SUPABASE_URL = 'https://SEU-PROJETO.supabase.co';
-const SUPABASE_ANON_KEY = 'SUA_CHAVE_ANON_AQUI';
+const SUPABASE_URL = 'https://ntmxkwzhumiqspxijuln.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_2f1de7VdoaxdWnGHHZenGQ_3ROsSDSi';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ------------------------------------------------------------

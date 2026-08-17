@@ -211,12 +211,28 @@
     </div>
   </div>
 
+  <!-- ===================== VIEW: REPROVADO ===================== -->
+  <!-- separado de view-avaliacao (achado real: antes, reprovado E em_avaliacao
+       mostravam a mesma mensagem de "aguarde 7 dias" — enganoso, principalmente
+       agora que reprovação automática por documento vencido existe e pode
+       acontecer sem nenhuma ação humana visível pro entregador) -->
+  <div class="view" id="view-reprovado">
+    <div style="text-align:center;padding:40px 10px;">
+      <div style="width:60px;height:60px;border-radius:50%;background:#FDEAEA;margin:0 auto 18px;display:flex;align-items:center;justify-content:center;font-size:26px;">✕</div>
+      <h2>Cadastro reprovado</h2>
+      <p style="color:var(--gray);font-size:13.5px;margin-top:8px;" id="r_motivo">—</p>
+      <p style="color:var(--gray);font-size:12.5px;margin-top:14px;">Atualize o documento e entre em contato com a loja pra reavaliação.</p>
+    </div>
+  </div>
+
   <!-- ===================== VIEW: TURNO (home) ===================== -->
   <div class="view" id="view-turno">
     <div class="header-turno">
       <div class="nome" id="t_nome">—</div>
       <div class="sub" id="t_status_sub"><span class="status-dot"></span>Offline</div>
     </div>
+
+    <div id="avisoDocumento" style="display:none;background:var(--amber-soft);color:var(--amber-ink);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:13px;font-weight:600;"></div>
 
     <div class="emerg-row">
       <a class="emerg-btn" href="tel:190">🚓 190 — Polícia</a>
@@ -264,6 +280,17 @@
     <button class="link-btn" onclick="mostrar('view-turno')" style="margin-bottom:14px;">← Voltar</button>
     <h2 style="margin-bottom:4px;">Rota ativa</h2>
     <p style="color:var(--gray);font-size:13px;margin:0 0 18px;" id="r_resumo">—</p>
+
+    <!-- Motor de despacho (sessão de go-to-market, 15/08/2026): quando a rota
+    ainda está 'a_caminho_da_loja', o entregador precisa confirmar que pegou o
+    pedido antes de sair — isso é o que popula rotas_entrega.iniciada_em, campo
+    que já existia no schema mas nada escrevia (achado de sessão anterior). -->
+    <div id="retiradaBox" style="display:none;background:var(--teal-soft,#E6F4F1);border-radius:14px;padding:16px;margin-bottom:18px;text-align:center;">
+      <div style="font-weight:700;margin-bottom:6px;">Retire o pedido na loja</div>
+      <div style="font-size:13px;color:var(--gray);margin-bottom:12px;">Fale o código <b id="r_codigoRetirada">—</b> pro atendente confirmar que é você.</div>
+      <button class="btn-primary" onclick="confirmarRetirada()">Confirmar que peguei o pedido</button>
+    </div>
+
     <div id="paradasBox"></div>
   </div>
 
@@ -273,6 +300,25 @@
     <p style="color:var(--gray);font-size:13px;">Parada <span id="e_indice">1</span></p>
     <h2 id="e_endereco" style="margin-bottom:16px;">—</h2>
 
+    <!-- ==============================================================
+    PENDÊNCIA ISOLADA — INTEGRAÇÃO REAL DE PIX (confirmado, sessão de
+    go-to-market 15/08/2026): este cartão é 100% decorativo. Nenhuma chamada
+    de API existe aqui nem em nenhum outro lugar do projeto — confirmado por
+    grep completo antes de mexer, não suposição. `pedidos.pago`/`pago_em`/
+    `pix_txid` nunca são escritos por código nenhum. `confirmarEntrega()`
+    (mais abaixo) NÃO depende de `pago=true` pra liberar a entrega — hoje o
+    fluxo de confirmação de entrega já é 100% independente de pagamento, o
+    que quer dizer que NENHUMA mudança de código é necessária no resto do
+    sistema pra ligar isso depois; é só plugar aqui.
+    O que falta decidir (fora do escopo desta sessão, decisão de produto):
+    (1) qual provedor usar — `integracoes.pix_provider` já aceita
+    'mercado_pago'/'asaas'/'stone'/'outro', mas nenhum foi escolhido; (2)
+    contratar a conta/API key com o provedor escolhido; (3) decidir se a
+    geração do QR Code roda no dispatch-engine/ (webhook de confirmação de
+    pagamento chegando lá) ou em outro serviço. Só depois disso faz sentido
+    substituir o `qr-placeholder` abaixo por um QR Code real e o texto
+    estático "Aguardando pagamento..." por um status vindo de webhook.
+    ============================================================== -->
     <div class="qr-card" id="e_pixCard">
       <div style="font-weight:700;color:var(--teal-2);font-size:13px;">COBRANÇA VIA PIX · <span id="e_valor">R$ 0,00</span></div>
       <div class="qr-placeholder">QR Code Pix<br>(gerado pelo provedor de pagamento)</div>
@@ -294,6 +340,22 @@
     <button class="btn-primary" onclick="confirmarEntrega()">Confirmar entrega</button>
   </div>
 
+</div>
+
+<!-- ===================== MODAL: NOVA OFERTA DE ENTREGA ===================== -->
+<!-- Sem isso, mesmo com o motor de despacho criando tentativas_despacho
+corretamente no banco, o entregador não tinha NENHUMA forma de ver nem
+aceitar/recusar uma oferta na prática — achado confirmado por grep (zero
+referências a tentativas_despacho no arquivo inteiro antes desta sessão). -->
+<div class="overlay" id="modalOferta">
+  <div class="modal">
+    <h2 style="margin-bottom:4px;">Nova entrega disponível</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 16px;" id="oferta_resumo">—</p>
+    <div style="display:flex;gap:10px;">
+      <button class="btn-ghost" style="flex:1;" onclick="recusarOferta()">Recusar</button>
+      <button class="btn-primary" style="flex:1;" onclick="aceitarOferta()">Aceitar</button>
+    </div>
+  </div>
 </div>
 
 <!-- ===================== MODAL: FADIGA — PASSO 1 ===================== -->
@@ -319,12 +381,26 @@
 </div>
 
 <script>
-const SUPABASE_URL = 'https://SEU-PROJETO.supabase.co';
-const SUPABASE_ANON_KEY = 'SUA_CHAVE_ANON_AQUI';
-// Enquanto não existe convite/descoberta de loja (fase 2, seção 31), o piloto
-// usa um único tenant fixo — troque pelo id real da Cartel Burguer no Supabase
-const TENANT_ID = 'COLE_AQUI_O_ID_DO_TENANT';
+// Chave "anon"/"publishable" — segura pra embutir no client por design (é
+// assim que toda a stack Supabase funciona: a fronteira de segurança real é
+// RLS no banco, não o segredo da chave). NUNCA colar aqui a service_role key
+// nem a DATABASE_URL — essas só existem no lado servidor (scripts de deploy,
+// dispatch-engine/). Conectado ao projeto hospedado real desde 15/08/2026
+// (sessão de go-to-market) — antes disso eram credenciais placeholder,
+// nunca apontadas pro banco de verdade.
+const SUPABASE_URL = 'https://ntmxkwzhumiqspxijuln.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_2f1de7VdoaxdWnGHHZenGQ_3ROsSDSi';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Tenant vem da URL (?loja=<uuid>, link que o dono compartilha — ver
+// painel-loja.html) com fallback em localStorage pra quem já cadastrou uma
+// vez e voltou direto pelo atalho salvo. Achado real (sessão de go-to-market,
+// 15/08/2026): antes disso era um TENANT_ID fixo hardcoded no arquivo — cada
+// cópia do mockup só servia 1 loja, sem forma nenhuma de reaproveitar pra
+// 2-3 lojas reais no piloto.
+const params = new URLSearchParams(window.location.search);
+const TENANT_ID = params.get('loja') || localStorage.getItem('girocerto_tenant_id') || null;
+if(TENANT_ID){ localStorage.setItem('girocerto_tenant_id', TENANT_ID); }
 
 function escapeHtml(str){
   return String(str ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
@@ -431,6 +507,11 @@ async function uploadDoc(file, pasta){
 async function enviarCadastro(){
   const msg = document.getElementById('cadMsg');
   msg.className = 'msg';
+  if(!TENANT_ID){
+    msg.textContent = 'Link de cadastro inválido — peça o link certo pra loja onde você vai trabalhar.';
+    msg.className = 'msg error';
+    return;
+  }
   if(!document.getElementById('c_lgpd').checked){
     msg.textContent = 'Precisa aceitar os termos de tratamento de dados.'; msg.className = 'msg error'; return;
   }
@@ -538,6 +619,11 @@ async function carregarEntregador(){
     tenantConfig.horas_descanso_obrigatorio = fadiga[0].horas_descanso_obrigatorio;
   }
 
+  if(entregador.status_verificacao === 'reprovado'){
+    document.getElementById('r_motivo').textContent = legendaMotivoReprovacao(entregador.motivo_reprovacao);
+    mostrar('view-reprovado');
+    return;
+  }
   if(entregador.status_verificacao !== 'aprovado'){
     mostrar('view-avaliacao');
     return;
@@ -545,7 +631,38 @@ async function carregarEntregador(){
 
   document.getElementById('t_nome').textContent = 'Olá, ' + entregador.nome.split(' ')[0];
   mostrar('view-turno');
+
+  // aviso prévio de documento vencendo (achado real: verificar_documentos_vencidos()
+  // no banco só marca *_alerta_enviado_em — a entrega de verdade (WhatsApp/push) fica
+  // pendente até integracoes.whatsapp_* existir; enquanto isso, este banner in-app é
+  // o único canal real disponível hoje, não um placeholder).
+  const avisoBox = document.getElementById('avisoDocumento');
+  const hoje = new Date();
+  const avisos = [];
+  if(entregador.cnh_alerta_enviado_em && entregador.cnh_validade && new Date(entregador.cnh_validade) >= hoje){
+    avisos.push('CNH vence em ' + new Date(entregador.cnh_validade).toLocaleDateString('pt-BR') + '. Renove pra não ser bloqueado automaticamente.');
+  }
+  if(entregador.crlv_alerta_enviado_em && entregador.crlv_validade && new Date(entregador.crlv_validade) >= hoje){
+    avisos.push('CRLV vence em ' + new Date(entregador.crlv_validade).toLocaleDateString('pt-BR') + '. Renove pra não ser bloqueado automaticamente.');
+  }
+  if(avisos.length){
+    avisoBox.textContent = '⚠ ' + avisos.join(' ');
+    avisoBox.style.display = 'block';
+  } else {
+    avisoBox.style.display = 'none';
+  }
+
   await checarTurnoAtivo();
+}
+
+function legendaMotivoReprovacao(motivo){
+  return {
+    cnh_vencida: 'Motivo: CNH vencida.',
+    crlv_vencido: 'Motivo: CRLV vencido.',
+    documento_ilegivel: 'Motivo: documento ilegível.',
+    informacao_divergente: 'Motivo: informação divergente.',
+    outro: 'Motivo: outro (fale com a loja pra mais detalhes).',
+  }[motivo] || 'Motivo não especificado — fale com a loja.';
 }
 
 // ------------------------------------------------------------
@@ -575,6 +692,7 @@ async function checarTurnoAtivo(){
     atualizarStatsTurno();
     verificarRotaAtiva();
     iniciarRastreioPosicao(); // B1 — ativo enquanto turnos.status = 'ativo', pausa inclusa (ver nota na função)
+    iniciarEscutaDeOfertas(); // motor de despacho — ativo enquanto o turno estiver ativo
   } else {
     document.getElementById('turnoOffline').style.display = 'block';
     document.getElementById('turnoAtivo').style.display = 'none';
@@ -612,8 +730,13 @@ function toggleGanho(){
 function formatarReal(v){ return 'R$ ' + v.toFixed(2).replace('.', ','); }
 
 // ---- pausar ----
+// achado real (sessão de go-to-market, 15/08/2026): pausar/retomar usa RPC
+// (pausar_entregador()/retomar_entregador(), ver db/schema.sql) em vez de um
+// update direto — preserva o status de antes da pausa (a_caminho_da_loja/
+// em_rota) pra não fazer o entregador parecer disponível pro motor de
+// despacho enquanto ainda está com uma entrega em andamento.
 async function clicarPausar(){
-  await supabaseClient.from('entregadores').update({ status: 'pausado' }).eq('id', entregadorId);
+  await supabaseClient.rpc('pausar_entregador');
   await supabaseClient.from('turnos').update({ teve_pausa: true }).eq('id', turnoAtualId);
   checarTurnoAtivo();
 }
@@ -622,7 +745,7 @@ async function pausarPeloModal(){
   await clicarPausar();
 }
 async function clicarContinuar(){
-  await supabaseClient.from('entregadores').update({ status: 'disponivel' }).eq('id', entregadorId);
+  await supabaseClient.rpc('retomar_entregador');
   checarTurnoAtivo();
 }
 
@@ -703,6 +826,16 @@ function montarRota(rota){
   document.getElementById('r_resumo').textContent =
     pedidos.length + ' parada(s) · código de retirada ' + rota.codigo_retirada;
 
+  // motor de despacho: enquanto a rota ainda está 'a_caminho_da_loja', pede
+  // confirmação de retirada antes de tudo — isso é o que popula iniciada_em.
+  const retiradaBox = document.getElementById('retiradaBox');
+  if(rota.status === 'a_caminho_da_loja'){
+    document.getElementById('r_codigoRetirada').textContent = rota.codigo_retirada;
+    retiradaBox.style.display = 'block';
+  } else {
+    retiradaBox.style.display = 'none';
+  }
+
   const paradasBox = document.getElementById('paradasBox');
   paradasBox.innerHTML = pedidos.map((p,i) => `
     <div class="stop-card">
@@ -727,6 +860,104 @@ function montarRota(rota){
   });
 }
 
+async function confirmarRetirada(){
+  if(!rotaAtivaId) return;
+  // achado ultrareview (2ª rodada): dois updates separados aqui corriam risco
+  // de colidir com o dispatch-engine escrevendo entregadores.status no mesmo
+  // instante — RPC atômica (confirmar_retirada_rota(), ver db/schema.sql)
+  // faz os dois updates numa única transação, mesmo padrão de
+  // pausar_entregador()/retomar_entregador().
+  const { error } = await supabaseClient.rpc('confirmar_retirada_rota', { p_rota_id: rotaAtivaId });
+  if(error){ alert('Não deu pra confirmar a retirada: ' + error.message); return; }
+  verificarRotaAtiva();
+}
+
+// ------------------------------------------------------------
+// MOTOR DE DESPACHO — oferta de entrega (sessão de go-to-market, 15/08/2026)
+// O backend (dispatch-engine/) cria a tentativas_despacho; aqui o app só
+// escuta via Realtime, mostra o modal, e escreve a resposta de volta — a
+// mesma policy de RLS que já existia ("entregador ve e responde suas
+// proprias tentativas") já permitia esse UPDATE, só faltava a UI.
+// ------------------------------------------------------------
+let ofertaCanalAtivo = false;
+let tentativaOfertaAtualId = null;
+
+function iniciarEscutaDeOfertas(){
+  if(ofertaCanalAtivo) return; // já escutando, não duplica o channel
+  ofertaCanalAtivo = true;
+
+  supabaseClient
+    .channel('ofertas-despacho')
+    .on('postgres_changes', {
+      event: 'INSERT', schema: 'public', table: 'tentativas_despacho',
+      filter: `entregador_id=eq.${entregadorId}`,
+    }, (payload) => mostrarOferta(payload.new))
+    .on('postgres_changes', {
+      event: 'UPDATE', schema: 'public', table: 'tentativas_despacho',
+      filter: `entregador_id=eq.${entregadorId}`,
+    }, (payload) => {
+      // o backend marcou sem_resposta (timeout) ou outra resposta chegou
+      // por outro caminho — fecha o modal se ainda estiver aberto pra essa
+      // mesma tentativa, sem depender de um timer duplicado no client.
+      if(payload.new.id === tentativaOfertaAtualId && payload.new.resultado){
+        fecharModalOferta();
+      }
+    })
+    .subscribe();
+}
+
+async function mostrarOferta(tentativa){
+  if(tentativa.resultado) return; // já respondida (não deveria acontecer num INSERT, defensivo)
+  const { data: rota } = await supabaseClient
+    .from('rotas_entrega')
+    .select('*, pedidos(*)')
+    .eq('id', tentativa.rota_id)
+    .single();
+  if(!rota){ return; }
+
+  tentativaOfertaAtualId = tentativa.id;
+  const pedido = (rota.pedidos || [])[0];
+  const resumo = pedido
+    ? escapeHtml(pedido.endereco) + ' · ' + formatarReal(Number(pedido.valor_pedido || 0))
+    : 'Nova rota disponível';
+  document.getElementById('oferta_resumo').textContent = resumo;
+  document.getElementById('modalOferta').classList.add('show');
+}
+
+function fecharModalOferta(){
+  document.getElementById('modalOferta').classList.remove('show');
+  tentativaOfertaAtualId = null;
+}
+
+async function aceitarOferta(){
+  if(!tentativaOfertaAtualId) return;
+  const id = tentativaOfertaAtualId;
+  fecharModalOferta();
+  const { error } = await supabaseClient
+    .from('tentativas_despacho')
+    .update({ resultado: 'aceito', respondido_em: new Date().toISOString() })
+    .eq('id', id);
+  if(error){ alert('Não deu pra aceitar a oferta: ' + error.message); return; }
+  // o dispatch-engine reage à mudança (LISTEN em tentativa_despacho_respondida)
+  // e monta rotas_entrega.entregador_id — dá um instante e recarrega.
+  setTimeout(verificarRotaAtiva, 1500);
+}
+
+async function recusarOferta(){
+  if(!tentativaOfertaAtualId) return;
+  const id = tentativaOfertaAtualId;
+  fecharModalOferta();
+  const { error } = await supabaseClient
+    .from('tentativas_despacho')
+    .update({ resultado: 'recusado', respondido_em: new Date().toISOString() })
+    .eq('id', id);
+  // achado ultrareview: sem checar o erro aqui, uma falha de rede deixava a
+  // oferta "recusada" só na tela (modal já fechado) mas sem escrever no banco
+  // — o dispatch-engine nunca ficava sabendo, e a oferta só resolvia pelo
+  // timeout em vez de falhar pro próximo candidato na hora.
+  if(error){ alert('Não deu pra recusar a oferta: ' + error.message + '. Tente de novo.'); }
+}
+
 // ------------------------------------------------------------
 // ENTREGA / PAGAMENTO
 // ------------------------------------------------------------
@@ -744,7 +975,16 @@ async function confirmarEntrega(){
   const msg = document.getElementById('entregaMsg');
   msg.className = 'msg';
 
-  const { data: pedido } = await supabaseClient.from('pedidos').select('codigo_entrega').eq('id', paradaAtualPedidoId).single();
+  const { data: pedido, error: eBusca } = await supabaseClient.from('pedidos').select('codigo_entrega').eq('id', paradaAtualPedidoId).single();
+  // achado ultrareview: sem checar erro/null aqui, um pedido reatribuído ou
+  // removido entre abrir a tela e confirmar (agora plausível com o motor de
+  // despacho real mexendo em rota_id) quebrava com TypeError sem tratamento,
+  // travando a tela de confirmação em silêncio.
+  if(eBusca || !pedido){
+    msg.textContent = 'Não achamos mais esse pedido — pode ter sido reatribuído. Volte e tente de novo.';
+    msg.className = 'msg error';
+    return;
+  }
   const codigoDigitado = document.getElementById('e_codigoInput').value.trim();
   const codigoCorreto = codigoDigitado === pedido.codigo_entrega;
 

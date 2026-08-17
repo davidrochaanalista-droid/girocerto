@@ -175,6 +175,15 @@
     <div class="main mainview" id="mv-operacional" style="display:none;">
       <h1>Painel operacional</h1>
 
+      <div id="avisoLocalizacao" style="display:none;background:#FDF1DC;color:#A9720C;border-radius:12px;padding:14px 16px;margin-bottom:18px;font-size:13.5px;">
+        ⚠ Localização da loja ainda não definida — o motor de despacho não consegue calcular
+        quais entregadores estão perto o suficiente pra chamar. Fique no local físico da loja e
+        toque no botão abaixo uma vez.
+        <div style="margin-top:10px;">
+          <button class="btn-primary" style="width:auto;padding:8px 18px;" onclick="definirLocalizacaoLoja()">📍 Definir localização da loja agora</button>
+        </div>
+      </div>
+
       <div class="stats">
         <div class="stat-card">
           <div class="label">Pedidos hoje</div>
@@ -205,7 +214,20 @@
     <!-- ---------- VIEWS AINDA NÃO CONSTRUÍDAS ---------- -->
     <div class="main mainview" id="mv-entregadores" style="display:none;">
       <h1>Entregadores</h1>
-      <div class="empty">Essa tela ainda não foi construída.</div>
+      <div class="card" style="margin-bottom:18px;">
+        <div class="card-title" style="margin-bottom:8px;">Link de cadastro pra motoboy</div>
+        <p style="color:var(--gray);font-size:13px;margin:0 0 10px;">
+          Compartilhe esse link com quem for se cadastrar como entregador da sua loja
+          (WhatsApp, cartaz, etc). Achado real (sessão de go-to-market, 15/08/2026): antes
+          disso o app do entregador tinha um tenant fixo hardcoded no código — sem esse
+          link, cada loja precisaria de uma cópia própria e editada à mão do arquivo.
+        </p>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="linkCadastroEntregador" readonly style="flex:1;font-size:12.5px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;">
+          <button class="action-btn" onclick="copiarLinkCadastroEntregador()">Copiar</button>
+        </div>
+      </div>
+      <div class="empty">Lista de entregadores cadastrados ainda não foi construída.</div>
     </div>
     <div class="main mainview" id="mv-relatorios" style="display:none;">
       <h1>Relatórios</h1>
@@ -225,6 +247,10 @@
       <div class="field"><label>Access Token</label><input type="text" id="int_wa_token"></div>
       <div class="field"><label>Webhook Verify Token</label><input type="text" id="int_wa_verify"></div>
 
+      <!-- PENDÊNCIA ISOLADA — mesma da tela de pagamento em app-entregador.html: salvar
+      a chave aqui não liga integração nenhuma, é só armazenamento (integracoes.pix_provider_api_key).
+      Nenhuma chamada de API de nenhum provedor existe hoje. Decisão de produto pendente
+      (qual provedor, contratar a conta) antes disso virar funcional. -->
       <h2 style="font-size:15px;margin:22px 0 12px;">Provedor de pagamento (Pix)</h2>
       <div class="field">
         <label>Provedor</label>
@@ -286,8 +312,12 @@
 </div>
 
 <script>
-const SUPABASE_URL = 'https://SEU-PROJETO.supabase.co';
-const SUPABASE_ANON_KEY = 'SUA_CHAVE_ANON_AQUI';
+// Chave "anon"/"publishable" — segura pra embutir no client por design (RLS
+// no banco é a fronteira real, não o segredo da chave). NUNCA colar aqui a
+// service_role key nem a DATABASE_URL. Conectado ao projeto hospedado real
+// desde 15/08/2026 (sessão de go-to-market).
+const SUPABASE_URL = 'https://ntmxkwzhumiqspxijuln.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_2f1de7VdoaxdWnGHHZenGQ_3ROsSDSi';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 let tenantId = null;
@@ -398,7 +428,7 @@ async function iniciarApp(){
 
   const { data: vinculo, error } = await supabaseClient
     .from('usuarios_loja')
-    .select('tenant_id, papel, tenants(nome)')
+    .select('tenant_id, papel, tenants(nome, lat, lng)')
     .eq('auth_user_id', user.id)
     .single();
 
@@ -412,14 +442,61 @@ async function iniciarApp(){
   document.getElementById('lojaNome').textContent = vinculo.tenants.nome;
   document.getElementById('loginGate').style.display = 'none';
   document.getElementById('app').style.display = 'block';
+  document.getElementById('avisoLocalizacao').style.display =
+    (vinculo.tenants.lat === null || vinculo.tenants.lat === undefined) ? 'block' : 'none';
 
   if(userRole === 'dono'){
     document.getElementById('navIntegracoes').style.display = 'block';
   }
 
+  const linkEntregador = new URL('app-entregador.html', window.location.href);
+  linkEntregador.searchParams.set('loja', tenantId);
+  document.getElementById('linkCadastroEntregador').value = linkEntregador.href;
+
   carregarPedidos();
   carregarDados();
   iniciarAtualizacoesAoVivo();
+}
+
+function copiarLinkCadastroEntregador(){
+  const input = document.getElementById('linkCadastroEntregador');
+  input.select();
+  navigator.clipboard.writeText(input.value).then(() => {
+    alert('Link copiado!');
+  }).catch(() => {
+    alert('Não deu pra copiar automaticamente — selecione o texto e copie manualmente (Ctrl+C).');
+  });
+}
+
+// ------------------------------------------------------------
+// Localização da loja (sessão de go-to-market, 15/08/2026) — sem isso o
+// motor de despacho não calcula raio_chamada_motoboy_km. Captura via
+// geolocalização do próprio navegador (sem provedor terceiro), mesmo
+// mecanismo já usado em app-entregador.html pro rastreio do entregador.
+// ------------------------------------------------------------
+function definirLocalizacaoLoja(){
+  if(!navigator.geolocation){
+    alert('Este navegador não suporta geolocalização. Tente em outro dispositivo/navegador.');
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const { error } = await supabaseClient
+        .from('tenants')
+        .update({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+        .eq('id', tenantId);
+      if(error){
+        alert('Não deu pra salvar a localização: ' + error.message);
+        return;
+      }
+      document.getElementById('avisoLocalizacao').style.display = 'none';
+      alert('Localização da loja salva! O motor de despacho já pode calcular distância a partir daqui.');
+    },
+    (err) => {
+      alert('Não deu pra pegar a localização: ' + err.message + '. Verifique se o navegador tem permissão de localização pra essa página.');
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
 }
 
 // ------------------------------------------------------------
