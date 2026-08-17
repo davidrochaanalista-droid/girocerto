@@ -134,6 +134,90 @@ async function run() {
       r.check('reprovação manual via service role com motivo_reprovacao funciona', !eReprova && check2.status_verificacao === 'reprovado' && check2.motivo_reprovacao === 'cnh_vencida', check2);
     }
 
+    console.log('\n=== Reprovação automática por documento vencido (verificar_documentos_vencidos) ===');
+    {
+      const tenantDoc = crypto.randomUUID();
+      await pg.query(`insert into tenants (id, nome) values ($1, 'Loja Doc Vencido')`, [tenantDoc]);
+      tenantIds.push(tenantDoc);
+      const hoje = new Date();
+      const passado = (dias) => new Date(hoje.getTime() - dias * 86400000).toISOString().slice(0, 10);
+      const futuro = (dias) => new Date(hoje.getTime() + dias * 86400000).toISOString().slice(0, 10);
+
+      // CNH vencida, já 'aprovado' antes (não só em_avaliacao) — deve ser reprovado mesmo assim
+      const uCnh = await createAuthUser('cnh.vencida');
+      authUserIds.push(uCnh.id);
+      const { rows: eCnh } = await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, cnh_validade, status_verificacao)
+         values ($1,$2,'CNH Vencida','moto',$3,'aprovado') returning id`,
+        [tenantDoc, uCnh.id, passado(1)]
+      );
+
+      // CRLV vencido
+      const uCrlv = await createAuthUser('crlv.vencido');
+      authUserIds.push(uCrlv.id);
+      const { rows: eCrlv } = await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, crlv_validade, status_verificacao)
+         values ($1,$2,'CRLV Vencido','moto',$3,'aprovado') returning id`,
+        [tenantDoc, uCrlv.id, passado(1)]
+      );
+
+      // bicicleta não tem cnh/crlv_validade — não deve ser afetada mesmo rodando a função
+      const uBike = await createAuthUser('bike.docverif');
+      authUserIds.push(uBike.id);
+      const { rows: eBike } = await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, status_verificacao)
+         values ($1,$2,'Bike Doc','bicicleta','aprovado') returning id`,
+        [tenantDoc, uBike.id]
+      );
+
+      // aviso prévio: CNH vence em 7 dias (dentro da janela de 15), ainda não avisado
+      const uAviso = await createAuthUser('cnh.aviso');
+      authUserIds.push(uAviso.id);
+      const { rows: eAviso } = await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, cnh_validade, status_verificacao)
+         values ($1,$2,'CNH Aviso','moto',$3,'aprovado') returning id`,
+        [tenantDoc, uAviso.id, futuro(7)]
+      );
+
+      // fora da janela de aviso (30 dias) — não deve disparar aviso ainda
+      const uFora = await createAuthUser('cnh.fora');
+      authUserIds.push(uFora.id);
+      const { rows: eFora } = await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, cnh_validade, status_verificacao)
+         values ($1,$2,'CNH Fora Janela','moto',$3,'aprovado') returning id`,
+        [tenantDoc, uFora.id, futuro(30)]
+      );
+
+      await pg.query(`select verificar_documentos_vencidos()`);
+
+      const { rows: checkCnh } = await pg.query(`select status_verificacao, motivo_reprovacao from entregadores where id = $1`, [eCnh[0].id]);
+      r.check('CNH vencida reprova automaticamente (mesmo já estando aprovado antes)', checkCnh[0].status_verificacao === 'reprovado' && checkCnh[0].motivo_reprovacao === 'cnh_vencida', checkCnh[0]);
+
+      const { rows: checkCrlv } = await pg.query(`select status_verificacao, motivo_reprovacao from entregadores where id = $1`, [eCrlv[0].id]);
+      r.check('CRLV vencido reprova automaticamente', checkCrlv[0].status_verificacao === 'reprovado' && checkCrlv[0].motivo_reprovacao === 'crlv_vencido', checkCrlv[0]);
+
+      const { rows: checkBike } = await pg.query(`select status_verificacao from entregadores where id = $1`, [eBike[0].id]);
+      r.check('bicicleta (sem cnh/crlv_validade) não é afetada pela reprovação automática', checkBike[0].status_verificacao === 'aprovado', checkBike[0]);
+
+      const { rows: checkAviso1 } = await pg.query(`select cnh_alerta_enviado_em, status_verificacao from entregadores where id = $1`, [eAviso[0].id]);
+      r.check('CNH vencendo em 7 dias (dentro da janela de 15) dispara aviso prévio, sem reprovar', checkAviso1[0].cnh_alerta_enviado_em !== null && checkAviso1[0].status_verificacao === 'aprovado', checkAviso1[0]);
+
+      const { rows: checkFora } = await pg.query(`select cnh_alerta_enviado_em from entregadores where id = $1`, [eFora[0].id]);
+      r.check('CNH vencendo em 30 dias (fora da janela de 15) NÃO dispara aviso ainda', checkFora[0].cnh_alerta_enviado_em === null, checkFora[0]);
+
+      // não repete o aviso numa segunda rodada da função
+      const primeiroAviso = checkAviso1[0].cnh_alerta_enviado_em;
+      await new Promise((res) => setTimeout(res, 1100)); // garante timestamp diferente se repetisse
+      await pg.query(`select verificar_documentos_vencidos()`);
+      const { rows: checkAviso2 } = await pg.query(`select cnh_alerta_enviado_em from entregadores where id = $1`, [eAviso[0].id]);
+      r.check('aviso prévio NÃO repete numa segunda rodada (cnh_alerta_enviado_em não muda)', checkAviso2[0].cnh_alerta_enviado_em.getTime() === primeiroAviso.getTime(), { primeiroAviso, segundo: checkAviso2[0].cnh_alerta_enviado_em });
+
+      // renovar a CNH (mudar a validade) reseta o aviso, pra poder avisar de novo no próximo vencimento
+      await pg.query(`update entregadores set cnh_validade = $1 where id = $2`, [futuro(200), eAviso[0].id]);
+      const { rows: checkReset } = await pg.query(`select cnh_alerta_enviado_em from entregadores where id = $1`, [eAviso[0].id]);
+      r.check('renovar cnh_validade reseta cnh_alerta_enviado_em pra null (trigger de reset)', checkReset[0].cnh_alerta_enviado_em === null, checkReset[0]);
+    }
+
     return r.summary();
   } finally {
     await cleanup(pg, tenantIds, authUserIds);

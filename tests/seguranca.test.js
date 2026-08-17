@@ -3,14 +3,14 @@
 // completa de alertas_seguranca (desvio_rota e sos_manual, até acionado_190 e
 // até falso_alarme), e fluxo real de pausa/retomada de turno.
 //
-// ACHADO NOVO nesta rodada (não pego pelos 2 ultrareviews anteriores):
-// entregadores.bloqueado_ate (bloqueio de descanso obrigatório, seção 19) não
-// tem NENHUM enforcement no banco — nem CHECK constraint nem trigger. A única
-// checagem existe em app-entregador.html:iniciarTurno() (client-side, "if
-// (entregador.bloqueado_ate && new Date(...) > new Date())"). Um INSERT
-// direto em turnos via PostgREST (fora da UI) para um entregador bloqueado
-// passa sem erro nenhum — RLS só verifica entregador_id = auth.uid(), não
-// bloqueado_ate. Teste abaixo prova isso.
+// entregadores.bloqueado_ate (bloqueio de descanso obrigatório, seção 19):
+// achado numa rodada anterior (registrado em CLAUDE.md) que não tinha NENHUM
+// enforcement no banco — só client-side em app-entregador.html:iniciarTurno().
+// CORRIGIDO na sessão de resolução de pendências (15/08/2026): policy
+// dedicada de INSERT em turnos rejeita quando bloqueado_ate está no futuro.
+// Testes abaixo cobrem o bloqueio real, que UPDATE de turno existente não é
+// afetado, e que entregadores sem bloqueio (ou já expirado) continuam
+// funcionando normalmente.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -143,7 +143,7 @@ async function run() {
       r.check('sos_manual percorre aguardando_confirmacao -> falso_alarme', !error && final.status === 'falso_alarme' && final.tipo === 'sos_manual', final);
     }
 
-    console.log('\n=== ACHADO NOVO: bloqueado_ate NÃO é enforced no banco (só client-side) ===');
+    console.log('\n=== CORRIGIDO: bloqueado_ate agora é enforced no banco, não só client-side ===');
     {
       const bloqUser = await createAuthUser('bloqueado.seguranca');
       authUserIds.push(bloqUser.id);
@@ -156,13 +156,55 @@ async function run() {
       const sessBloq = await signInAs(bloqUser.email);
       const { error, data } = await sessBloq.from('turnos').insert({ entregador_id: bloqEntregadorId }).select('id');
       r.check(
-        'ACHADO: insert direto em turnos via RLS NÃO é bloqueado mesmo com bloqueado_ate no futuro (enforcement só existe em iniciarTurno() no app-entregador.html, bypassável por request direto ao PostgREST)',
-        !error && data && data.length === 1,
+        'insert direto em turnos via PostgREST (fora da UI) É bloqueado quando bloqueado_ate está no futuro — policy dedicada de INSERT em turnos',
+        (!data || data.length === 0),
         { error, data }
+      );
+
+      // confirma que o bloqueio não vaza pra UPDATE (pausar/finalizar um turno já em
+      // andamento não deveria travar por bloqueado_ate futuro, só abrir turno NOVO)
+      const { rows: turnoAtivoRows } = await pg.query(
+        `insert into turnos (entregador_id, status) values ($1,'ativo') returning id`, [bloqEntregadorId]
+      );
+      const { error: eUpdate } = await sessBloq.from('turnos').update({ status: 'finalizado', finalizado_em: new Date().toISOString() }).eq('id', turnoAtivoRows[0].id);
+      const { data: checkUpdate } = await admin.from('turnos').select('status').eq('id', turnoAtivoRows[0].id).single();
+      r.check(
+        'UPDATE em turno já existente NÃO é bloqueado por bloqueado_ate futuro (só INSERT de turno novo deveria travar)',
+        !eUpdate && checkUpdate.status === 'finalizado',
+        checkUpdate
       );
     }
 
-    console.log('\n=== Fluxo de pausa e retomada (corrigido no ultrareview) — teste real ===');
+    console.log('\n=== Confirmação: entregador SEM bloqueio continua iniciando turno normalmente ===');
+    {
+      const livreUser = await createAuthUser('livre.seguranca');
+      authUserIds.push(livreUser.id);
+      const ontem = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+      const { rows } = await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, status, bloqueado_ate) values ($1,$2,'Livre','offline',$3) returning id`,
+        [tenantId, livreUser.id, ontem] // bloqueado_ate NO PASSADO — bloqueio já expirou
+      );
+      const livreEntregadorId = rows[0].id;
+      const sessLivre = await signInAs(livreUser.email);
+      const { error, data } = await sessLivre.from('turnos').insert({ entregador_id: livreEntregadorId }).select('id');
+      r.check('entregador com bloqueado_ate no PASSADO (bloqueio já expirado) consegue iniciar turno normalmente', !error && data && data.length === 1, { error, data });
+
+      const semBloqueioUser = await createAuthUser('sembloqueio.seguranca');
+      authUserIds.push(semBloqueioUser.id);
+      const { rows: rows2 } = await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'Sem Bloqueio','offline') returning id`,
+        [tenantId, semBloqueioUser.id] // bloqueado_ate NULL
+      );
+      const sessSemBloqueio = await signInAs(semBloqueioUser.email);
+      const { error: e2, data: d2 } = await sessSemBloqueio.from('turnos').insert({ entregador_id: rows2[0].id }).select('id');
+      r.check('entregador com bloqueado_ate NULL (nunca foi bloqueado) consegue iniciar turno normalmente', !e2 && d2 && d2.length === 1, { e2, d2 });
+    }
+
+    console.log('\n=== Fluxo de pausa e retomada — via RPC real (achado ultrareview 2ª rodada) ===');
+    // ACHADO: esse teste antes usava .update() direto em entregadores.status,
+    // bypassando pausar_entregador()/retomar_entregador() — as RPCs que
+    // clicarPausar()/clicarContinuar() realmente chamam em produção (ver
+    // mockups/app-entregador.html). Passava mesmo que a RPC estivesse quebrada.
     {
       const pausaUser = await createAuthUser('pausa.seguranca');
       authUserIds.push(pausaUser.id);
@@ -175,17 +217,91 @@ async function run() {
       const turnoId = turnoRows[0].id;
       const sessPausa = await signInAs(pausaUser.email);
 
-      // clicarPausar()
-      await sessPausa.from('entregadores').update({ status: 'pausado' }).eq('id', pausaEntregadorId);
+      // clicarPausar() de verdade: rpc('pausar_entregador') + update de teve_pausa
+      const { error: ePausar } = await sessPausa.rpc('pausar_entregador');
       await sessPausa.from('turnos').update({ teve_pausa: true }).eq('id', turnoId);
-      const { data: pausado } = await admin.from('entregadores').select('status').eq('id', pausaEntregadorId).single();
+      const { data: pausado } = await admin.from('entregadores').select('status, status_antes_pausa').eq('id', pausaEntregadorId).single();
       const { data: turnoPausado } = await admin.from('turnos').select('teve_pausa').eq('id', turnoId).single();
-      r.check('pausar grava entregadores.status=pausado E turnos.teve_pausa=true', pausado.status === 'pausado' && turnoPausado.teve_pausa === true, { pausado, turnoPausado });
+      r.check(
+        'pausar_entregador() via RLS grava status=pausado, status_antes_pausa=disponivel (estado anterior), E turnos.teve_pausa=true',
+        !ePausar && pausado.status === 'pausado' && pausado.status_antes_pausa === 'disponivel' && turnoPausado.teve_pausa === true,
+        { ePausar, pausado, turnoPausado }
+      );
 
-      // clicarContinuar()
-      await sessPausa.from('entregadores').update({ status: 'disponivel' }).eq('id', pausaEntregadorId);
-      const { data: retomado } = await admin.from('entregadores').select('status').eq('id', pausaEntregadorId).single();
-      r.check('"Continuar" retoma entregadores.status=disponivel', retomado.status === 'disponivel', retomado);
+      // clicarContinuar() de verdade: rpc('retomar_entregador')
+      const { error: eRetomar } = await sessPausa.rpc('retomar_entregador');
+      const { data: retomado } = await admin.from('entregadores').select('status, status_antes_pausa').eq('id', pausaEntregadorId).single();
+      r.check('retomar_entregador() volta status=disponivel (era esse antes) e limpa status_antes_pausa', !eRetomar && retomado.status === 'disponivel' && retomado.status_antes_pausa === null, { eRetomar, retomado });
+
+      // cenário do achado original: pausar em em_rota (não disponivel) deve
+      // preservar em_rota, não sempre disponivel
+      await pg.query(`update entregadores set status = 'em_rota' where id = $1`, [pausaEntregadorId]);
+      await sessPausa.rpc('pausar_entregador');
+      await sessPausa.rpc('retomar_entregador');
+      const { data: retomadoEmRota } = await admin.from('entregadores').select('status').eq('id', pausaEntregadorId).single();
+      r.check('pausar/retomar em em_rota preserva em_rota (não reseta pra disponivel)', retomadoEmRota.status === 'em_rota', retomadoEmRota);
+    }
+
+    console.log('\n=== bloqueado_ate: os 2 bypasses achados no ultrareview agora são bloqueados ===');
+    {
+      const bypassUser = await createAuthUser('bypass.bloqueio');
+      authUserIds.push(bypassUser.id);
+      const futuro = new Date(Date.now() + 8 * 3600 * 1000).toISOString();
+      const { rows: bRows } = await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, status, bloqueado_ate) values ($1,$2,'Bypass Teste','offline',$3) returning id`,
+        [tenantId, bypassUser.id, futuro]
+      );
+      const bypassEntregadorId = bRows[0].id;
+      const sessBypass = await signInAs(bypassUser.email);
+
+      // achado #1: limpar o próprio bloqueado_ate via update direto
+      await sessBypass.from('entregadores').update({ bloqueado_ate: null }).eq('id', bypassEntregadorId);
+      const { rows: checkBypass1 } = await pg.query(`select bloqueado_ate from entregadores where id = $1`, [bypassEntregadorId]);
+      r.check('ACHADO CORRIGIDO: entregador NÃO consegue limpar o próprio bloqueado_ate via update direto (trigger reverte)', checkBypass1[0].bloqueado_ate !== null, checkBypass1[0]);
+
+      // achado #2: reviver um turno finalizado pra 'ativo' via update direto
+      const { rows: tRows } = await pg.query(
+        `insert into turnos (entregador_id, status, finalizado_em) values ($1,'finalizado', now()) returning id`,
+        [bypassEntregadorId]
+      );
+      const { error: eReativa } = await sessBypass.from('turnos').update({ status: 'ativo' }).eq('id', tRows[0].id);
+      const { rows: checkBypass2 } = await pg.query(`select status from turnos where id = $1`, [tRows[0].id]);
+      r.check('ACHADO CORRIGIDO: entregador bloqueado NÃO consegue reviver turno finalizado pra ativo via update direto', !!eReativa && checkBypass2[0].status === 'finalizado', { eReativa: eReativa && eReativa.message, checkBypass2: checkBypass2[0] });
+
+      // confirma que o trigger não atrapalha updates legítimos de OUTROS campos
+      const { error: eLegitimo } = await sessBypass.from('entregadores').update({ lat: -23.5, lng: -46.6 }).eq('id', bypassEntregadorId);
+      const { rows: checkLegitimo } = await pg.query(`select lat, lng, bloqueado_ate from entregadores where id = $1`, [bypassEntregadorId]);
+      r.check('update de campo NÃO relacionado (lat/lng) continua funcionando normalmente mesmo bloqueado', !eLegitimo && checkLegitimo[0].lat === -23.5 && checkLegitimo[0].bloqueado_ate !== null, checkLegitimo[0]);
+    }
+
+    console.log('\n=== config_fadiga_do_meu_tenant() — achado da revisão do ultrareview: RPC nunca era testada via .rpc() ===');
+    // achado (auditoria de "caminho errado" pedida depois do achado #1 da 2ª
+    // rodada de ultrareview): essa RPC é chamada por app-entregador.html
+    // (carregarEntregador()) mas nunca tinha sido exercitada via .rpc() em
+    // lugar nenhum da suíte. Usa valores DE PROPÓSITO diferentes do fallback
+    // hardcoded do client (8.0/8.0) — se a RPC quebrasse e o client caísse
+    // silenciosamente no fallback, um teste com valores default (8/8) não
+    // pegaria a diferença.
+    {
+      const fadigaTenantId = crypto.randomUUID();
+      tenantIds.push(fadigaTenantId);
+      await pg.query(
+        `insert into tenants (id, nome, horas_alerta_fadiga, horas_descanso_obrigatorio) values ($1,'Loja Fadiga Custom',5.5,10.0)`,
+        [fadigaTenantId]
+      );
+      const fadigaUser = await createAuthUser('fadiga.rpc');
+      authUserIds.push(fadigaUser.id);
+      await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'Entregador Fadiga','disponivel')`,
+        [fadigaTenantId, fadigaUser.id]
+      );
+      const sessFadiga = await signInAs(fadigaUser.email);
+      const { data: fadiga, error: eFadiga } = await sessFadiga.rpc('config_fadiga_do_meu_tenant');
+      r.check(
+        'config_fadiga_do_meu_tenant() via RLS devolve os valores REAIS do tenant (5.5/10.0), não o fallback hardcoded do client (8/8)',
+        !eFadiga && fadiga && fadiga[0] && Number(fadiga[0].horas_alerta_fadiga) === 5.5 && Number(fadiga[0].horas_descanso_obrigatorio) === 10.0,
+        { eFadiga, fadiga }
+      );
     }
 
     return r.summary();

@@ -1,7 +1,9 @@
 // Roda todas as áreas de teste em sequência (não paralelo — várias áreas criam
 // tenants/entregadores/pedidos com nomes fixos e é mais fácil depurar falha real
 // se não houver concorrência entre suítes disputando o mesmo banco).
-const areas = ['onboarding', 'pedido', 'despacho', 'financeiro', 'seguranca', 'reputacao', 'lgpd', 'integracoes'];
+// despacho_motor precisa de `npm install` em dispatch-engine/ pra funcionar
+// (sobe o serviço real como subprocesso) — ver tests/README.md.
+const areas = ['onboarding', 'pedido', 'despacho', 'financeiro', 'seguranca', 'reputacao', 'lgpd', 'integracoes', 'despacho_motor'];
 
 (async () => {
   const results = [];

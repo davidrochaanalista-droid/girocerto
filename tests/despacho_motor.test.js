@@ -1,0 +1,242 @@
+// Motor de despacho real (dispatch-engine/) — sessão de go-to-market,
+// 15/08/2026. Diferente de despacho.test.js (que só testa o schema/RLS com
+// tentativas_despacho simuladas manualmente), este arquivo SOBE o serviço de
+// verdade como subprocesso e dirige um cenário real de ponta a ponta: pedido
+// pronto -> LISTEN/NOTIFY -> oferta criada -> aceite via RLS (mesma escrita
+// que app-entregador.html faz) -> rota atribuída -> confirmar retirada ->
+// confirmar entrega -> rota concluída + entregador liberado. Também cobre
+// failover por recusa, failover por timeout, e ausência de candidatos.
+const { spawn } = require('child_process');
+const path = require('path');
+const crypto = require('crypto');
+const { env, newPgClient, admin, createAuthUser, signInAs, makeReporter, cleanup } = require('./lib/helpers');
+
+const PORT = 3012;
+const HEALTH_URL = `http://localhost:${PORT}/health`;
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function esperarServicoSubir(tentativas = 20) {
+  for (let i = 0; i < tentativas; i++) {
+    try {
+      const res = await fetch(HEALTH_URL);
+      if (res.ok) return true;
+    } catch (e) {
+      // ainda não subiu, tenta de novo
+    }
+    await sleep(500);
+  }
+  return false;
+}
+
+function subirDispatchEngine() {
+  const cwd = path.join(__dirname, '..', 'dispatch-engine');
+  const child = spawn('node', ['index.js'], {
+    cwd,
+    env: {
+      ...process.env,
+      SUPABASE_URL: env.SUPABASE_URL,
+      SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
+      DATABASE_URL: env.DATABASE_URL,
+      PORT: String(PORT),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stdout.on('data', (d) => process.stdout.write(`[dispatch-engine] ${d}`));
+  child.stderr.on('data', (d) => process.stderr.write(`[dispatch-engine:err] ${d}`));
+  return child;
+}
+
+async function run() {
+  const r = makeReporter('despacho_motor');
+  const pg = newPgClient();
+  await pg.connect();
+  const tenantIds = [];
+  const authUserIds = [];
+  let child;
+
+  try {
+    console.log('\n=== Subindo dispatch-engine/ como processo real ===');
+    child = subirDispatchEngine();
+    const subiu = await esperarServicoSubir();
+    r.check('dispatch-engine sobe e responde /health dentro de 10s', subiu);
+    if (!subiu) return r.summary();
+
+    console.log('\n=== SETUP: loja com localização + 2 entregadores dentro do raio + 1 fora ===');
+    const tenantId = crypto.randomUUID();
+    tenantIds.push(tenantId);
+    await pg.query(`insert into tenants (id, nome, lat, lng) values ($1,'Loja Motor Real',-23.5613,-46.6565)`, [tenantId]);
+
+    const u1 = await createAuthUser('motor.perto1');
+    const u2 = await createAuthUser('motor.perto2');
+    const u3 = await createAuthUser('motor.longe');
+    authUserIds.push(u1.id, u2.id, u3.id);
+
+    const { rows: e1 } = await pg.query(`insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng) values ($1,$2,'Perto 1','disponivel',-23.5635,-46.6560) returning id`, [tenantId, u1.id]);
+    const { rows: e2 } = await pg.query(`insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng) values ($1,$2,'Perto 2','disponivel',-23.5600,-46.6540) returning id`, [tenantId, u2.id]);
+    await pg.query(`insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng) values ($1,$2,'Longe','disponivel',-23.7000,-46.9000) returning id`, [tenantId, u3.id]);
+    const entregador1Id = e1[0].id;
+    const entregador2Id = e2[0].id;
+    const sess1 = await signInAs(u1.email);
+
+    console.log('\n=== Ciclo completo: pronto -> oferta -> aceite -> retirada -> entrega -> conclusão ===');
+
+    // ACHADO ultrareview (revisão pós-fix): o teste original só conferia o
+    // RESULTADO da oferta via query direta — nunca confirmava que o Realtime
+    // de verdade ENTREGA o evento que dispara mostrarOferta() no client (o
+    // achado #1 original era exatamente sobre um caminho que "funcionava"
+    // sob teste mas quebrava na prática — mesma categoria de risco).
+    // Assina o canal real ANTES de marcar o pedido como pronto, do mesmo
+    // jeito que iniciarEscutaDeOfertas() faz em app-entregador.html.
+    let eventoRealtimeRecebido = null;
+    const canalOferta = sess1
+      .channel('teste-ofertas-despacho')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'tentativas_despacho', filter: `entregador_id=eq.${entregador1Id}` },
+        (payload) => { eventoRealtimeRecebido = payload.new; }
+      )
+      .subscribe();
+    await sleep(1500); // espera a subscription estabilizar antes de disparar o evento
+
+    const { rows: pRows } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Motor Real, 1','em_preparo',40) returning id`, [tenantId]);
+    const pedidoId = pRows[0].id;
+    await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedidoId]);
+    await sleep(2500);
+
+    const { rows: tent1 } = await pg.query(`select * from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedidoId]);
+    r.check('oferta real criada pro entregador mais perto (não o de fora do raio)', tent1.length === 1 && tent1[0].entregador_id === entregador1Id, tent1);
+    r.check(
+      'ACHADO CORRIGIDO (revisão): o INSERT da oferta chega via Realtime de verdade (WebSocket), não só existe na tabela — é o evento que dispara mostrarOferta() no client real',
+      eventoRealtimeRecebido && eventoRealtimeRecebido.id === tent1[0].id,
+      { eventoRealtimeRecebido, tent1_id: tent1[0] && tent1[0].id }
+    );
+    await sess1.removeChannel(canalOferta);
+
+    // ACHADO ultrareview (2ª rodada): mostrarOferta() em app-entregador.html
+    // lê a rota ANTES de aceitar, pra mostrar endereço/valor no modal — a RLS
+    // original só liberava rotas_entrega depois que entregador_id já estava
+    // preenchido (ou seja, nunca, nesse momento). Reproduz aqui a MESMA
+    // query que o modal real faz.
+    const { data: rotaParaModal, error: eLeituraModal } = await sess1
+      .from('rotas_entrega')
+      .select('*, pedidos(*)')
+      .eq('id', tent1[0].rota_id)
+      .single();
+    r.check('ACHADO CORRIGIDO: entregador consegue ler a rota da oferta ANTES de aceitar (mesma query do modal real)', !eLeituraModal && rotaParaModal && rotaParaModal.pedidos && rotaParaModal.pedidos.length === 1, { eLeituraModal, rotaParaModal });
+
+    const { error: eAceite } = await sess1.from('tentativas_despacho').update({ resultado: 'aceito', respondido_em: new Date().toISOString() }).eq('id', tent1[0].id);
+    r.check('aceite via RLS (mesma escrita que a UI faz) é aceito', !eAceite, eAceite);
+    await sleep(1500);
+
+    const { rows: pedidoRota } = await pg.query(`select rota_id from pedidos where id = $1`, [pedidoId]);
+    const rotaId = pedidoRota[0].rota_id;
+    const { rows: rotaCheck1 } = await pg.query(`select status, entregador_id from rotas_entrega where id = $1`, [rotaId]);
+    r.check('motor real atribuiu a rota ao entregador que aceitou', rotaCheck1[0].status === 'a_caminho_da_loja' && rotaCheck1[0].entregador_id === entregador1Id, rotaCheck1[0]);
+
+    // ACHADO ultrareview: confirmarRetirada() agora usa a RPC atômica
+    // confirmar_retirada_rota() em vez de 2 updates separados (mesma classe
+    // de corrida que pausar_entregador()/retomar_entregador() evitam).
+    const { error: eConfirmaRetirada } = await sess1.rpc('confirmar_retirada_rota', { p_rota_id: rotaId });
+    const { rows: rotaCheck2 } = await pg.query(`select status, iniciada_em from rotas_entrega where id = $1`, [rotaId]);
+    const { rows: entregadorEmRota } = await pg.query(`select status from entregadores where id = $1`, [entregador1Id]);
+    r.check('confirmar_retirada_rota() via RPC popula iniciada_em e status=em_rota atomicamente', !eConfirmaRetirada && rotaCheck2[0].status === 'em_entrega' && rotaCheck2[0].iniciada_em !== null && entregadorEmRota[0].status === 'em_rota', { eConfirmaRetirada, rotaCheck2: rotaCheck2[0], entregadorEmRota: entregadorEmRota[0] });
+
+    await sess1.from('pedidos').update({ status: 'entregue', entregue_em: new Date().toISOString() }).eq('id', pedidoId);
+    const { rows: rotaCheck3 } = await pg.query(`select status from rotas_entrega where id = $1`, [rotaId]);
+    const { rows: entregadorCheck } = await pg.query(`select status from entregadores where id = $1`, [entregador1Id]);
+    r.check('rota concluída e entregador liberado ao final do ciclo real', rotaCheck3[0].status === 'concluida' && entregadorCheck[0].status === 'disponivel', { rotaCheck3, entregadorCheck });
+
+    console.log('\n=== Failover real: recusa explícita ===');
+    const { rows: pRows2 } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Motor Real, 2','em_preparo',20) returning id`, [tenantId]);
+    const pedido2Id = pRows2[0].id;
+    await pg.query(`update entregadores set status='disponivel' where tenant_id = $1`, [tenantId]);
+    await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedido2Id]);
+    await sleep(2000);
+    const { rows: tent2a } = await pg.query(`select * from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedido2Id]);
+    await sess1.from('tentativas_despacho').update({ resultado: 'recusado', respondido_em: new Date().toISOString() }).eq('id', tent2a[0].id);
+    await sleep(2000);
+    const { rows: tent2b } = await pg.query(`select * from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1) order by notificado_em`, [pedido2Id]);
+    r.check('recusa real aciona failover pro outro candidato dentro do raio', tent2b.length === 2 && tent2b[1].entregador_id === entregador2Id, tent2b);
+
+    console.log('\n=== ACHADO ultrareview: entregador com oferta pendente não recebe uma 2ª oferta simultânea ===');
+    // neste ponto entregador2 ainda tem a tentativa do pedido2 em aberto
+    // (resultado null, ninguém respondeu) — status continua 'disponivel'
+    // (só muda no aceite), mas buscarProximoCandidato agora tem que excluir
+    // quem já tem QUALQUER tentativa pendente, não só nessa rota.
+    const { rows: pRows3despacho } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Motor Real, 3-Dup','em_preparo',25) returning id`, [tenantId]);
+    const pedido3despachoId = pRows3despacho[0].id;
+    await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedido3despachoId]);
+    await sleep(2000);
+    const { rows: tent3despacho } = await pg.query(`select * from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedido3despachoId]);
+    r.check(
+      'ACHADO CORRIGIDO: nova oferta NÃO vai pro entregador que já tem tentativa pendente em outra rota (só o entregador livre)',
+      tent3despacho.length === 1 && tent3despacho[0].entregador_id === entregador1Id,
+      tent3despacho
+    );
+    // limpa o estado pendente antes de seguir pro resto do teste (via
+    // service role direto — não é assertion, só arrumar a casa)
+    await pg.query(`delete from tentativas_despacho where rota_id in (select rota_id from pedidos where id in ($1, $2))`, [pedido2Id, pedido3despachoId]);
+    await pg.query(`update pedidos set status = 'cancelado' where id in ($1, $2)`, [pedido2Id, pedido3despachoId]);
+    await pg.query(`update entregadores set status = 'disponivel' where tenant_id = $1`, [tenantId]);
+
+    console.log('\n=== Fix do achado item 10: pausar em rota não deixa o motor oferecer 2ª entrega ===');
+    // simula entregador1 no meio de uma entrega (em_rota), sem usar RPC pra
+    // forçar esse estado direto (o teste quer validar o comportamento a
+    // partir desse estado real, não como ele foi alcançado)
+    await pg.query(`update entregadores set status = 'em_rota', status_antes_pausa = null where id = $1`, [entregador1Id]);
+
+    const { error: ePausar } = await sess1.rpc('pausar_entregador');
+    r.check('pausar_entregador() via RLS não dá erro', !ePausar, ePausar);
+    const { rows: pausadoCheck } = await pg.query(`select status, status_antes_pausa from entregadores where id = $1`, [entregador1Id]);
+    r.check('pausar preserva em_rota em status_antes_pausa, status vira pausado', pausadoCheck[0].status === 'pausado' && pausadoCheck[0].status_antes_pausa === 'em_rota', pausadoCheck[0]);
+
+    // novo pedido pronto pro mesmo tenant, enquanto entregador1 está pausado
+    // (em_rota antes) e entregador2 está ocupado numa tentativa pendente de
+    // outro teste — deixa só entregador1 "existir" no tenant pra esse cenário
+    const { rows: pRowsPausa } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Motor Real, Pausa','em_preparo',18) returning id`, [tenantId]);
+    const pedidoPausaId = pRowsPausa[0].id;
+    await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedidoPausaId]);
+    await sleep(2000);
+
+    const { rows: tentPausa } = await pg.query(`select * from tentativas_despacho where entregador_id = $1 and rota_id = (select rota_id from pedidos where id = $2)`, [entregador1Id, pedidoPausaId]);
+    r.check('motor NÃO oferece tentativa_despacho pro entregador pausado (mesmo com pedido pronto no tenant)', tentPausa.length === 0, tentPausa);
+
+    const { error: eRetomar } = await sess1.rpc('retomar_entregador');
+    r.check('retomar_entregador() via RLS não dá erro', !eRetomar);
+    const { rows: retomadoCheck } = await pg.query(`select status, status_antes_pausa from entregadores where id = $1`, [entregador1Id]);
+    r.check('retomar volta pro status de ANTES da pausa (em_rota), não sempre disponivel, e limpa status_antes_pausa', retomadoCheck[0].status === 'em_rota' && retomadoCheck[0].status_antes_pausa === null, retomadoCheck[0]);
+
+    // limpeza pro resto do teste não herdar esse estado
+    await pg.query(`update entregadores set status = 'disponivel' where id = $1`, [entregador1Id]);
+    await pg.query(`delete from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedidoPausaId]);
+    await pg.query(`delete from pedidos where id = $1`, [pedidoPausaId]);
+
+    console.log('\n=== Reconciliação de startup: derruba e sobe de novo com pedido órfão ===');
+    child.kill();
+    await sleep(500);
+    const { rows: pRows3 } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Motor Real, 3','pronto',15) returning id`, [tenantId]);
+    const pedido3Id = pRows3[0].id;
+    await pg.query(`update entregadores set status='disponivel' where tenant_id = $1`, [tenantId]);
+
+    child = subirDispatchEngine();
+    const subiu2 = await esperarServicoSubir();
+    r.check('serviço sobe de novo depois de derrubado', subiu2);
+    await sleep(2000);
+    const { rows: pedido3Check } = await pg.query(`select rota_id from pedidos where id = $1`, [pedido3Id]);
+    r.check('reconciliação de startup despacha pedido que ficou órfão com o serviço fora do ar', pedido3Check[0].rota_id !== null, pedido3Check[0]);
+
+    return r.summary();
+  } finally {
+    if (child) child.kill();
+    await cleanup(pg, tenantIds, authUserIds);
+    await pg.end();
+  }
+}
+
+if (require.main === module) {
+  run().then((s) => process.exit(s.fail > 0 ? 1 : 0)).catch((e) => { console.error('ERRO FATAL:', e); process.exit(1); });
+}
+module.exports = run;
