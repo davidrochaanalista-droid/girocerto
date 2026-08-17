@@ -8,8 +8,10 @@ volta vazia). Os 3 mockups HTML estáticos (`cadastro-loja.html`, `painel-loja.h
 (conectados ao projeto hospedado real desde 15/08/2026) e continuam sem build
 step/SPA. Desde 15/08/2026 **existe um backend Node/Express real**:
 `dispatch-engine/`, o motor de despacho (ver item 10 em "O que foi feito" e
-`dispatch-engine/README.md`) — roda separado dos mockups, usa a service_role key,
-ainda não deployado no Railway (pendência). Caminho local:
+`dispatch-engine/README.md`) — roda separado dos mockups, usa a service_role key.
+**Deployado no Railway desde 17/08/2026 e validado em produção** (projeto
+`girocerto-dispatch-engine`, serviço `girocerto-dispatch-engine`, ID
+`e124fea3-47c1-484e-b56c-1ded3b14fae9`) — ver item 15. Caminho local:
 C:\Users\Usuário\Projetos\giro certo
 
 ## Arquitetura conhecida
@@ -489,8 +491,69 @@ C:\Users\Usuário\Projetos\giro certo
       race condition real durante o debug do achado #1; diagnosticado antes de
       mexer em código, não depois.
     - Suíte final: 120 → **122/122**.
+14. **Deploy do `dispatch-engine/` no Railway + verificação pós-deploy — deploy OK,
+    validação FALHOU** (17/08/2026). Projeto Railway `girocerto-dispatch-engine`
+    (project ID `014bc898-408b-4e38-9b92-0137b7b605a2`), serviço
+    `girocerto-dispatch-engine` (service ID `e124fea3-47c1-484e-b56c-1ded3b14fae9`,
+    deployment ID `530fe9c4-66e3-4c61-805d-dbcbb5070d05`, região `sfo`), com as 3 env
+    vars configuradas. Build passou, container sobe, `railway logs` mostra
+    `[listener] conectado — escutando pedido_pronto e tentativa_despacho_respondida`
+    e `[http] healthcheck em http://localhost:8080/health` — mas isso NÃO significa
+    que o LISTEN/NOTIFY funciona de verdade em produção (exatamente o motivo de não
+    aceitar "buildou" como prova).
+    - **Restart policy confirmada OK**: `railway status --json` mostra
+      `restartPolicyType: "ON_FAILURE"`, `restartPolicyMaxRetries: 10` — reinicia
+      sozinho em caso de crash.
+    - **Teste real de ponta a ponta contra o serviço PUBLICADO (não o processo
+      local)**: confirmado antes via `tasklist` que nenhum `node.exe` local estava
+      rodando (mesmo cuidado do achado de processo órfão da rodada anterior, pra não
+      mascarar o resultado). Criado tenant + entregador dentro do raio + pedido
+      `status='pronto'` direto no Supabase hospedado real. Esperado 8s, consultado
+      `tentativas_despacho` — **nenhuma tentativa foi criada**. `railway logs`
+      (`--since 5m`, `--since 30m`, `--lines 100`) não mostrou NENHUMA linha nova
+      correspondente ao evento — nem log de oferta, nem erro, nem reconexão. Serviço
+      seguiu `RUNNING`/`Online` o tempo todo.
+    - **Causa raiz identificada**: `railway variables` mostra `DATABASE_URL` apontando
+      pro **pooler transacional do Supabase** (`aws-0-us-east-2.pooler.supabase.com:6543`,
+      pgbouncer modo transaction), não pra conexão direta
+      (`db.ntmxkwzhumiqspxijuln.supabase.co:5432`, a mesma usada no `.env` local e já
+      documentada como obrigatória pro listener — ver item 10 e comentário no próprio
+      `dispatch-engine/README.md`). Pooler em modo transaction recicla a conexão de
+      backend entre transações, o que quebra sessões `LISTEN` persistentes — explica
+      exatamente o sintoma: conecta e loga "conectado" (o comando `LISTEN` em si roda
+      numa transação que sucede), mas nunca recebe os `NOTIFY` disparados depois, sem
+      erro nenhum (falha silenciosa, não crash).
+    - **Não corrigido nesta sessão, por instrução explícita** ("se algo não funcionar,
+      não tente contornar ou simular — reporte o erro real... e pare"). A correção en
+      si é conhecida (trocar a variável `DATABASE_URL` no Railway pra apontar pra porta
+      5432 direta, não 6543) mas é uma mudança de configuração em infraestrutura de
+      produção — fica pra o usuário decidir/autorizar.
+    - Dado de teste limpo ao final (`cleanup()` padrão, tenant + auth user removidos,
+      confirmado sem resíduo).
+15. **Re-teste pós-correção: motor de despacho VALIDADO em produção no Railway**
+    (17/08/2026, mesmo dia). A `DATABASE_URL` no Railway foi corrigida (porta 6543 →
+    5432, ainda no host do pooler Supavisor — modo sessão, que fixa a conexão de
+    backend por sessão em vez de reciclar por transação, ao contrário do modo
+    transação da porta 6543; suficiente pra LISTEN/NOTIFY funcionar, diferente da
+    conexão direta usada localmente, mas equivalente pro efeito que importa aqui).
+    Novo deployment automático (`87d6efab-64bb-4176-826e-ceb739c8ad1e`), `railway
+    logs` confirmou startup limpo (`[listener] conectado...`). Repetido o MESMO teste
+    real do item 14 (nenhum processo local rodando, confirmado via `tasklist` antes e
+    depois; tenant + entregador dentro do raio + pedido `status='pronto'` direto no
+    Supabase hospedado): dessa vez `tentativas_despacho` foi criada em ~1.7s, e
+    `railway logs` mostrou a linha real do evento —
+    `[despacho] pedido <id> -> oferecido ao entregador <id> (tentativa <id>)` — com os
+    MESMOS IDs da linha criada no banco (não só "conectado" nos logs, que por si só
+    não prova nada, como já tinha acontecido no deploy anterior que falhou em
+    silêncio). Dado de teste limpo ao final, confirmado 0 resíduo no banco hospedado.
+    **O motor de despacho está de fato rodando e funcional em produção agora.**
 
 ## Pendências reais no momento
+- [x] ~~`dispatch-engine/` não está deployado no Railway ainda~~ — deployado em
+      17/08/2026, validado com teste real de ponta a ponta contra o serviço publicado
+      (ver item 15). `DATABASE_URL` corrigida (pooler modo sessão, porta 5432),
+      `tentativas_despacho` sendo criada em produção de verdade, confirmado via
+      `railway logs` (a linha real do evento de despacho, não só "conectado").
 - [ ] Testar `db/schema.sql` num ambiente com mais RAM (ex: Supabase local em outra
       máquina) se algum dia for necessário comparar comportamento local vs hospedado —
       não é bloqueio, hospedado já cobre tudo.
@@ -536,11 +599,11 @@ C:\Users\Usuário\Projetos\giro certo
       `mercado_pago`/`asaas`/`stone`/`outro`), não decisão técnica. Confirmado
       isolado e não vazado por vários arquivos — ver `tests/COBERTURA.md` seção
       "Pendência isolada — Pix" pro que falta decidir exatamente.
-- [ ] **`dispatch-engine/` não está deployado no Railway ainda** — código pronto,
-      testado localmente contra o Supabase hospedado real (LISTEN/NOTIFY, failover,
-      timeout, reconciliação — ver item 10), mas o deploy em si (criar o serviço,
-      configurar env vars no painel do Railway) requer acesso à conta do usuário,
-      não foi feito nesta sessão. Ver `dispatch-engine/README.md`.
+- [x] ~~`dispatch-engine/` não está deployado no Railway ainda~~ — deployado em
+      17/08/2026 (ver item 14). **Mas ver o item CRÍTICO acima**: deployado não é o
+      mesmo que funcional — a validação pós-deploy achou a `DATABASE_URL` errada
+      (pooler em vez de conexão direta), então o motor real ainda não está operante
+      em produção.
 - [ ] Estado de failover/timeout do motor de despacho vive em memória do processo —
       não sobrevive a um restart no meio de uma janela de espera (a reconciliação de
       startup cobre pedidos órfãos e tentativas já expiradas, mas não timers "no meio
