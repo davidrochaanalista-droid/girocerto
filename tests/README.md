@@ -14,9 +14,12 @@ credenciais do projeto Supabase hospedado real. Nunca commitado (gitignored).
 ```bash
 cd tests
 npm install
-node run-all.js        # roda as 8 áreas em sequência
+node run-all.js        # roda as 9 áreas em sequência
 node onboarding.test.js  # roda só uma área
 ```
+
+`despacho_motor.test.js` sobe `dispatch-engine/` de verdade como subprocesso — precisa de
+`cd dispatch-engine && npm install` rodado pelo menos uma vez antes (não faz isso sozinho).
 
 ## Estrutura
 
@@ -27,10 +30,14 @@ node onboarding.test.js  # roda só uma área
   `seguranca.test.js`, `reputacao.test.js`, `lgpd.test.js`, `integracoes.test.js` —
   uma área do checklist de operações por arquivo, cada um exporta `run()` e também
   roda standalone via `node <arquivo>.test.js`.
-- `run-all.js` — roda as 8 áreas em sequência (não paralelo, pra evitar concorrência
+- `despacho_motor.test.js` — diferente dos outros: sobe `dispatch-engine/` como
+  processo real (`child_process.spawn`) e dirige um ciclo completo de despacho real
+  (não simulado) contra o Supabase hospedado, incluindo failover e reconciliação de
+  startup. Mata o processo no `finally`.
+- `run-all.js` — roda as 9 áreas em sequência (não paralelo, pra evitar concorrência
   entre suítes disputando o mesmo banco) e imprime um resumo geral.
 
 Ver `COBERTURA.md` pra saber o que está coberto aqui, o que já tinha sido testado em
 sessões anteriores (fora deste diretório, scripts não versionados), e o que ficou como
-pendência documentada por depender de feature que ainda não existe (motor de despacho,
-OSRM, repasse automatizado via Pix).
+pendência documentada por depender de feature que ainda não existe (link de rastreio) ou
+de decisão externa (provedor de Pix).

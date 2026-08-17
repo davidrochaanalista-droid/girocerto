@@ -3,10 +3,14 @@
 ## Visão geral
 Plataforma de logística de motoboy pra lojas locais (restaurantes, açaiterias,
 padarias etc.), com foco em reduzir o ciclo ocioso do entregador (espera na loja +
-volta vazia). MVP ainda é só mockups HTML estáticos (`cadastro-loja.html`,
-`painel-loja.html`, `app-entregador.html`) falando DIRETO com Supabase via
-`@supabase/supabase-js` — **não existe backend Node próprio ainda** (diferente do
-Torre, que tem Express completo). Caminho local: C:\Users\Usuário\Projetos\giro certo
+volta vazia). Os 3 mockups HTML estáticos (`cadastro-loja.html`, `painel-loja.html`,
+`app-entregador.html`) falam DIRETO com Supabase via `@supabase/supabase-js`
+(conectados ao projeto hospedado real desde 15/08/2026) e continuam sem build
+step/SPA. Desde 15/08/2026 **existe um backend Node/Express real**:
+`dispatch-engine/`, o motor de despacho (ver item 10 em "O que foi feito" e
+`dispatch-engine/README.md`) — roda separado dos mockups, usa a service_role key,
+ainda não deployado no Railway (pendência). Caminho local:
+C:\Users\Usuário\Projetos\giro certo
 
 ## Arquitetura conhecida
 - Multi-tenant via `tenant_id`, com **RLS real desde o schema inicial** — policy por
@@ -40,6 +44,20 @@ Torre, que tem Express completo). Caminho local: C:\Users\Usuário\Projetos\giro
   de novo. `pgcrypto` (usado pelas funções de PIN) fica no schema `extensions` no
   Supabase hospedado, não em `public` — funções `SECURITY DEFINER` que chamam
   `crypt`/`gen_salt` precisam de `set search_path = public, extensions, pg_temp`.
+- **REGRA GERAL (não é só sobre `usuarios_loja` — já se repetiu uma 2ª vez, entre
+  `rotas_entrega` e `tentativas_despacho`, na sessão de 16/08/2026, ver item 12):
+  QUALQUER policy nova que cruze `entregador_id`/`tenant_id` via subselect/join pra
+  outra tabela que TAMBÉM tem RLS habilitada tem risco real de recursão infinita
+  (`42P17`) SE aquela outra tabela também tiver uma policy que faz subselect de
+  volta pra primeira** (ciclo de 2 tabelas se reavaliando uma à outra — não precisa
+  ser auto-referência na mesma tabela pra recursão acontecer, só um ciclo entre
+  quaisquer duas). Antes de escrever uma policy nova que subselects em outra
+  tabela: perguntar "essa outra tabela tem alguma policy que subselects de volta
+  aqui?" — se sim, usar uma função `SECURITY DEFINER` (mesmo formato de
+  `minhas_tenant_ids()`: `language sql`, `security definer`, `stable`,
+  `set search_path = public, pg_temp`) desde a PRIMEIRA versão da policy, não como
+  correção depois de descobrir o 42P17 rodando contra o banco real. Exemplo
+  concreto do 2º caso: `rotas_com_tentativa_para_mim()`.
 - **`.insert().select()` em `tenants`/`usuarios_loja` quebra por RLS** mesmo com o
   insert em si correto: dentro do MESMO comando `INSERT ... RETURNING`, uma subquery
   que consulta a própria tabela (direto ou via função `SECURITY DEFINER`) não enxerga a
@@ -52,6 +70,17 @@ Torre, que tem Express completo). Caminho local: C:\Users\Usuário\Projetos\giro
   auto-cadastro de FUNCIONÁRIO em lugar nenhum do produto; criar uma conta de
   funcionário exige passar pela service role (backend/admin), não há UI cliente pra
   isso ainda.
+- **`selo_entrega_justa` é público de propósito, sem RLS/tenant-scoping — decisão de
+  produto confirmada, não um gap** (ver comentário SQL direto na definição da view em
+  `db/schema.sql`). A view não declara `security_invoker = true`, então roda com o
+  privilégio de quem a criou e não escopa por tenant: qualquer sessão autenticada
+  (e futuramente até anônima) vê o selo de QUALQUER tenant. Isso é intencional — o
+  Selo Entrega Justa é uma marca de confiança pública, o cliente final precisa
+  comparar lojas antes de logar em qualquer lugar; escopar por tenant mataria a
+  função do selo. Seguro porque só expõe nome da loja + agregados (sem PII, sem
+  financeiro) — a tabela base `avaliacoes_loja` continua sem policy de SELECT pra
+  ninguém além do service role. Se um ultrareview futuro marcar isso como achado de
+  novo, é falso positivo: já foi avaliado e confirmado (14/08/2026, PR #1).
 
 ## O que foi feito (em ordem)
 1. Inicialização do projeto — duas versões soltas de mockups/schema foram comparadas e
@@ -231,15 +260,253 @@ Torre, que tem Express completo). Caminho local: C:\Users\Usuário\Projetos\giro
      entre `offline/disponivel/pausado` no app atual (os status de rota em progresso
      nunca são setados em lugar nenhum ainda); só vira risco real quando o despacho
      de verdade existir.
+8. **PR #1 — "Pente fino de mercado + teste real de todas as operações"** (14/08/2026),
+   primeira vez usando branch + Pull Request nesta sessão (`pente-fino-mercado-e-teste-
+   operacoes` → `master`) em vez de commitar direto — 5 commits, mergeado com sucesso
+   (merge commit `c58980f`). Duas frentes independentes, rodadas em paralelo:
+   - **Parte A** — `ANALISE_MERCADO_AVANCADA.md`: continuação de
+     `ANALISE_MERCADO_E_TORRE.md`, cobrindo fontes novas (Reclame Aqui, blogs de
+     engenharia DoorDash/iFood, literatura acadêmica, regulamentação emergente —
+     Califórnia AB-578, votação federal —, mercados fora do Brasil). 5 diferenciais
+     potenciais priorizados por esforço x defensabilidade de marca; 3 fontes-chave
+     conferidas manualmente antes de aceitar o documento.
+   - **Parte B** — `tests/`: suíte de testes de integração REAL versionada no projeto
+     (desvio consciente da convenção anterior de scripts avulsos em scratchpad — pedido
+     explícito do usuário), organizada por área (onboarding, pedido, despacho,
+     financeiro, seguranca, reputacao, lgpd, integracoes), 90 asserts, todos passando
+     contra o Supabase hospedado. `tests/COBERTURA.md` documenta item a item o que já
+     estava coberto antes, o que é novo, e o que ficou pendência por depender de feature
+     inexistente. A rodada de background que gerou a suíte bateu no limite de sessão da
+     conta no meio do trabalho e deixou 3 tenants + 11 usuários de teste órfãos no banco
+     hospedado — limpos manualmente antes de continuar. Dois bugs nos PRÓPRIOS scripts
+     de teste foram achados e corrigidos antes de confiar no resultado (comparação de
+     `count(*)` como string em vez de `Number()`; `aprovado_por` recebendo
+     `auth.users.id` em vez de `usuarios_loja.id`, violando a FK) — lição: sempre abrir
+     e ler o código do teste antes de aceitar um "achado", não só o resumo.
+   - **Achado real corrigido**: `tentativas_despacho.entregador_id` sem
+     `ON DELETE CASCADE` (diferente de `rota_id`, que já tinha) — apagar um tenant
+     travava com FK violation assim que um entregador tivesse tentativa de despacho
+     registrada. Corrigido, deployado no banco hospedado, verificado com reprodução
+     real.
+   - **Achado testado e decidido**: `selo_entrega_justa` não escopa por tenant sob RLS
+     — a hipótese inicial (avaliacoes_loja sem policy de SELECT quebraria a view pra
+     loja) foi testada e REFUTADA; o comportamento real é o oposto (funciona pra
+     qualquer dono, de qualquer tenant). Usuário confirmou que é intencional (selo
+     público) — documentado com comentário SQL na view (ver "Arquitetura conhecida"
+     acima), não corrigido.
+   - **Pendência nova, não corrigida**: `bloqueado_ate` (bloqueio de fadiga) só é
+     enforced no client (`iniciarTurno()` em `app-entregador.html`) — um insert direto
+     em `turnos` via RLS ignora o bloqueio. Registrado, não corrigido nesta rodada.
+   - PR aberto e mergeado via navegador (Chrome automation) — `gh` CLI não está
+     instalado nesta máquina; usado o fluxo `compare/new PR` do GitHub direto.
+9. **Resolução de pendências conhecidas + avaliação de go-to-market** (15/08/2026).
+   Prompt cobria 4 pendências (`bloqueado_ate`, reprovação automática, link de
+   rastreio, motor de despacho) e pedia avaliação de ordem/dependência antes de codar.
+   - **Avaliação de dependência**: `bloqueado_ate` e reprovação automática são
+     totalmente independentes do motor de despacho (fixes isolados em `turnos`/
+     `entregadores`); só o link de rastreio depende de verdade do despacho (pra
+     posição ao vivo). Resolvidos os dois independentes primeiro.
+   - **Avaliação honesta de go-to-market** (pergunta direta do usuário: dá pra colocar
+     em 2-3 lojas reais agora?): **NÃO**, com evidência concreta levantada nos
+     mockups, não suposição — `marcarPronto()` em `painel-loja.html` não dispara
+     nada (sem motor de despacho, tudo seria manual); `app-entregador.html` não tem
+     NENHUMA UI pra receber/aceitar oferta de entrega (zero referências a
+     `tentativas_despacho` no arquivo); `app-entregador.html` tem `TENANT_ID` fixo
+     hardcoded (`'COLE_AQUI_O_ID_DO_TENANT'`) — só serve 1 loja por cópia do arquivo,
+     sem seleção de loja; Pix é decorativo (`<div class="qr-placeholder">`, sem
+     nenhuma chamada de API); as 3 páginas têm credenciais Supabase placeholder
+     nunca substituídas pelas reais. A fundação de dados (RLS, segurança, testes) está
+     genuinamente sólida — o que falta é a camada operacional.
+   - **Corrigido — `bloqueado_ate` agora enforced no banco**: policy antiga `FOR ALL`
+     em `turnos` foi dividida em SELECT/UPDATE/DELETE (só posse) + uma policy de
+     INSERT dedicada que também nega se `entregadores.bloqueado_ate` está no futuro.
+     UPDATE de turno já existente (pausar/finalizar) não é afetado — só abrir turno
+     NOVO trava. Testado: bloqueado rejeitado, bloqueio expirado passa, nunca
+     bloqueado passa.
+   - **Corrigido — reprovação automática por documento vencido**: função
+     `verificar_documentos_vencidos()` agendada via `pg_cron` (hora em hora, extensão
+     confirmada disponível no plano gratuito hospedado) reprova CNH/CRLV vencidos —
+     inclusive quem já estava `aprovado` antes (documento pode vencer depois da
+     aprovação). Só afeta `tipo_veiculo='moto'` (bicicleta não tem essas colunas de
+     validade). Aviso prévio 15 dias antes (`cnh_alerta_enviado_em`/
+     `crlv_alerta_enviado_em`), não repete, reseta ao renovar o documento (trigger
+     `trg_resetar_alerta_documento`). Entrega do aviso: só banner in-app em
+     `app-entregador.html` (`carregarEntregador()`) — WhatsApp/push real fica
+     pendente de `integracoes.whatsapp_*`, que não tem nenhuma chamada de API ainda.
+     Nova view `view-reprovado` em `app-entregador.html` (antes, reprovado e
+     em_avaliacao mostravam a mesma mensagem "aguarde 7 dias", enganoso agora que
+     reprovação pode acontecer automaticamente sem ação humana visível).
+   - **Investigação de infra pro motor de despacho** (decisão de arquitetura, não
+     construído ainda — ver "Pendências" abaixo): `LISTEN/NOTIFY` testado de ponta a
+     ponta contra a conexão direta do Supabase hospedado, confirmado confiável (5/5,
+     ~135ms, sobrevive a ociosidade) — viável pro backend Node/Express no Railway que
+     o motor de despacho vai precisar. `pg_cron` também confirmado disponível (já
+     em uso pela reprovação automática acima).
+   - Testes novos em `tests/seguranca.test.js` (bloqueado_ate, 3 cenários) e
+     `tests/onboarding.test.js` (reprovação automática, 7 cenários) — suíte total
+     agora em 100/100. `tests/COBERTURA.md` atualizado.
+10. **"Implemente tudo que for necessário" — escopo expandido de go-to-market**
+    (15/08/2026, mesmo dia, sessão seguinte). Instrução direta do usuário: não plano,
+    implementação de verdade dos 5 itens abaixo, sem parar pra aprovação. Cada peça
+    confirmada no código real antes de mexer (grep/read, não suposição) — ver histórico
+    de tool calls da sessão se precisar reconstituir o "antes" exato.
+    - **Credenciais Supabase reais** nas 3 páginas — troca de `SEU-PROJETO`/
+      `SUA_CHAVE_ANON_AQUI` pela URL e anon/publishable key reais do projeto hospedado.
+      Anon key é segura por design pra embutir client-side (RLS é a fronteira real,
+      não o segredo da chave) — só a service_role key e a DATABASE_URL nunca vão pro
+      client (ficam em `dispatch-engine/` e nos scripts de deploy).
+    - **`TENANT_ID` hardcoded corrigido**: `app-entregador.html` agora lê o tenant de
+      `?loja=<uuid>` na URL (com fallback `localStorage` pra quem já cadastrou uma vez)
+      em vez de uma constante fixa no arquivo. `painel-loja.html` (aba Entregadores,
+      antes vazia — "essa tela ainda não foi construída") ganhou um campo com o link
+      pronto pra copiar e compartilhar com motoboys.
+    - **`tenants.lat`/`lng` adicionados** (pré-requisito descoberto, não pedido
+      originalmente): sem isso, `raio_chamada_motoboy_km` não tinha como ser calculado
+      pelo motor de despacho. Geocodificar `endereco_loja` exigiria contratar um
+      provedor externo (mesma categoria de dependência do Pix) — resolvido SEM
+      terceiro, via geolocalização do próprio navegador (botão em `painel-loja.html`,
+      mesmo mecanismo já usado em `entregadores`). Nullable — motor de despacho trata
+      `null` como "sem geofiltro", não bloqueia.
+    - **Pix confirmado 100% decorativo e isolado, NÃO implementado** (decisão
+      correta, não corte de escopo): confirmado por grep completo que nenhuma chamada
+      de API de pagamento existe em lugar nenhum do projeto. `confirmarEntrega()` não
+      depende de `pago=true` — o fluxo de entrega já é independente de pagamento hoje,
+      então plugar Pix depois não exige mudar mais nada. Isolado em comentário nos 2
+      pontos de contato (`app-entregador.html` e `painel-loja.html`). O que falta
+      decidir (produto, não técnico): provedor (`mercado_pago`/`asaas`/`stone`/`outro`
+      já são as opções no schema), contratar a conta, e onde a geração do QR
+      Code/webhook roda (`dispatch-engine/` é o candidato natural).
+    - **Motor de despacho real, construído e testado** — `dispatch-engine/`, serviço
+      Node/Express separado (arquitetura já prevista nos comentários do próprio
+      schema desde antes de existir código: "o backend Node.js usa a service_role
+      key"). `LISTEN pedido_pronto` / `LISTEN tentativa_despacho_respondida` via
+      triggers novas em `db/schema.sql` (`notificar_pedido_pronto`,
+      `notificar_resposta_despacho`) — conexão DIRETA do Supabase hospedado (não o
+      pooler transacional, que reciclaria a conexão do listener). Busca entregador
+      `disponivel` mais próximo (Haversine) dentro do raio, cria `tentativas_despacho`,
+      timeout configurável por tenant, failover por recusa OU por timeout (exclui
+      candidatos já tentados, nunca relaxa o raio), atribui a rota ao aceitar
+      (`entregadores.status='a_caminho_da_loja'`). Reconciliação no startup (pedidos
+      `'pronto'` órfãos, tentativas expiradas sem resposta) — estado de failover/timeout
+      vive em memória do processo, não sobrevive a restart no meio da janela (limitação
+      documentada em `dispatch-engine/README.md`, não escondida). Nova trigger
+      `concluir_rota_ao_entregar` fecha o ciclo: pedido `'entregue'` → rota
+      `'concluida'` + entregador de volta a `'disponivel'`, automaticamente.
+    - **UI de oferta de entrega + confirmar retirada** em `app-entregador.html`: modal
+      "nova entrega disponível" via Realtime em `tentativas_despacho` (tabela
+      adicionada à publication `supabase_realtime`, que antes só tinha
+      `localizacoes_entregador`/`alertas_seguranca`), aceitar/recusar escrevendo
+      direto via a mesma policy RLS que já existia (`entregador ve e responde suas
+      proprias tentativas`) — só faltava a UI, não a permissão. Banner de "confirmar
+      retirada" quando `rota.status='a_caminho_da_loja'`, populando
+      `rotas_entrega.iniciada_em` de verdade pela primeira vez.
+    - **Testado de ponta a ponta contra o Supabase hospedado real**, incluindo o
+      `dispatch-engine/` rodando como processo de verdade (subido, testado, derrubado,
+      resubido pra provar a reconciliação) — não simulado. `tests/despacho_motor.test.js`
+      versiona esse teste (sobe o serviço via `child_process.spawn`). Suíte total: 90 →
+      **109/109**. `tests/COBERTURA.md` atualizado com seção própria de go-to-market.
+    - **Achado de consequência, não corrigido, sinalizado com prioridade elevada**:
+      as duas limitações dormentes do item 7 (2ª rodada do ultrareview) estavam
+      "inertes até existir motor de despacho real" — agora ele existe. `calcular_segundos_parado`
+      deve estar ativo de verdade agora (`iniciada_em` é populado pelo fluxo real) mas
+      não foi re-testado nesta sessão especificamente. **`clicarContinuar()` virou
+      risco real, não mais teórico**: ele sempre reseta `entregadores.status` pra
+      `'disponivel'`, mas agora `a_caminho_da_loja`/`em_rota` são estados reais que o
+      motor de despacho usa — se um entregador pausar no meio de uma entrega em
+      andamento e apertar "Continuar", ele aparenta `'disponivel'` de novo pro motor de
+      despacho enquanto ainda está com uma entrega em mãos. Ver pendências abaixo.
+11. **Fix do achado do item 10** (15/08/2026, mesmo dia): `clicarContinuar()`
+    corrigido. `entregadores` ganhou a coluna `status_antes_pausa`; duas funções SQL
+    novas, `pausar_entregador()`/`retomar_entregador()`, fazem a leitura+escrita
+    ATÔMICA (`set status_antes_pausa = status, status = 'pausado'` numa única
+    instrução) — evita corrida com o motor de despacho escrevendo
+    `entregadores.status` no mesmo instante (ex: aceite de oferta concorrendo com o
+    clique de pausar). `clicarPausar()`/`clicarContinuar()` em `app-entregador.html`
+    passaram a chamar essas RPCs em vez de `update()` direto. Testado contra o motor
+    de despacho REAL (não simulado): entregador forçado pra `em_rota`, pausado,
+    confirmado que NENHUMA `tentativas_despacho` nova chega pra ele mesmo com pedido
+    pronto no mesmo tenant, retomado, confirmado que volta pra `em_rota` (não
+    `disponivel`). 5 novos asserts em `tests/despacho_motor.test.js` — suíte total
+    109 → **114/114**.
+12. **2ª rodada de `/ultrareview`, contra o `dispatch-engine/` novo** (16/08/2026).
+    15 achados, todos verificados manualmente antes de corrigir (não é achismo em
+    cima do resumo do agente), todos corrigidos e retestados — ver
+    `tests/COBERTURA.md` pra tabela completa achado-por-achado. Destaques:
+    - **Crítico**: RLS bloqueava o modal de "nova oferta" de ler a rota/pedido ANTES
+      do aceite — a UI de oferta inteira (item 10) ficaria muda em produção real,
+      apesar de todos os testes anteriores passarem (eles escreviam o aceite direto,
+      nunca exercitavam essa leitura). **Corrigir isso introduziu, na hora, o mesmo
+      tipo de recursão infinita de RLS (42P17) já documentado neste arquivo pra
+      `usuarios_loja`** — só que agora entre `rotas_entrega` e `tentativas_despacho`
+      — resolvido com o mesmo padrão já estabelecido: função `SECURITY DEFINER`
+      (`rotas_com_tentativa_para_mim()`) em vez de subselect cru. **Lição
+      reforçada**: qualquer policy nova que faça subselect numa tabela que TAMBÉM
+      tem policy fazendo subselect de volta cria esse risco — não é exclusividade de
+      `usuarios_loja`, é uma classe geral de problema.
+    - **Segurança**: os 2 bypasses do `bloqueado_ate` (a policy de UPDATE em
+      `entregadores`/`turnos` não tinha `WITH CHECK` nenhum — um entregador bloqueado
+      podia limpar o próprio campo ou reviver um turno finalizado via update direto,
+      contornando completamente a policy de INSERT que o item 11 tinha construído).
+      2 triggers novas fecham isso.
+    - **Regressão do próprio item 11**: o trigger `concluir_rota_ao_entregar` (criado
+      nesta mesma sessão) resetava `status='disponivel'` sem checar se o entregador
+      tinha pausado no meio da entrega — reintroduzindo, num lugar diferente, o
+      exato bug que o `status_antes_pausa` do item 11 tinha acabado de fechar. Guard
+      simples resolveu.
+    - **Achado colateral, durante o debug**: um processo `dispatch-engine` órfão
+      de um teste manual anterior (nunca encerrado corretamente) ficou escutando
+      `LISTEN/NOTIFY` em paralelo com o processo do teste novo, causando um
+      resultado que parecia bug de concorrência real (2 tentativas pro mesmo
+      pedido). Diagnosticado via `tasklist`/`wmic` antes de mexer em qualquer
+      código — lição prática: sempre matar processos de teste em background
+      explicitamente, `run_in_background`/spawns manuais não se limpam sozinhos.
+    - 6 races de concorrência reais no `dispatch-engine/index.js` (criação
+      duplicada de rota, dupla atribuição no aceite, timeout sobrescrevendo
+      resposta real, reconexão duplicada do listener, vazamento de memória em rota
+      esgotada, mesmo entregador recebendo 2 ofertas simultâneas) — todas
+      corrigidas trocando SELECT-depois-UPDATE por UPDATE...WHERE atômico com
+      checagem de linhas afetadas, mesmo princípio das RPCs do item 11.
+    - `tests/seguranca.test.js` tinha um teste de pausar/retomar que usava
+      `.update()` direto em vez das RPCs reais — reescrito pra exercitar o código
+      de produção de verdade.
+    - Suíte: 114 → **120/120**.
+13. **Confirmações pedidas antes de commitar a rodada acima** (16/08/2026, mesmo
+    dia). 4 pontos, todos verificados — ver `tests/COBERTURA.md` pro detalhe:
+    - `rotas_com_tentativa_para_mim()` confirmada estruturalmente idêntica ao
+      padrão `minhas_tenant_ids()` (mesmo em produção: `security definer`,
+      `stable`, `set search_path = public, pg_temp`) — não uma variante ad-hoc.
+    - Regra geral sobre recursão de RLS entre duas tabelas documentada acima em
+      "Arquitetura conhecida" (não só no changelog).
+    - Auditoria de "teste passa mas testa o caminho errado" em toda a suíte:
+      achou 2 casos novos do mesmo padrão do achado #1 (`config_fadiga_do_meu_tenant()`
+      nunca testada via `.rpc()`; nenhum teste da suíte inteira assinava um canal
+      Realtime de verdade — só confirmava resultado final via query direta).
+      Ambos corrigidos. Confirmado que as outras RPCs (PIN, pausar/retomar,
+      confirmar retirada) já estavam testadas do jeito certo.
+    - Confirmado, via `tasklist`, que não sobrou processo `dispatch-engine`
+      órfão antes de qualquer commit — um desses órfãos (de um teste manual
+      anterior nesta mesma sessão) chegou a produzir um resultado que parecia
+      race condition real durante o debug do achado #1; diagnosticado antes de
+      mexer em código, não depois.
+    - Suíte final: 120 → **122/122**.
 
 ## Pendências reais no momento
 - [ ] Testar `db/schema.sql` num ambiente com mais RAM (ex: Supabase local em outra
       máquina) se algum dia for necessário comparar comportamento local vs hospedado —
       não é bloqueio, hospedado já cobre tudo.
-- [ ] Nenhum teste de integração pendente no momento — todos os itens da rodada
-      anterior (constraints, RLS, A1, A2, selo, PIN, carga, B2) e da rodada do item 6
-      (RLS das policies novas + carga com 45 pedidos/confirmações concorrentes) foram
-      executados contra banco real e estão documentados acima.
+- [ ] Nenhum teste de integração pendente no momento — cobertura completa de operações
+      agora versionada em `tests/` (122 asserts, 9 áreas, incluindo o motor de despacho
+      real como subprocesso), ver `tests/COBERTURA.md` pro detalhe item a item do que
+      está coberto vs. pendência real (link público de rastreio, Pix). Rodar com
+      `cd tests && npm install && node run-all.js` (precisa do `.env` na raiz e de
+      `cd dispatch-engine && npm install` rodado ao menos uma vez).
+- [ ] Gap de cobertura de Realtime mais amplo que só `tentativas_despacho` (que já foi
+      corrigido no item 13): `localizacoes_entregador` e `alertas_seguranca` nunca
+      tiveram a ENTREGA via canal Realtime testada na suíte versionada — só o resultado
+      final via query direta. Isolamento multi-tenant do Realtime já foi validado com
+      usuários reais em sessão anterior (script avulso, não preservado), mas a entrega
+      em si não está coberta em `tests/`. Não é urgente (mecanismo já confirmado
+      confiável pra `tentativas_despacho`, mesmo código de canal), mas fica registrado.
 - [ ] Freelance multi-loja (mesma pessoa em 2+ tenants) não é suportado pelo schema
       atual (`idx_entregadores_auth_user` é único) — decisão de produto em aberto, não
       é bug.
@@ -254,14 +521,31 @@ Torre, que tem Express completo). Caminho local: C:\Users\Usuário\Projetos\giro
       contradiz o comentário no schema, mas hoje não há fluxo de funcionário pra
       explorar); comentário no topo de `db/schema.sql` ainda diz "RLS entra na Fase 2",
       contradizendo o schema logo abaixo (só afeta leitura/documentação).
-- [ ] Duas limitações dormentes achadas na 2ª rodada de `/ultrareview` (item 7),
-      ambas condicionadas à existência de um motor de despacho real (não construído
-      ainda): `calcular_segundos_parado` só filtra a espera na loja corretamente
-      quando `rotas_entrega.iniciada_em` for populado por algo — hoje nada escreve
-      essa coluna; `clicarContinuar()` em `app-entregador.html` sempre volta
-      `entregadores.status` pra `'disponivel'`, perdendo um eventual status de rota
-      em progresso anterior à pausa. Retomar quando o fluxo de despacho/roteirização
-      for implementado.
+- [ ] `calcular_segundos_parado` (fix do ultrareview round 1, item 7) depende de
+      `rotas_entrega.iniciada_em`, que agora É populado de verdade pelo motor de
+      despacho real (item 10, `confirmarRetirada()`) — a lacuna que fazia esse fix ficar
+      inerte foi fechada, mas o comportamento não foi re-testado especificamente com
+      dado real do motor de despacho nesta sessão. Vale um teste dedicado antes de
+      considerar 100% validado em produção.
+- [ ] **Link público de rastreio pro cliente final** — ainda não implementado. O motor
+      de despacho real (item 10) já existe, então a posição ao vivo agora faz sentido
+      de verdade — mas a página pública em si (token por pedido sem enumeração, sem
+      vazar dados de outros pedidos/tenants) não foi construída, não fazia parte do
+      escopo desta sessão.
+- [ ] **Integração real de Pix** — decisão de produto pendente (qual provedor:
+      `mercado_pago`/`asaas`/`stone`/`outro`), não decisão técnica. Confirmado
+      isolado e não vazado por vários arquivos — ver `tests/COBERTURA.md` seção
+      "Pendência isolada — Pix" pro que falta decidir exatamente.
+- [ ] **`dispatch-engine/` não está deployado no Railway ainda** — código pronto,
+      testado localmente contra o Supabase hospedado real (LISTEN/NOTIFY, failover,
+      timeout, reconciliação — ver item 10), mas o deploy em si (criar o serviço,
+      configurar env vars no painel do Railway) requer acesso à conta do usuário,
+      não foi feito nesta sessão. Ver `dispatch-engine/README.md`.
+- [ ] Estado de failover/timeout do motor de despacho vive em memória do processo —
+      não sobrevive a um restart no meio de uma janela de espera (a reconciliação de
+      startup cobre pedidos órfãos e tentativas já expiradas, mas não timers "no meio
+      do caminho"). Aceitável pra um piloto de 2-3 lojas, documentado em
+      `dispatch-engine/README.md`, não é bloqueio.
 
 ## Convenções de trabalho estabelecidas
 - Nunca commitar nem dar push sem instrução explícita "commit e push", mesmo depois de
@@ -273,6 +557,16 @@ Torre, que tem Express completo). Caminho local: C:\Users\Usuário\Projetos\giro
   que precisa de elevação para o usuário executar.
 - Testes de integração devem bater num banco real (Supabase/Postgres de verdade), não
   mocks — convenção herdada do Torre, vale igual aqui assim que houver banco disponível.
+- Testes de integração agora são versionados em `tests/` (desde o PR #1) — mudança
+  consciente da convenção anterior ("scripts ficam só no scratchpad, não fazem parte
+  do produto"), por pedido explícito do usuário. Scripts avulsos de verificação pontual
+  (ex: conferir uma migração específica) continuam podendo ficar no scratchpad; a
+  suíte que cobre operações do produto de forma duradoura vai em `tests/`.
+- Antes de aceitar o resultado de um teste (próprio ou de um agente/fork), abrir e ler
+  o código do teste, não só o resumo — a sessão do PR #1 achou 2 bugs nos próprios
+  scripts de teste (comparação de tipo errada, id errado numa FK) que geravam "achados"
+  falsos; um deles inclusive tinha o rótulo invertido ("BUG CONFIRMADO" custando exame
+  quando na verdade o comportamento estava correto).
 
 ## REGRA DE ATUALIZAÇÃO
 

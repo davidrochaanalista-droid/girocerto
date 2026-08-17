@@ -20,6 +20,10 @@ mockups/
   cadastro-loja.html    # onboarding do proprietário + dados da loja
   painel-loja.html      # painel operacional da loja (pedidos, rotas, integrações)
   app-entregador.html   # app do motoboy (cadastro, verificação, rotas)
+dispatch-engine/
+  index.js          # motor de despacho real (Node/Express) — ver dispatch-engine/README.md
+tests/
+  run-all.js        # suíte de testes de integração real, contra o Supabase hospedado
 ```
 
 ## Domínio (principais tabelas)
@@ -42,15 +46,18 @@ nos mockups — ver histórico de commits.
 
 ## Status
 
-Ainda é só design/schema (mockups HTML estáticos + schema SQL), sem backend
-real rodando — os mockups falam direto com o Supabase (client-side), sem
-camada de Node.js própria ainda. Duas versões dos mockups e do schema
-circulavam soltas na pasta; consolidadas aqui na versão mais recente/correta
-de cada arquivo (ver histórico do commit inicial pra detalhes de que mudou
-entre elas).
+Os 3 mockups HTML falam direto com o Supabase hospedado real (client-side,
+sem build step). Desde 15/08/2026 existe também um backend Node/Express real,
+`dispatch-engine/` — o motor de despacho, que escuta `pedidos.status='pronto'`
+via `LISTEN/NOTIFY` do Postgres, chama entregadores disponíveis por raio,
+gerencia timeout/failover e atribui rotas (ver `dispatch-engine/README.md`).
+Ainda não deployado no Railway (pendência de infra, não de código — ver
+`CLAUDE.md`). Duas versões dos mockups e do schema circulavam soltas na pasta
+originalmente; consolidadas na versão mais recente/correta de cada arquivo
+(ver histórico do commit inicial pra detalhes de que mudou entre elas).
 
-Funcionalidades importantes que ainda dependem desse backend futuro (não
-implementadas nos mockups atuais, de propósito — ver
-`ANALISE_MERCADO_E_TORRE.md`): motor de despacho automático (quem chama qual
-entregador, criação de `rotas_entrega`/`ordem_na_rota`), repasse automatizado
-via Pix, geração de `rota_polyline` via OSRM.
+Funcionalidades que ainda dependem de decisão externa ou não foram
+construídas (ver `CLAUDE.md` pras pendências atualizadas): integração real de
+Pix (decisão de produto — qual provedor contratar; o resto do sistema já
+funciona sem depender disso), link público de rastreio pro cliente final,
+geração de `rota_polyline` via OSRM.
