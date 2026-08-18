@@ -6,12 +6,23 @@ padarias etc.), com foco em reduzir o ciclo ocioso do entregador (espera na loja
 volta vazia). Os 3 mockups HTML estáticos (`cadastro-loja.html`, `painel-loja.html`,
 `app-entregador.html`) falam DIRETO com Supabase via `@supabase/supabase-js`
 (conectados ao projeto hospedado real desde 15/08/2026) e continuam sem build
-step/SPA. Desde 15/08/2026 **existe um backend Node/Express real**:
-`dispatch-engine/`, o motor de despacho (ver item 10 em "O que foi feito" e
+step/SPA. **Hospedados publicamente na Vercel desde 18/08/2026** (ver item 19) —
+antes disso nunca tiveram hospedagem nenhuma, só rodavam localmente via
+`python -m http.server`:
+- Cadastro da loja: https://girocerto-mockups.vercel.app/cadastro-loja.html
+- Painel da loja: https://girocerto-mockups.vercel.app/painel-loja.html
+- App do entregador: https://girocerto-mockups.vercel.app/app-entregador.html
+  (o entregador chega aqui via link com `?loja=<tenant_id>`, copiado do painel
+  da loja — não existe link fixo público pra essa tela)
+
+Desde 15/08/2026 **existe um backend Node/Express real**: `dispatch-engine/`, o
+motor de despacho (ver item 10 em "O que foi feito" e
 `dispatch-engine/README.md`) — roda separado dos mockups, usa a service_role key.
 **Deployado no Railway desde 17/08/2026 e validado em produção** (projeto
 `girocerto-dispatch-engine`, serviço `girocerto-dispatch-engine`, ID
-`e124fea3-47c1-484e-b56c-1ded3b14fae9`) — ver item 15. Caminho local:
+`e124fea3-47c1-484e-b56c-1ded3b14fae9`) — ver item 15. `dispatch-engine/` **não**
+está e nunca precisa estar na Vercel — só os 3 HTMLs estáticos foram publicados
+lá; o motor de despacho continua exclusivamente no Railway. Caminho local:
 C:\Users\Usuário\Projetos\giro certo
 
 ## Arquitetura conhecida
@@ -740,6 +751,65 @@ C:\Users\Usuário\Projetos\giro certo
       protocolo). Dado de teste limpo ao final.
     - **Pendência do item 16 (reteste real bloqueado por rate limit) agora
       RESOLVIDA.**
+19. **Hospedagem pública dos 3 mockups na Vercel — última peça bloqueante pro
+    piloto, achado real do usuário** (18/08/2026, mesmo dia). Depois de tudo
+    validado (cadastro, painel em tempo real, motor de despacho), o usuário
+    perguntou diretamente onde a pessoa da hamburgueria ia abrir o sistema —
+    e um relatório anterior meu tinha dito "HTTP 200 em painel-loja.html" de
+    um jeito ambíguo o suficiente pra parecer que já havia hospedagem
+    pública, quando na real era só `localhost:8080` (servidor de teste local
+    da sessão). **Confirmado por busca no histórico completo do repositório
+    (não só o estado atual): os 3 mockups NUNCA tiveram hospedagem nenhuma**
+    — nem Vercel, nem Netlify, nem GitHub Pages, nada. Isso teria bloqueado o
+    piloto de verdade se não tivesse sido perguntado antes.
+    - **Corrigido**: deploy da pasta `mockups/` (só os 3 arquivos, nada mais)
+      via Vercel CLI (já logado nesta máquina, `davidrochaanalista-9912`),
+      projeto `girocerto-mockups`, domínio estável
+      `girocerto-mockups.vercel.app` (ver as 3 URLs na "Visão geral" acima).
+    - **Validado**: as 3 URLs responderam HTTP 200 de verdade (não local);
+      conteúdo publicado confere em tamanho com os arquivos do repo; a
+      correção do Realtime (`pedidos-ao-vivo`/`rotas-ao-vivo`, commit
+      `cb738ef`) está presente na versão publicada (`grep` confirmou os 2
+      canais no HTML servido pela Vercel); o SDK do Supabase (`supabase-
+      js@2`, via jsdelivr) está presente e carregando nos 3 arquivos.
+    - **Confirmação de segurança pedida explicitamente**: as 3 páginas usam
+      só a chave `sb_publishable_...` (anon/publishable) — nenhuma
+      `service_role`/`sb_secret_...` aparece em nenhum dos 3 arquivos
+      (checado com grep antes de publicar). Isso é seguro por design — RLS
+      no banco é a fronteira real (122 asserts testando isso ao longo da
+      sessão), não o segredo dessa chave. `dispatch-engine/` (que usa a
+      service_role key de verdade) nunca foi tocado nesse deploy — continua
+      só no Railway, isolado dos mockups estáticos.
+    - `dispatch-engine/` no Railway não tem deploy automático conectado ao
+      GitHub (`source: null` confirmado via `railway status --json`) — push
+      pro GitHub nunca dispara redeploy lá; deploys do motor de despacho
+      continuam manuais via `railway up`/`railway redeploy`, como sempre
+      foram nesta sessão. A Vercel (mockups) também não está conectada ao
+      GitHub — foi um deploy direto via CLI a partir dos arquivos locais,
+      não um deploy automático por push. **Se o código de qualquer um dos 3
+      mockups mudar de novo, é preciso rodar `vercel --prod` de novo dentro
+      de `mockups/` pra publicar — não acontece sozinho.**
+    - **Auto-deploy via GitHub tentado e depois revertido, decisão
+      consciente do usuário** (mesmo dia): cheguei a conectar o projeto
+      Vercel ao repositório via `vercel git connect` (confirmado — pediu
+      confirmação explícita pra desconectar depois, o que prova que a
+      conexão era real, com a conta `davidrochaanalista-droid`) e ajustar o
+      `Root Directory` do projeto pra `mockups` (sem isso, o build a partir
+      do git tentaria rodar da raiz do repo inteiro, que não tem os HTMLs).
+      O Railway nunca chegou a ser conectado — não existe comando de CLI pra
+      isso (`railway --help` confirmado, só dashboard web), e a ação manual
+      foi pedida mas o usuário decidiu adiar antes de fazer.
+      **Decisão explícita do usuário: adiar a conexão automática via GitHub
+      pros dois (Vercel e Railway) pra depois do piloto estabilizar** — mais
+      controle durante a semana de uso real na hamburgueria, evita qualquer
+      deploy automático de algo ainda não revisado enquanto a loja está
+      usando o sistema. Revertido com `vercel git disconnect` (confirmado).
+      **Fluxo continua 100% manual por enquanto**: `git push` (código) +
+      `vercel --prod` dentro de `mockups/` (mockups) + `railway up`/`railway
+      redeploy` dentro de `dispatch-engine/` (motor de despacho), sempre
+      como passos separados e deliberados, nunca automáticos. Reconectar via
+      GitHub é uma escolha válida pra revisitar depois do piloto, não uma
+      pendência esquecida.
 
 ## Pendências reais no momento
 - [ ] **Auditoria de outros gaps latentes de Realtime/publication** (pedido
