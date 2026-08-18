@@ -83,6 +83,46 @@ C:\Users\Usuário\Projetos\giro certo
   financeiro) — a tabela base `avaliacoes_loja` continua sem policy de SELECT pra
   ninguém além do service role. Se um ultrareview futuro marcar isso como achado de
   novo, é falso positivo: já foi avaliado e confirmado (14/08/2026, PR #1).
+- **`signUp()` sem e-mail confirmado NÃO abre sessão** (projeto tem
+  `mailer_autoconfirm: false`) — `auth.uid()` fica `null` pro cliente que acabou de
+  se cadastrar, então QUALQUER insert feito direto pela UI logo após `signUp()`
+  bate em RLS (`42501`), e QUALQUER upload pro Storage também (as policies de
+  `storage.objects` também exigem `auth.uid() is not null`). Não aparece em teste
+  nenhum que use `admin.createUser({email_confirm:true})` — só se manifesta com
+  `signUp()` de verdade (ver item 16). Padrão de correção estabelecido: provisionar
+  via trigger `SECURITY DEFINER` `AFTER INSERT ON auth.users` (bypassa RLS, não
+  depende de sessão), lendo os campos do formulário via `options.data` do
+  `signUp()` (`raw_user_meta_data`); documentos/uploads ficam pra depois do
+  primeiro login (sessão já existe nesse ponto).
+- **GoTrue faz uma 2ª escrita própria em `auth.users` depois do INSERT** (achado
+  real, sessão de 17-18/08/2026, ver item 16) — ao criar a linha em
+  `auth.identities` (fluxo normal de signup com provider `email`), o GoTrue
+  resincroniza `raw_user_meta_data` a partir do payload original que recebeu na
+  requisição, uns 100-500ms depois do INSERT. Isso importa pra QUALQUER trigger
+  nosso que dependa de "isso só roda uma vez por signup" em cima de
+  `raw_user_meta_data` — o valor que a UI vê/lê depois pode não ser o que o NOSSO
+  trigger `AFTER INSERT` gravou por último. Não há corrida real (triggers `AFTER
+  ROW` são síncronos dentro do INSERT, a 2ª escrita do GoTrue só pode acontecer
+  depois que o INSERT já retornou), mas qualquer lógica que dependa do estado
+  final de `raw_user_meta_data` depois do signup precisa reagir a essa 2ª escrita
+  (trigger `AFTER UPDATE`), não só ao INSERT.
+- **REGRA GERAL — Realtime "ao vivo" em `painel-loja.html`/`app-entregador.html`
+  precisa de 3 coisas, não só de escrever o canal**: (1) a tabela estar na
+  publication `supabase_realtime` (`alter publication ... add table`, ver
+  `db/schema.sql`) — sem isso o canal nunca dispara evento nenhum,
+  independente de RLS estar certa; (2) a policy de SELECT já cobrir o que
+  precisa ser lido (Realtime filtra pelas mesmas policies); (3) o handler do
+  canal (e o polling de fallback) só chamar o `carregar*()` correspondente
+  quando a aba/view relevante estiver visível (`style.display !== 'none'`),
+  senão gasta banda/consulta escondido. **Esse exato gap (item 1) já se
+  repetiu 3 vezes** — `localizacoes_entregador`/`alertas_seguranca` (item 5),
+  `tentativas_despacho` (item 10), `pedidos`/`rotas_entrega` (item 17). Ao
+  adicionar QUALQUER `.channel()`/`postgres_changes` novo num mockup, checar
+  a publication ANTES de assumir que vai funcionar, não descobrir testando
+  ao vivo sem F5. Todo `carregar*()` que só roda uma vez no login (sem
+  Realtime nem polling) é candidato a esse mesmo bug — perguntar
+  explicitamente "isso precisa refletir mudança feita por fora da própria
+  aba?" antes de aceitar uma tela como pronta.
 
 ## O que foi feito (em ordem)
 1. Inicialização do projeto — duas versões soltas de mockups/schema foram comparadas e
@@ -547,8 +587,142 @@ C:\Users\Usuário\Projetos\giro certo
     não prova nada, como já tinha acontecido no deploy anterior que falhou em
     silêncio). Dado de teste limpo ao final, confirmado 0 resíduo no banco hospedado.
     **O motor de despacho está de fato rodando e funcional em produção agora.**
+16. **Roteiro de teste manual pré-piloto — achado crítico real de cadastro,
+    corrigido e commitado** (17-18/08/2026). Pedido inicial: preparar um roteiro
+    passo a passo pro usuário testar os 3 mockups como loja + entregador reais,
+    antes de convidar a primeira loja. Mockups servidos localmente via
+    `python -m http.server 8080` (não há hospedagem nenhuma configurada pros
+    mockups em si — só o `dispatch-engine/` está no Railway).
+    - **Achado crítico, nunca pego pelos 122 testes**: reproduzindo `signUp()`
+      real (não `admin.createUser`) com e-mail descartável real, confirmado que
+      TANTO `cadastro-loja.html` QUANTO `app-entregador.html` quebravam com
+      `42501` (RLS) logo após o cadastro — ver "Arquitetura conhecida" acima
+      pro porquê. Bug real, não achismo: reproduzido ao vivo antes de reportar.
+    - **Corrigido sem desativar a confirmação de e-mail** (decisão explícita do
+      usuário): 2 triggers novos em `auth.users`, ver "Arquitetura conhecida":
+      `provisionar_cadastro_pos_signup()` (`AFTER INSERT`, cria
+      `tenants`+`usuarios_loja`+`horarios_funcionamento` ou `entregadores` a
+      partir de `options.data` do `signUp()`) e
+      `limpar_metadata_apos_provisionamento()` (`AFTER UPDATE`, limpa a PII que
+      o GoTrue reintroduz na 2ª escrita). O 2º trigger passou por 2 rodadas de
+      revisão do usuário antes de aprovado: 1ª rodada corrigiu 3 ajustes
+      (índices únicos pro `ON CONFLICT` — já existiam —, comentário sobre
+      idempotência real, limpeza de PII); 2ª rodada endureceu a condição do
+      `WHEN` — proteção explícita contra loop (`OLD` vs `NEW`), condição
+      específica de janela de tempo (2min desde `created_at`, não só "não está
+      vazio" — evita apagar uma atualização legítima futura de metadata) e
+      documentação da garantia de ordem de execução (Postgres, não corrida).
+    - **Upload de documentos movido pra depois do primeiro login** (upload pro
+      Storage também exige sessão, mesma trava): telas novas "completar
+      cadastro" em `painel-loja.html` (banner + 2 arquivos) e
+      `app-entregador.html` (view dedicada, campos variam por
+      `tipo_veiculo`), usando as policies de UPDATE que já existiam.
+    - **Achado operacional colateral**: o motor de despacho do Railway
+      (produção, item 15) e o `despacho_motor.test.js` local competem pelo
+      MESMO banco hospedado (não existe staging separado) — o motor de
+      produção intercepta os `pedido_pronto` que o teste local dispara,
+      corrompendo as asserções (mesma classe de sintoma do achado de processo
+      órfão do item 12, mas entre produção e teste local, não 2 processos
+      locais). Protocolo estabelecido: `railway down -y` antes de rodar
+      `despacho_motor.test.js`/`run-all.js`, `railway up -y -c` (ou
+      `railway redeploy` se a deployment record ainda existir — `down` remove
+      a record, `redeploy` sozinho não acha nada pra redeployar depois disso)
+      logo depois, confirmando `railway status`/`railway logs` antes de seguir.
+    - **Validado**: suíte 122/122 (2x, uma vez por rodada de revisão) com
+      Railway pausado; roteiro manual completo do fluxo de LOJA com `signUp()`
+      real via navegador (Mailinator — inbox pública descartável, sem
+      necessidade de conta), e-mail de confirmação recebido e confirmado de
+      verdade (clique real no link), login, upload dos 2 documentos, banner
+      sumindo, tudo confirmado no banco (`tenants`/`usuarios_loja`/
+      `horarios_funcionamento` corretos, `raw_user_meta_data` vazio). Proteção
+      de janela de tempo do 2º trigger testada nos dois sentidos via
+      `admin.createUser` + `created_at` manipulado (sem depender de e-mail):
+      dentro da janela limpa, fora da janela preserva um update legítimo
+      simulado.
+    - **Fluxo de entregador não testado manualmente nesta sessão** (decisão do
+      usuário — piloto desta semana começa só pelo fluxo de loja; o link
+      `?loja=` fica pronto no banco mas sem divulgação nenhuma por enquanto),
+      mas coberto pela suíte automatizada.
+    - Commitado (`6653431`, branch `master`), **não** dado push. `db/schema.sql`
+      e `supabase/migrations/20260813000000_initial_schema.sql` re-sincronizados
+      como sempre.
+    - **Pendência real, não decisão consciente**: o Supabase (free tier) tem
+      rate limit de envio de e-mail — depois de várias confirmações reais
+      nesta sessão, `signUp()` real passou a retornar
+      `429 email rate limit exceeded`, bloqueando um reteste completo de ponta
+      a ponta (signUp real + clique real no e-mail) contra a versão FINAL
+      (pós-2ª-revisão) do 2º trigger. A evidência aceita como suficiente pra
+      commitar foi: suíte 122/122 + verificação isolada da janela de tempo
+      (não depende de e-mail) + dedução lógica de que o comportamento real já
+      comprovado (rodada anterior, trigger menos restrito) continua batendo
+      com a condição nova (que só ADICIONA condições `AND`, não afrouxa
+      nenhuma). Ver pendência abaixo — reteste real fica pendente pra antes do
+      piloto valer pra valer.
+17. **Teste operacional de ponta a ponta contra Railway+Supabase reais — achado
+    crítico do painel, corrigido no mesmo dia** (18/08/2026). Pedido: percorrer
+    o ciclo completo (pedido chega → preparo → pronto → despacho → aceite →
+    retirada → entrega) na tela real de `painel-loja.html`, contra o motor de
+    despacho de PRODUÇÃO no Railway (não um processo local) — sem nenhum
+    entregador real cadastrado ainda (link `?loja=` não divulgado), então um
+    entregador de teste foi criado direto no banco (já aprovado, pra não
+    depender do link). Confirmado antes: **não existia tenant real da
+    hamburgueria no banco** (tabela `tenants` vazia) — resolvido criando um
+    tenant de teste dedicado, claramente marcado (`[TESTE] ... NAO USAR`), sem
+    misturar com nada real.
+    - **Ciclo completo funcionou de ponta a ponta**: pedido criado via UI →
+      Recebido → Aceitar → Em preparo → Marcar pronto (`pedido_pronto` real) →
+      motor do Railway despachou (log real com os mesmos IDs do banco) →
+      aceite do entregador de teste via RLS real (mesma escrita do app) →
+      `confirmar_retirada_rota()` → posição gravada → entrega confirmada →
+      trigger `concluir_rota_ao_entregar` fechou o ciclo sozinho (rota
+      `concluida`, entregador `disponivel`). Delay do despacho: poucos
+      segundos.
+    - **Achado crítico, bloqueante pro piloto**: o painel operacional **não
+      era "tempo real" pra pedidos e rotas**, só pra motoboys.
+      `carregarMotoboys()` já tinha Realtime (`localizacoes_entregador`) +
+      polling de 15s — funcionava ao vivo de verdade. `carregarRotas()` e
+      `carregarPedidos()` **não tinham Realtime nem polling nenhum** — só
+      carregavam uma vez no login ou após ação feita na própria aba.
+      Reproduzido 3x seguidas (aceite, retirada, entrega): todas as 3
+      aconteceram de verdade no banco, mas a UI continuou mostrando o status
+      antigo até um F5 manual. Um funcionário da loja veria a tela parada
+      enquanto pedidos são processados de verdade por trás.
+    - **Corrigido no mesmo padrão já usado em `carregarMotoboys()`**: (1)
+      `pedidos` e `rotas_entrega` adicionadas à publication
+      `supabase_realtime` (mesmo achado de causa raiz dos itens B2/go-to-
+      market — tabela fora da publication, Realtime nunca dispara
+      independente de RLS); (2) canais `pedidos-ao-vivo`/`rotas-ao-vivo` em
+      `iniciarAtualizacoesAoVivo()`, chamando `carregarPedidos()`/
+      `carregarRotas()` quando a aba correspondente (`mv-pedidos`/
+      `mv-operacional`) está visível; (3) as duas entraram também no
+      `setInterval` de polling de 15s já existente, como rede de segurança
+      independente do Realtime (mesmo princípio do comentário original: "se a
+      assinatura cair silenciosamente, o painel não fica cego").
+    - **Revalidado sem F5 nenhum**: repeti o mesmo ciclo (tenant/entregador de
+      teste novos) e observei ao vivo: "Rota A caminho da loja" → "Rota Em
+      entrega" mudou sozinha entre uma chamada de ferramenta e a próxima (
+      Realtime, quase instantâneo); "Rotas ativas: 1" → "0" ao finalizar a
+      entrega, sozinho; aba "Pedidos" mostrou "Pronto" → "Entregue" sozinha
+      depois de ~17s sem tocar em nada (dentro da janela de polling de 15s,
+      confirma o fallback funcionando mesmo se o Realtime não tivesse
+      pegado). Suíte 122/122 de novo (Railway pausado/restaurado, mesmo
+      protocolo). Dado de teste limpo ao final, 0 tenants restantes.
+    - **Achado colateral, sem impacto**: não existe mapa nenhum em
+      `painel-loja.html` — a posição do motoboy é gravada e usada
+      internamente (alertas de segurança), só aparece como texto ("última
+      posição às HH:MM") no card do motoboy, não visualmente. Não é bug, é
+      falta de UI — registrado, não é bloqueio.
 
 ## Pendências reais no momento
+- [ ] **Auditoria de outros gaps latentes de Realtime/publication** (pedido
+      explícito do usuário, não bloqueia o piloto desta semana) — o achado do
+      item 17 (`pedidos`/`rotas_entrega` fora da publication, painel não
+      atualizava sozinho) é o 3º caso do mesmo padrão nesta sessão (ver
+      "REGRA GERAL" em "Arquitetura conhecida"). Vale, com calma, revisar se
+      existe mais algum `carregar*()` nos 3 mockups que só roda uma vez (sem
+      Realtime nem polling) mas deveria refletir mudança feita por fora da
+      própria aba — antes de expandir o sistema pra mais funções/telas, não
+      depois.
 - [x] ~~`dispatch-engine/` não está deployado no Railway ainda~~ — deployado em
       17/08/2026, validado com teste real de ponta a ponta contra o serviço publicado
       (ver item 15). `DATABASE_URL` corrigida (pooler modo sessão, porta 5432),
@@ -599,11 +773,15 @@ C:\Users\Usuário\Projetos\giro certo
       `mercado_pago`/`asaas`/`stone`/`outro`), não decisão técnica. Confirmado
       isolado e não vazado por vários arquivos — ver `tests/COBERTURA.md` seção
       "Pendência isolada — Pix" pro que falta decidir exatamente.
-- [x] ~~`dispatch-engine/` não está deployado no Railway ainda~~ — deployado em
-      17/08/2026 (ver item 14). **Mas ver o item CRÍTICO acima**: deployado não é o
-      mesmo que funcional — a validação pós-deploy achou a `DATABASE_URL` errada
-      (pooler em vez de conexão direta), então o motor real ainda não está operante
-      em produção.
+- [ ] **Reteste real do fluxo de cadastro (item 16) antes do piloto valer pra
+      valer** — o rate limit de e-mail do Supabase (free tier) bloqueou repetir
+      o roteiro completo (`signUp()` real + clique real no e-mail) contra a
+      versão FINAL do 2º trigger (`limpar_metadata_apos_provisionamento`, pós-
+      2ª-revisão). Evidência atual (suíte 122/122 + verificação isolada da
+      janela de tempo + dedução lógica) foi aceita como suficiente pra
+      commitar, mas o usuário pediu explicitamente pra repetir o teste real
+      assim que o rate limit resetar, antes do dia real com a primeira loja
+      (hamburgueria). Avisar o usuário quando isso for feito.
 - [ ] Estado de failover/timeout do motor de despacho vive em memória do processo —
       não sobrevive a um restart no meio de uma janela de espera (a reconciliação de
       startup cobre pedidos órfãos e tentativas já expiradas, mas não timers "no meio
@@ -630,6 +808,24 @@ C:\Users\Usuário\Projetos\giro certo
   scripts de teste (comparação de tipo errada, id errado numa FK) que geravam "achados"
   falsos; um deles inclusive tinha o rótulo invertido ("BUG CONFIRMADO" custando exame
   quando na verdade o comportamento estava correto).
+- **Antes de rodar `despacho_motor.test.js` (ou qualquer teste que dispare
+  `pedido_pronto` de verdade), pausar o motor de despacho do Railway primeiro**
+  (`railway down -y` → roda o teste → `railway up -y -c` — `down` remove a
+  deployment record, então `redeploy` sozinho não acha nada; precisa de `up`
+  de novo) — produção e teste local compartilham o MESMO banco hospedado (não
+  existe staging), então o motor de produção intercepta os eventos que o
+  teste local dispara e corrompe as asserções. Sempre confirmar
+  `railway status`/`railway logs` mostrando online e escutando antes de seguir
+  em frente, pra minimizar o tempo fora do ar.
+- **`signUp()` real (não `admin.createUser`) consome o rate limit de e-mail do
+  Supabase** (free tier) — depois de poucas confirmações reais numa mesma
+  sessão, novas tentativas retornam `429 email rate limit exceeded` (bloqueia
+  inclusive tentativas via navegador, não só scripts). Não fica claro o tempo
+  exato de reset. Ao testar fluxos de `signUp()` real, economizar tentativas
+  (ex: usar `admin.createUser` + manipulação direta de `created_at`/campos via
+  SQL pra simular cenários que não precisam do e-mail de verdade, reservando
+  `signUp()` real pros casos que realmente exigem provar o fluxo ponta a
+  ponta).
 
 ## REGRA DE ATUALIZAÇÃO
 

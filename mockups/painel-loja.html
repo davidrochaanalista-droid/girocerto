@@ -376,14 +376,49 @@ function iniciarAtualizacoesAoVivo(){
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'alertas_seguranca' }, () => carregarAlertasSeguranca())
     .subscribe();
 
+  // Achado real (teste operacional de ponta a ponta, 18/08/2026):
+  // carregarPedidos()/carregarRotas() nunca reagiam a mudança nenhuma feita
+  // por fora da própria aba (ex: motoboy confirmando entrega pelo app dele)
+  // — só carregavam uma vez no login. Um pedido virar 'entregue' e uma rota
+  // virar 'concluida' de verdade no banco não aparecia na tela sem F5
+  // manual. Mesmo padrão de `localizacoes-ao-vivo` acima — `pedidos` e
+  // `rotas_entrega` precisaram entrar na publication supabase_realtime
+  // (ver db/schema.sql) pro canal disparar de verdade.
+  supabaseClient
+    .channel('pedidos-ao-vivo')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pedidos' }, () => {
+      if(document.getElementById('mv-pedidos').style.display !== 'none') carregarPedidos();
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pedidos' }, () => {
+      if(document.getElementById('mv-pedidos').style.display !== 'none') carregarPedidos();
+    })
+    .subscribe();
+
+  supabaseClient
+    .channel('rotas-ao-vivo')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'rotas_entrega' }, () => {
+      if(document.getElementById('mv-operacional').style.display !== 'none') carregarRotas();
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rotas_entrega' }, () => {
+      if(document.getElementById('mv-operacional').style.display !== 'none') carregarRotas();
+    })
+    .subscribe();
+
   carregarAlertasSeguranca();
 
   // Fallback: roda os mesmos carregamentos por polling independente do
   // Realtime estar conectado ou não — se a assinatura cair silenciosamente,
-  // o painel não fica cego esperando um evento que pode nunca chegar.
+  // o painel não fica cego esperando um evento que pode nunca chegar. Esse
+  // fallback é o que resolve o achado acima na prática — o Realtime é bônus,
+  // o polling sozinho já garante que a tela nunca fica presa por mais de
+  // POLL_INTERVAL_MS.
   setInterval(() => {
     carregarAlertasSeguranca();
-    if(document.getElementById('mv-operacional').style.display !== 'none') carregarMotoboys();
+    if(document.getElementById('mv-operacional').style.display !== 'none'){
+      carregarMotoboys();
+      carregarRotas();
+    }
+    if(document.getElementById('mv-pedidos').style.display !== 'none') carregarPedidos();
   }, POLL_INTERVAL_MS);
 }
 

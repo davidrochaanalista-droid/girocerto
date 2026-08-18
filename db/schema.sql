@@ -1501,6 +1501,15 @@ alter publication supabase_realtime add table alertas_seguranca;
 -- modal de "nova oferta de entrega" em app-entregador.html nunca dispararia
 -- — mesmo achado de padrão que os dois de cima, mesma causa raiz.
 alter publication supabase_realtime add table tentativas_despacho;
+-- pedidos e rotas_entrega (achado real, teste operacional de ponta a ponta,
+-- 18/08/2026): carregarPedidos()/carregarRotas() em painel-loja.html nunca
+-- reagiam a mudança nenhuma feita por fora da própria aba (ex: motoboy
+-- confirmando entrega) — só carregavam uma vez no login. Confirmado ao vivo:
+-- pedido virou 'entregue' e rota virou 'concluida' no banco de verdade, mas
+-- a UI continuou mostrando o status antigo até um F5 manual. Mesmo padrão
+-- de causa raiz dos itens acima — tabela fora da publication.
+alter publication supabase_realtime add table pedidos;
+alter publication supabase_realtime add table rotas_entrega;
 
 -- ==============================================================
 -- STORAGE (seção 39) — buckets privados pros documentos e fotos
