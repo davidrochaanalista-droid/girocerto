@@ -712,6 +712,34 @@ C:\Users\Usuário\Projetos\giro certo
       internamente (alertas de segurança), só aparece como texto ("última
       posição às HH:MM") no card do motoboy, não visualmente. Não é bug, é
       falta de UI — registrado, não é bloqueio.
+18. **Reteste final do `signUp()` real (fluxo de loja) — fecha a pendência do
+    item 16, rate limit resetou** (18/08/2026, mesmo dia). Roteiro completo
+    de novo, e-mail descartável real (Mailinator), contra a versão FINAL do
+    trigger (pós-2ª-revisão, ver item 16): 6 passos → "Cadastro enviado" →
+    e-mail de confirmação real recebido e link clicado de verdade → login →
+    banner "falta documentos" → upload dos 2 → banner some. Confirmado no
+    banco: `tenants`/`usuarios_loja` criados corretamente.
+    - **PII sensível limpa com sucesso**: CPF, endereço, data de nascimento,
+      chave Pix, nome — nada disso sobrou em `auth.users.raw_user_meta_data`.
+      Objetivo real de LGPD cumprido.
+    - **Achado, decisão consciente (não é bug)**: `raw_user_meta_data` NÃO
+      ficou 100% `{}` — sobrou `{"email_verified": true}`. Causa confirmada
+      com timestamps reais: `created_at` 17:54:44 → `email_confirmed_at`
+      17:58:00 (3min16s) — passou da janela de 2 minutos do trigger
+      `limpar_metadata_apos_provisionamento()` (ver item 16). O GoTrue faz
+      uma 3ª escrita em `raw_user_meta_data` (marcando `email_verified:
+      true`) no exato momento em que o USUÁRIO clica no link de confirmação
+      — timing fora do nosso controle, pode ser minutos, horas ou dias.
+      **Decisão do usuário, explícita**: aceitar como está, não perseguir
+      esse resíduo. `email_verified` é um metadado booleano do próprio
+      GoTrue, nunca é PII de negócio — tentar zerá-lo também criaria
+      dependência de timing imprevisível do GoTrue sem ganho real de
+      segurança/LGPD. Se aparecer de novo num ultrareview futuro, é
+      comportamento esperado e já avaliado, não achado novo.
+    - Suíte 122/122 rodada mais uma vez (Railway pausado/restaurado, mesmo
+      protocolo). Dado de teste limpo ao final.
+    - **Pendência do item 16 (reteste real bloqueado por rate limit) agora
+      RESOLVIDA.**
 
 ## Pendências reais no momento
 - [ ] **Auditoria de outros gaps latentes de Realtime/publication** (pedido
@@ -773,15 +801,11 @@ C:\Users\Usuário\Projetos\giro certo
       `mercado_pago`/`asaas`/`stone`/`outro`), não decisão técnica. Confirmado
       isolado e não vazado por vários arquivos — ver `tests/COBERTURA.md` seção
       "Pendência isolada — Pix" pro que falta decidir exatamente.
-- [ ] **Reteste real do fluxo de cadastro (item 16) antes do piloto valer pra
-      valer** — o rate limit de e-mail do Supabase (free tier) bloqueou repetir
-      o roteiro completo (`signUp()` real + clique real no e-mail) contra a
-      versão FINAL do 2º trigger (`limpar_metadata_apos_provisionamento`, pós-
-      2ª-revisão). Evidência atual (suíte 122/122 + verificação isolada da
-      janela de tempo + dedução lógica) foi aceita como suficiente pra
-      commitar, mas o usuário pediu explicitamente pra repetir o teste real
-      assim que o rate limit resetar, antes do dia real com a primeira loja
-      (hamburgueria). Avisar o usuário quando isso for feito.
+- [x] ~~Reteste real do fluxo de cadastro (item 16) antes do piloto valer pra
+      valer~~ — feito em 18/08/2026 depois do rate limit resetar (ver item
+      18). `signUp()` real + e-mail confirmado de verdade, PII limpa com
+      sucesso. Único resíduo (`email_verified: true`, fora da janela de 2min)
+      foi avaliado e aceito como decisão consciente — não é PII, não bloqueia.
 - [ ] Estado de failover/timeout do motor de despacho vive em memória do processo —
       não sobrevive a um restart no meio de uma janela de espera (a reconciliação de
       startup cobre pedidos órfãos e tentativas já expiradas, mas não timers "no meio
