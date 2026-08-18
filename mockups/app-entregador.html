@@ -158,35 +158,20 @@
         <div class="field"><label>Número da CNH</label><input type="text" id="c_cnh_num"></div>
         <div class="field"><label>Validade da CNH</label><input type="date" id="c_cnh_val"></div>
       </div>
-      <div class="field"><label>Foto da CNH</label>
-        <label class="upload"><input type="file" id="c_cnh_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_cnh_foto_n"></div></label>
-      </div>
       <div class="row2">
         <div class="field"><label>Placa</label><input type="text" id="c_placa"></div>
         <div class="field"><label>Validade do CRLV</label><input type="date" id="c_crlv_val"></div>
-      </div>
-      <div class="field"><label>Foto do CRLV</label>
-        <label class="upload"><input type="file" id="c_crlv_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_crlv_foto_n"></div></label>
       </div>
     </div>
 
     <!-- campos BICICLETA -->
     <div class="cond" id="cond-bike">
       <div class="field"><label>Número do RG</label><input type="text" id="c_rg"></div>
-      <div class="field"><label>Foto do RG</label>
-        <label class="upload"><input type="file" id="c_rg_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_rg_foto_n"></div></label>
-      </div>
-      <div class="field"><label>Foto segurando o RG</label>
-        <label class="upload"><input type="file" id="c_rg_segurando" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_rg_segurando_n"></div></label>
-      </div>
-      <div class="field"><label>Foto da bicicleta</label>
-        <label class="upload"><input type="file" id="c_bike_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_bike_foto_n"></div></label>
-      </div>
       <div class="field"><label>Nome do responsável (se menor de 18 anos)</label><input type="text" id="c_responsavel"></div>
     </div>
 
-    <div class="field"><label>Comprovante de residência</label>
-      <label class="upload"><input type="file" id="c_comprovante" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="c_comprovante_n"></div></label>
+    <div class="field" style="background:var(--green-soft);border-radius:12px;padding:12px 14px;font-size:12.5px;color:var(--teal-2);">
+      📄 As fotos dos documentos (CNH/CRLV ou RG, comprovante de residência) são enviadas depois — no seu primeiro login, após confirmar o e-mail.
     </div>
 
     <div class="field" style="margin-top:6px;">
@@ -200,6 +185,55 @@
     <p style="text-align:center;margin-top:14px;font-size:13.5px;">
       <button class="link-btn" onclick="mostrar('view-login')">Já tenho conta</button>
     </p>
+  </div>
+
+  <!-- ===================== VIEW: CONFIRME O E-MAIL ===================== -->
+  <!-- Mostrada logo após enviarCadastro() — o cadastro em si (tenants ou
+       entregadores) já foi criado por um trigger no banco no momento do
+       signUp() (ver db/schema.sql), mas os documentos só podem ser
+       enviados depois que o e-mail for confirmado (upload pro Storage
+       exige sessão ativa, e signUp() não abre sessão sem confirmação). -->
+  <div class="view" id="view-confirme-email">
+    <div style="text-align:center;padding:40px 10px;">
+      <div style="width:60px;height:60px;border-radius:50%;background:var(--green-soft);margin:0 auto 18px;display:flex;align-items:center;justify-content:center;font-size:26px;">✉️</div>
+      <h2>Confirme seu e-mail</h2>
+      <p style="color:var(--gray);font-size:13.5px;margin-top:8px;">Cadastro criado! Verifique sua caixa de entrada, confirme o e-mail e depois faça login aqui pra enviar as fotos dos documentos.</p>
+      <button class="link-btn" style="margin-top:18px;" onclick="mostrar('view-login')">Já confirmei — fazer login</button>
+    </div>
+  </div>
+
+  <!-- ===================== VIEW: COMPLETAR CADASTRO (documentos) ===================== -->
+  <!-- Mostrada no primeiro login pós-confirmação, se algum documento
+       obrigatório ainda não foi enviado (ver carregarEntregador()). -->
+  <div class="view" id="view-completar-cadastro">
+    <h2 style="margin-bottom:4px;">Falta pouco</h2>
+    <p style="color:var(--gray);font-size:13.5px;margin:0 0 18px;">Envie as fotos dos documentos pra gente avaliar seu cadastro.</p>
+    <div class="msg" id="completarMsg"></div>
+
+    <div class="cond" id="doc-moto">
+      <div class="field"><label>Foto da CNH</label>
+        <label class="upload"><input type="file" id="d_cnh_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="d_cnh_foto_n"></div></label>
+      </div>
+      <div class="field"><label>Foto do CRLV</label>
+        <label class="upload"><input type="file" id="d_crlv_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="d_crlv_foto_n"></div></label>
+      </div>
+    </div>
+    <div class="cond" id="doc-bike">
+      <div class="field"><label>Foto do RG</label>
+        <label class="upload"><input type="file" id="d_rg_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="d_rg_foto_n"></div></label>
+      </div>
+      <div class="field"><label>Foto segurando o RG</label>
+        <label class="upload"><input type="file" id="d_rg_segurando" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="d_rg_segurando_n"></div></label>
+      </div>
+      <div class="field"><label>Foto da bicicleta</label>
+        <label class="upload"><input type="file" id="d_bike_foto" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="d_bike_foto_n"></div></label>
+      </div>
+    </div>
+    <div class="field"><label>Comprovante de residência</label>
+      <label class="upload"><input type="file" id="d_comprovante" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="d_comprovante_n"></div></label>
+    </div>
+
+    <button class="btn-primary" id="btnCompletarCadastro" onclick="enviarDocumentosPendentes()">Enviar documentos</button>
   </div>
 
   <!-- ===================== VIEW: EM AVALIAÇÃO ===================== -->
@@ -504,6 +538,16 @@ async function uploadDoc(file, pasta){
   return data.path;
 }
 
+// enviarCadastro() só cria o usuário de acesso — o registro em
+// entregadores é criado automaticamente por um trigger no banco
+// (provisionar_cadastro_pos_signup(), ver db/schema.sql) a partir dos
+// campos mandados via options.data do signUp(). Motivo: o projeto exige
+// confirmação de e-mail (mailer_autoconfirm = false), e signUp() sem
+// confirmar não abre sessão (auth.uid() fica null) — um insert direto
+// por aqui sempre batia em RLS (42501), reproduzido ao vivo antes de
+// corrigir (ver CLAUDE.md). Fotos de documento ficam de fora pelo mesmo
+// motivo (upload pro Storage também exige sessão) — são enviadas no
+// primeiro login, em view-completar-cadastro.
 async function enviarCadastro(){
   const msg = document.getElementById('cadMsg');
   msg.className = 'msg';
@@ -519,17 +563,9 @@ async function enviarCadastro(){
   btn.disabled = true; btn.textContent = 'Enviando...';
 
   try{
-    const { data: authData, error: authError } = await supabaseClient.auth.signUp({
-      email: document.getElementById('c_email').value,
-      password: document.getElementById('c_senha').value,
-    });
-    if(authError) throw authError;
-
     const tipo = window._tipoVeiculo;
-    const payload = {
-      auth_user_id: authData.user.id,
+    const metadata = {
       tenant_id: TENANT_ID,
-      email: document.getElementById('c_email').value,
       nome: document.getElementById('c_nome').value,
       tipo_veiculo: tipo,
       data_nascimento: document.getElementById('c_nasc').value,
@@ -537,45 +573,87 @@ async function enviarCadastro(){
       numero_residencia: document.getElementById('c_num').value,
       cep: document.getElementById('c_cep').value,
       chave_pix: document.getElementById('c_pix').value,
-      comprovante_residencia_foto_url: await uploadDoc(document.getElementById('c_comprovante').files[0], 'comprovante'),
-      // A1: verificacao_prazo_limite deixou de ser coluna gerada no banco
-      // (timestamptz + interval não é IMMUTABLE pro Postgres — erro 42P17
-      // na criação da tabela, ver db/schema.sql). Precisa ser calculado
-      // e gravado aqui, junto com verificacao_enviada_em, na MESMA
-      // escrita — se algum dia existir um fluxo de reenvio de documentos
-      // (ex: depois de reprovação por documento_ilegivel/
-      // informacao_divergente), esse recálculo precisa acontecer lá
-      // também, não só aqui no cadastro inicial.
-      verificacao_enviada_em: new Date().toISOString(),
-      verificacao_prazo_limite: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-      consentimento_lgpd_aceito_em: new Date().toISOString(),
     };
 
     if(tipo === 'moto'){
-      payload.cpf = document.getElementById('c_cpf').value;
-      payload.cnh_numero = document.getElementById('c_cnh_num').value;
-      payload.cnh_validade = document.getElementById('c_cnh_val').value;
-      payload.cnh_foto_url = await uploadDoc(document.getElementById('c_cnh_foto').files[0], 'cnh');
-      payload.placa = document.getElementById('c_placa').value;
-      payload.crlv_validade = document.getElementById('c_crlv_val').value;
-      payload.crlv_foto_url = await uploadDoc(document.getElementById('c_crlv_foto').files[0], 'crlv');
+      metadata.cpf = document.getElementById('c_cpf').value;
+      metadata.cnh_numero = document.getElementById('c_cnh_num').value;
+      metadata.cnh_validade = document.getElementById('c_cnh_val').value;
+      metadata.placa = document.getElementById('c_placa').value;
+      metadata.crlv_validade = document.getElementById('c_crlv_val').value;
     } else {
-      payload.rg_numero = document.getElementById('c_rg').value;
-      payload.foto_rg_url = await uploadDoc(document.getElementById('c_rg_foto').files[0], 'rg');
-      payload.foto_rg_segurando_url = await uploadDoc(document.getElementById('c_rg_segurando').files[0], 'rg_segurando');
-      payload.foto_bicicleta_url = await uploadDoc(document.getElementById('c_bike_foto').files[0], 'bicicleta');
-      payload.responsavel_nome = document.getElementById('c_responsavel').value || null;
+      metadata.rg_numero = document.getElementById('c_rg').value;
+      metadata.responsavel_nome = document.getElementById('c_responsavel').value || null;
     }
 
-    const { error: insertError } = await supabaseClient.from('entregadores').insert(payload);
-    if(insertError) throw insertError;
+    const { error: authError } = await supabaseClient.auth.signUp({
+      email: document.getElementById('c_email').value,
+      password: document.getElementById('c_senha').value,
+      options: { data: metadata },
+    });
+    if(authError) throw authError;
 
-    mostrar('view-avaliacao');
+    mostrar('view-confirme-email');
   } catch(err){
     console.error(err);
     msg.textContent = 'Não deu pra concluir: ' + (err.message || 'tenta de novo.');
     msg.className = 'msg error';
     btn.disabled = false; btn.textContent = 'Enviar cadastro';
+  }
+}
+
+// ------------------------------------------------------------
+// COMPLETAR CADASTRO (documentos) — primeiro login pós-confirmação
+// ------------------------------------------------------------
+function documentosFaltando(entregador){
+  return entregador.tipo_veiculo === 'moto'
+    ? (!entregador.cnh_foto_url || !entregador.crlv_foto_url || !entregador.comprovante_residencia_foto_url)
+    : (!entregador.foto_rg_url || !entregador.foto_rg_segurando_url || !entregador.foto_bicicleta_url || !entregador.comprovante_residencia_foto_url);
+}
+
+function mostrarCompletarCadastro(entregador){
+  document.getElementById('doc-moto').classList.toggle('show', entregador.tipo_veiculo === 'moto');
+  document.getElementById('doc-bike').classList.toggle('show', entregador.tipo_veiculo === 'bicicleta');
+  mostrar('view-completar-cadastro');
+}
+
+async function enviarDocumentosPendentes(){
+  const msg = document.getElementById('completarMsg');
+  msg.className = 'msg';
+  const btn = document.getElementById('btnCompletarCadastro');
+  btn.disabled = true; btn.textContent = 'Enviando...';
+
+  try{
+    const { data: { user } } = await supabaseClient.auth.getUser();
+    const { data: entregador, error: eBusca } = await supabaseClient
+      .from('entregadores').select('tipo_veiculo').eq('auth_user_id', user.id).single();
+    if(eBusca) throw eBusca;
+
+    const payload = {
+      comprovante_residencia_foto_url: await uploadDoc(document.getElementById('d_comprovante').files[0], 'comprovante'),
+    };
+    if(entregador.tipo_veiculo === 'moto'){
+      payload.cnh_foto_url = await uploadDoc(document.getElementById('d_cnh_foto').files[0], 'cnh');
+      payload.crlv_foto_url = await uploadDoc(document.getElementById('d_crlv_foto').files[0], 'crlv');
+    } else {
+      payload.foto_rg_url = await uploadDoc(document.getElementById('d_rg_foto').files[0], 'rg');
+      payload.foto_rg_segurando_url = await uploadDoc(document.getElementById('d_rg_segurando').files[0], 'rg_segurando');
+      payload.foto_bicicleta_url = await uploadDoc(document.getElementById('d_bike_foto').files[0], 'bicicleta');
+    }
+    // remove campos não selecionados (upload pulado) em vez de gravar null
+    // por cima de um documento que já tinha sido enviado numa tentativa anterior
+    Object.keys(payload).forEach(k => { if(payload[k] === null) delete payload[k]; });
+
+    const { error: eUpdate } = await supabaseClient.from('entregadores').update(payload).eq('auth_user_id', user.id);
+    if(eUpdate) throw eUpdate;
+
+    await carregarEntregador();
+  } catch(err){
+    console.error(err);
+    msg.textContent = 'Não deu pra enviar: ' + (err.message || 'tenta de novo.');
+    msg.className = 'msg error';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Enviar documentos';
   }
 }
 
@@ -606,6 +684,16 @@ async function carregarEntregador(){
   if(error || !entregador){ mostrar('view-login'); return; }
 
   entregadorId = entregador.id;
+
+  // documentos ainda não enviados (fluxo de completar cadastro pós-login,
+  // ver enviarCadastro()) — sem isso o entregador ficaria preso vendo
+  // "documentos em avaliação" pra sempre, já que a loja nunca teria nada
+  // pra avaliar de fato.
+  if(documentosFaltando(entregador)){
+    mostrarCompletarCadastro(entregador);
+    return;
+  }
+
   // RPC dedicada em vez de join aninhado com tenants: a policy de select em
   // tenants só cobre usuarios_loja (dono/funcionário), não entregadores — o
   // join `tenants(...)` sempre devolvia null aqui (achado real, validado

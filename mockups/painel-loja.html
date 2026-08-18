@@ -175,6 +175,26 @@
     <div class="main mainview" id="mv-operacional" style="display:none;">
       <h1>Painel operacional</h1>
 
+      <!-- achado real (roteiro de teste manual, 17/08/2026): cadastro-loja.html
+      não consegue mais subir documentos direto no signUp() (o projeto exige
+      confirmação de e-mail — sem sessão, upload pro Storage bate em RLS, ver
+      db/schema.sql). Documentos ficam pendentes até o primeiro login aqui. -->
+      <div id="avisoDocumentos" style="display:none;background:#FDF1DC;color:#A9720C;border-radius:12px;padding:14px 16px;margin-bottom:18px;font-size:13.5px;">
+        ⚠ Falta enviar os documentos do cadastro — sem eles, o cadastro da loja fica incompleto.
+        <div class="field" style="margin-top:10px;">
+          <label style="color:inherit;">Foto do documento do proprietário (RG ou CNH)</label>
+          <input type="file" id="doc_prop" accept="image/*,.pdf">
+        </div>
+        <div class="field" style="margin-top:8px;">
+          <label style="color:inherit;">Foto do cartão CNPJ ou contrato social</label>
+          <input type="file" id="doc_loja" accept="image/*,.pdf">
+        </div>
+        <div id="docMsg" class="msg" style="margin-top:8px;"></div>
+        <div style="margin-top:6px;">
+          <button class="btn-primary" style="width:auto;padding:8px 18px;" id="btnEnviarDocs" onclick="enviarDocumentosPendentes()">Enviar documentos</button>
+        </div>
+      </div>
+
       <div id="avisoLocalizacao" style="display:none;background:#FDF1DC;color:#A9720C;border-radius:12px;padding:14px 16px;margin-bottom:18px;font-size:13.5px;">
         ⚠ Localização da loja ainda não definida — o motor de despacho não consegue calcular
         quais entregadores estão perto o suficiente pra chamar. Fique no local físico da loja e
@@ -428,7 +448,7 @@ async function iniciarApp(){
 
   const { data: vinculo, error } = await supabaseClient
     .from('usuarios_loja')
-    .select('tenant_id, papel, tenants(nome, lat, lng)')
+    .select('tenant_id, papel, tenants(nome, lat, lng, proprietario_documento_foto_url, cnpj_documento_foto_url)')
     .eq('auth_user_id', user.id)
     .single();
 
@@ -444,6 +464,8 @@ async function iniciarApp(){
   document.getElementById('app').style.display = 'block';
   document.getElementById('avisoLocalizacao').style.display =
     (vinculo.tenants.lat === null || vinculo.tenants.lat === undefined) ? 'block' : 'none';
+  document.getElementById('avisoDocumentos').style.display =
+    (!vinculo.tenants.proprietario_documento_foto_url || !vinculo.tenants.cnpj_documento_foto_url) ? 'block' : 'none';
 
   if(userRole === 'dono'){
     document.getElementById('navIntegracoes').style.display = 'block';
@@ -466,6 +488,60 @@ function copiarLinkCadastroEntregador(){
   }).catch(() => {
     alert('Não deu pra copiar automaticamente — selecione o texto e copie manualmente (Ctrl+C).');
   });
+}
+
+// ------------------------------------------------------------
+// Documentos pendentes (roteiro de teste manual, 17/08/2026) — o upload
+// não pôde acontecer durante cadastro-loja.html (sem sessão ativa até a
+// confirmação de e-mail, ver db/schema.sql). Sobe pro mesmo bucket
+// privado que o cadastro usaria, e faz UPDATE em tenants (permitido pela
+// policy "loja atualiza seu proprio tenant", já existente).
+// ------------------------------------------------------------
+async function uploadDocumentoLoja(file, pasta){
+  if(!file) return null;
+  const nomeArquivo = `${pasta}/${Date.now()}_${file.name}`;
+  const { data, error } = await supabaseClient.storage.from('documentos-privados').upload(nomeArquivo, file);
+  if(error) throw error;
+  return data.path;
+}
+
+async function enviarDocumentosPendentes(){
+  const msg = document.getElementById('docMsg');
+  msg.className = 'msg';
+  const btn = document.getElementById('btnEnviarDocs');
+  btn.disabled = true; btn.textContent = 'Enviando...';
+
+  try{
+    const payload = {};
+    const propDoc = await uploadDocumentoLoja(document.getElementById('doc_prop').files[0], 'proprietario');
+    const lojaDoc = await uploadDocumentoLoja(document.getElementById('doc_loja').files[0], 'loja');
+    if(propDoc) payload.proprietario_documento_foto_url = propDoc;
+    if(lojaDoc) payload.cnpj_documento_foto_url = lojaDoc;
+
+    if(Object.keys(payload).length === 0){
+      msg.textContent = 'Escolha ao menos um arquivo pra enviar.';
+      msg.className = 'msg error';
+      return;
+    }
+
+    const { error } = await supabaseClient.from('tenants').update(payload).eq('id', tenantId);
+    if(error) throw error;
+
+    const { data: tenantAtual } = await supabaseClient
+      .from('tenants').select('proprietario_documento_foto_url, cnpj_documento_foto_url').eq('id', tenantId).single();
+    if(tenantAtual && tenantAtual.proprietario_documento_foto_url && tenantAtual.cnpj_documento_foto_url){
+      document.getElementById('avisoDocumentos').style.display = 'none';
+    } else {
+      msg.textContent = 'Documento enviado. Ainda falta o outro.';
+      msg.className = 'msg success';
+    }
+  } catch(err){
+    console.error(err);
+    msg.textContent = 'Não deu pra enviar: ' + (err.message || 'tenta de novo.');
+    msg.className = 'msg error';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Enviar documentos';
+  }
 }
 
 // ------------------------------------------------------------

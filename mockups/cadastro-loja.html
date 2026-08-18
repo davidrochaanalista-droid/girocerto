@@ -197,13 +197,7 @@
       </div>
     </div>
     <div class="field">
-      <label>Foto do documento (RG ou CNH) <span class="required">*</span></label>
-      <label class="upload">
-        <input type="file" id="f_prop_doc" accept="image/*,.pdf">
-        <div class="icon">📄</div>
-        <div>Toque pra escolher o arquivo</div>
-        <div class="fname" id="f_prop_doc_name"></div>
-      </label>
+      <div class="hint" style="margin-bottom:0;">📄 A foto do documento (RG ou CNH) é enviada depois — no seu primeiro login no painel, após confirmar o e-mail.</div>
     </div>
 
     <div class="nav">
@@ -255,13 +249,7 @@
       </div>
     </div>
     <div class="field">
-      <label>Foto do cartão CNPJ ou contrato social <span class="required">*</span></label>
-      <label class="upload">
-        <input type="file" id="f_loja_doc" accept="image/*,.pdf">
-        <div class="icon">🧾</div>
-        <div>Toque pra escolher o arquivo</div>
-        <div class="fname" id="f_loja_doc_name"></div>
-      </label>
+      <div class="hint" style="margin-bottom:0;">🧾 A foto do cartão CNPJ ou contrato social é enviada depois — no seu primeiro login no painel, após confirmar o e-mail.</div>
     </div>
     <div class="field">
       <label>Tempo médio de preparo dos pedidos (minutos) <span class="required">*</span></label>
@@ -337,7 +325,7 @@
         <svg width="30" height="30" viewBox="0 0 18 18"><path d="M3 9 L7 13 L15 3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </div>
       <h2>Cadastro enviado</h2>
-      <p class="sub">Sua loja já está registrada. Assim que confirmar o e-mail, o painel operacional libera.</p>
+      <p class="sub">Sua loja já está registrada. Confirme o e-mail que enviamos e faça login no painel — lá você termina o cadastro enviando as fotos dos documentos.</p>
     </div>
   </div>
 
@@ -413,16 +401,6 @@ function esconderMsg(){
   const el = document.getElementById('globalMsg');
   el.className = 'msg';
 }
-
-// ------------------------------------------------------------
-// Preview de arquivo
-// ------------------------------------------------------------
-['f_prop_doc','f_loja_doc'].forEach(id=>{
-  document.getElementById(id).addEventListener('change', e=>{
-    const f = e.target.files[0];
-    document.getElementById(id+'_name').textContent = f ? f.name : '';
-  });
-});
 
 // ------------------------------------------------------------
 // Horário de funcionamento
@@ -512,19 +490,19 @@ function montarRevisao(){
 }
 
 // ------------------------------------------------------------
-// Envio final — cria usuário, sobe documentos, grava tenant +
-// usuarios_loja + horarios_funcionamento
+// Envio final — cria o usuário de acesso; tenant + usuarios_loja +
+// horarios_funcionamento são criados automaticamente por um trigger no
+// banco (provisionar_cadastro_pos_signup(), ver db/schema.sql), a
+// partir dos dados que mandamos aqui via options.data do signUp().
+//
+// Por quê: o projeto exige confirmação de e-mail (mailer_autoconfirm =
+// false) — signUp() sem confirmar não retorna sessão (auth.uid() fica
+// null), então um insert feito diretamente por aqui, logo em seguida,
+// sempre batia em RLS (42501). Reproduzido ao vivo antes de corrigir
+// (ver CLAUDE.md). Documentos (RG/CNPJ) ficam de fora por não terem
+// como ser enviados sem sessão — o upload acontece no primeiro login
+// no painel (ver painel-loja.html), depois de confirmar o e-mail.
 // ------------------------------------------------------------
-async function uploadDocumento(file, pasta){
-  if(!file) return null;
-  const nomeArquivo = `${pasta}/${Date.now()}_${file.name}`;
-  const { data, error } = await supabaseClient.storage
-    .from('documentos-privados')   // bucket PRIVADO (seção 37) — nunca público
-    .upload(nomeArquivo, file);
-  if(error) throw error;
-  return data.path;
-}
-
 async function enviarCadastro(){
   if(!document.getElementById('f_lgpd').checked){
     mostrarMsg('Precisa aceitar os termos de tratamento de dados pra continuar.', 'error');
@@ -535,64 +513,31 @@ async function enviarCadastro(){
   esconderMsg();
 
   try {
-    // 1) cria o usuário de acesso
-    const { data: authData, error: authError } = await supabaseClient.auth.signUp({
+    const horarios = coletarHorarios();
+    const { error: authError } = await supabaseClient.auth.signUp({
       email: document.getElementById('f_email').value,
       password: document.getElementById('f_senha').value,
+      options: {
+        data: {
+          nome: document.getElementById('f_loja_nome').value,
+          proprietario_nome: document.getElementById('f_prop_nome').value,
+          proprietario_cpf: document.getElementById('f_prop_cpf').value,
+          proprietario_data_nascimento: document.getElementById('f_prop_nasc').value,
+          proprietario_endereco: document.getElementById('f_prop_end').value,
+          proprietario_numero_endereco: document.getElementById('f_prop_num').value,
+          proprietario_cep: document.getElementById('f_prop_cep').value,
+          cnpj: document.getElementById('f_loja_cnpj').value,
+          endereco_loja: document.getElementById('f_loja_end').value,
+          numero_loja: document.getElementById('f_loja_num').value,
+          cep_loja: document.getElementById('f_loja_cep').value,
+          segmento: document.getElementById('f_loja_segmento').value,
+          tempo_preparo_padrao_min: Number(document.getElementById('f_loja_preparo').value) || null,
+          chave_pix: document.getElementById('f_pix').value,
+          horarios: horarios,
+        },
+      },
     });
     if(authError) throw authError;
-
-    // 2) sobe os documentos pro bucket privado
-    const propDoc = await uploadDocumento(document.getElementById('f_prop_doc').files[0], 'proprietario');
-    const lojaDoc = await uploadDocumento(document.getElementById('f_loja_doc').files[0], 'loja');
-
-    // 3) cria o tenant
-    // id gerado no cliente (em vez de deixar o default gen_random_uuid() do
-    // banco e ler de volta com .select()): a policy de SELECT em tenants
-    // exige já estar vinculado via usuarios_loja, o que só acontece no passo
-    // 4 — encadear .select() aqui falharia com RLS mesmo o insert tendo
-    // funcionado (achado real, validado contra banco de verdade em
-    // 14/08/2026: toda tentativa de cadastro de loja quebrava nesse ponto).
-    const tenantId = crypto.randomUUID();
-    const { error: tenantError } = await supabaseClient
-      .from('tenants')
-      .insert({
-        id: tenantId,
-        nome: document.getElementById('f_loja_nome').value,
-        proprietario_nome: document.getElementById('f_prop_nome').value,
-        proprietario_cpf: document.getElementById('f_prop_cpf').value,
-        proprietario_data_nascimento: document.getElementById('f_prop_nasc').value,
-        proprietario_endereco: document.getElementById('f_prop_end').value,
-        proprietario_numero_endereco: document.getElementById('f_prop_num').value,
-        proprietario_cep: document.getElementById('f_prop_cep').value,
-        proprietario_documento_foto_url: propDoc,
-        cnpj: document.getElementById('f_loja_cnpj').value,
-        cnpj_documento_foto_url: lojaDoc,
-        endereco_loja: document.getElementById('f_loja_end').value,
-        numero_loja: document.getElementById('f_loja_num').value,
-        cep_loja: document.getElementById('f_loja_cep').value,
-        segmento: document.getElementById('f_loja_segmento').value,
-        tempo_preparo_padrao_min: Number(document.getElementById('f_loja_preparo').value) || null,
-        chave_pix: document.getElementById('f_pix').value,
-        consentimento_lgpd_aceito_em: new Date().toISOString(),
-      });
-    if(tenantError) throw tenantError;
-
-    // 4) vincula o usuário logado como dono desse tenant
-    const { error: userError } = await supabaseClient.from('usuarios_loja').insert({
-      tenant_id: tenantId,
-      auth_user_id: authData.user.id,
-      nome: document.getElementById('f_prop_nome').value,
-      papel: 'dono',
-    });
-    if(userError) throw userError;
-
-    // 5) grava o horário de funcionamento
-    const horarios = coletarHorarios().map(h => ({ ...h, tenant_id: tenantId }));
-    if(horarios.length){
-      const { error: horarioError } = await supabaseClient.from('horarios_funcionamento').insert(horarios);
-      if(horarioError) throw horarioError;
-    }
 
     mostrarPasso(6);
   } catch(err){

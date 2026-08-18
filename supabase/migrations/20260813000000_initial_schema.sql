@@ -1264,6 +1264,230 @@ create policy "loja edita seu proprio horario" on horarios_funcionamento for all
   tenant_id in (select minhas_tenant_ids()));
 
 -- ==============================================================
+-- PROVISIONAMENTO AUTOMÁTICO PÓS-SIGNUP (achado real, roteiro de teste
+-- manual, 17/08/2026): o projeto tem confirmação de e-mail obrigatória
+-- (mailer_autoconfirm = false no Supabase Auth). signUp() sem confirmar
+-- e-mail NÃO retorna sessão (session = null) — auth.uid() fica null pro
+-- cliente que acabou de se cadastrar. Toda policy de INSERT em
+-- tenants/usuarios_loja/entregadores exige auth.uid() correspondente,
+-- então cadastro-loja.html e app-entregador.html quebravam com 42501
+-- (RLS) tentando inserir logo após o signUp() — reproduzido ao vivo com
+-- signUp() real (não admin.createUser), confirmado antes de corrigir
+-- (ver CLAUDE.md). Isso nunca apareceu nos 122 testes automatizados
+-- porque todos usam admin.createUser({email_confirm:true}), que pula
+-- esse caminho inteiro.
+--
+-- Corrigido SEM desativar a confirmação de e-mail obrigatória (decisão
+-- do usuário — manter a barreira de e-mail real): trigger AFTER INSERT
+-- em auth.users, com função SECURITY DEFINER (mesmo padrão de
+-- minhas_tenant_ids() — bypassa RLS, não precisa de auth.uid() nenhum),
+-- cria o registro base (tenants+usuarios_loja+horarios_funcionamento
+-- pra loja, entregadores pra entregador) IMEDIATAMENTE no signup, lendo
+-- os campos do formulário que o frontend agora manda via `options.data`
+-- do signUp() (fica em auth.users.raw_user_meta_data).
+--
+-- Documentos (fotos) ficam de fora de propósito: upload pro Storage
+-- TAMBÉM exige auth.uid() (mesma trava, policies de storage.objects
+-- mais abaixo) — não tem como resolver isso agora sem sessão. Fica pra
+-- depois do primeiro login confirmado (telas novas de "completar
+-- cadastro" em painel-loja.html e app-entregador.html, que fazem
+-- UPDATE usando as policies de UPDATE que já existiam).
+create or replace function provisionar_cadastro_pos_signup()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  meta jsonb := new.raw_user_meta_data;
+  novo_tenant_id uuid;
+begin
+  -- sem tag explícita de tipo — infere pela presença de tenant_id na
+  -- metadata: só o cadastro de ENTREGADOR manda isso (vem do link
+  -- ?loja=<uuid> que a loja compartilha, o tenant já existe). O cadastro
+  -- de LOJA nunca manda tenant_id (é este insert que cria o tenant),
+  -- então cai no elsif por eliminação; 'nome' é só uma guarda extra pra
+  -- não criar um tenant vazio se um dia existir metadata de outro tipo
+  -- de conta sem nenhum dos dois campos.
+  if meta ? 'tenant_id' then
+    insert into entregadores (
+      tenant_id, auth_user_id, email, nome, tipo_veiculo, data_nascimento,
+      endereco, numero_residencia, cep, chave_pix,
+      cpf, cnh_numero, cnh_validade, placa, crlv_validade,
+      rg_numero, responsavel_nome,
+      verificacao_enviada_em, verificacao_prazo_limite, consentimento_lgpd_aceito_em
+    ) values (
+      (meta->>'tenant_id')::uuid,
+      new.id,
+      new.email,
+      meta->>'nome',
+      coalesce(nullif(meta->>'tipo_veiculo', ''), 'moto'),
+      nullif(meta->>'data_nascimento', '')::date,
+      meta->>'endereco',
+      meta->>'numero_residencia',
+      meta->>'cep',
+      meta->>'chave_pix',
+      meta->>'cpf',
+      meta->>'cnh_numero',
+      nullif(meta->>'cnh_validade', '')::date,
+      meta->>'placa',
+      nullif(meta->>'crlv_validade', '')::date,
+      meta->>'rg_numero',
+      meta->>'responsavel_nome',
+      now(),
+      now() + interval '7 days',
+      now()
+    )
+    on conflict (auth_user_id) where auth_user_id is not null do nothing;
+
+    -- PII (cpf, endereço, data de nascimento, chave Pix) não fica parada em
+    -- auth.users fora do alcance das policies de RLS que protegem
+    -- entregadores (LGPD é requisito de primeira classe neste projeto — ver
+    -- consentimento_lgpd_aceito_em acima). Só zera depois do insert acima
+    -- já ter lido tudo que precisava de `meta`.
+    update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
+
+  elsif meta ? 'nome' then
+    novo_tenant_id := gen_random_uuid();
+    -- o ON CONFLICT (id) abaixo NÃO é proteção real contra duplicação:
+    -- novo_tenant_id é gerado agora mesmo, nesta execução, então nunca vai
+    -- colidir com uma linha já existente — é só defesa-em-profundidade
+    -- sintática. A proteção real contra reprocessamento é o próprio
+    -- trigger: AFTER INSERT ON auth.users dispara exatamente uma vez por
+    -- linha inserida (não existe um caminho pra essa função rodar 2x pro
+    -- mesmo new.id).
+    insert into tenants (
+      id, nome, proprietario_nome, proprietario_cpf, proprietario_data_nascimento,
+      proprietario_endereco, proprietario_numero_endereco, proprietario_cep,
+      cnpj, endereco_loja, numero_loja, cep_loja, segmento,
+      tempo_preparo_padrao_min, chave_pix, consentimento_lgpd_aceito_em
+    ) values (
+      novo_tenant_id,
+      meta->>'nome',
+      meta->>'proprietario_nome',
+      meta->>'proprietario_cpf',
+      nullif(meta->>'proprietario_data_nascimento', '')::date,
+      meta->>'proprietario_endereco',
+      meta->>'proprietario_numero_endereco',
+      meta->>'proprietario_cep',
+      meta->>'cnpj',
+      meta->>'endereco_loja',
+      meta->>'numero_loja',
+      meta->>'cep_loja',
+      nullif(meta->>'segmento', ''),
+      nullif(meta->>'tempo_preparo_padrao_min', '')::integer,
+      meta->>'chave_pix',
+      now()
+    )
+    on conflict (id) do nothing;
+
+    insert into usuarios_loja (tenant_id, auth_user_id, nome, papel)
+    values (novo_tenant_id, new.id, meta->>'proprietario_nome', 'dono')
+    on conflict (auth_user_id) do nothing;
+
+    if meta ? 'horarios' then
+      insert into horarios_funcionamento (tenant_id, dia_semana, periodo_inicio, periodo_fim)
+      select novo_tenant_id, (h->>'dia_semana')::smallint, (h->>'periodo_inicio')::time, (h->>'periodo_fim')::time
+      from jsonb_array_elements(meta->'horarios') as h;
+    end if;
+
+    -- mesmo motivo do ramo de entregador acima: PII (cpf, endereço, data de
+    -- nascimento, chave Pix) não fica parada em auth.users. Só zera depois
+    -- de todos os inserts deste ramo (incluindo o laço de horarios) já
+    -- terem lido tudo que precisavam de `meta`.
+    update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger trg_provisionar_cadastro_pos_signup
+  after insert on auth.users
+  for each row
+  execute function provisionar_cadastro_pos_signup();
+
+-- Achado real (roteiro de teste manual com signUp() de verdade, 17/08/2026):
+-- o clear de raw_user_meta_data acima (dentro do INSERT trigger) É
+-- sobrescrito, alguns milissegundos depois, por uma 2ª escrita do próprio
+-- GoTrue em auth.users — parte do fluxo normal de signup com provider
+-- 'email', que cria a linha em auth.identities e resincroniza
+-- raw_user_meta_data a partir do payload original que ele recebeu na
+-- requisição (não sabe, nem precisa saber, que um trigger nosso já limpou
+-- isso). Confirmado comparando timestamps reais: auth.users.updated_at
+-- ficou ~500ms depois de auth.users.created_at, e bate com
+-- auth.identities.created_at — não é hipótese, é o que aconteceu.
+--
+-- ORDEM DE EXECUÇÃO — não há corrida possível entre o INSERT trigger
+-- acima e essa 2ª escrita do GoTrue, por garantia do próprio Postgres
+-- (não só observação empírica dos timestamps): triggers AFTER ROW
+-- executam de forma SÍNCRONA, dentro da mesma instrução INSERT, e essa
+-- instrução só retorna controle pro cliente (GoTrue) depois do trigger
+-- (incluindo toda leitura de `meta`) já ter terminado. A escrita
+-- seguinte do GoTrue é uma chamada HTTP/SQL SEPARADA e POSTERIOR — só
+-- pode acontecer depois que o INSERT já retornou pra ele. Não existe
+-- cenário onde a 2ª escrita "alcança" o trigger no meio da leitura.
+--
+-- Corrigido com um 2º trigger, AFTER UPDATE, que reage a essa reescrita.
+-- Duas camadas de proteção, cada uma resolvendo um problema diferente:
+--
+-- 1) LOOP INFINITO: o WHEN exige OLD IS DISTINCT FROM NEW (não reage a
+--    updates que não mudam nada) E OLD = '{}' (só reage quando o valor
+--    ANTERIOR era vazio). A própria limpeza que este trigger faz deixa
+--    NEW = '{}' — na reavaliação seguinte (o UPDATE que ELE MESMO
+--    disparou), OLD passa a ser o payload não-vazio de antes, não '{}',
+--    então a condição falha e o corpo não roda de novo. Converge em no
+--    máximo 2 disparos por reescrita do GoTrue, nunca loop.
+--
+-- 2) CONDIÇÃO FROUXA (achado de revisão): "se não está vazio, limpa" é
+--    perigoso demais sozinho — limparia sem querer qualquer metadata
+--    futura legítima de um usuário JÁ provisionado (ex: se um dia
+--    guardarmos preferência de notificação em raw_user_meta_data depois
+--    do signup). Resolvido com uma janela de tempo: só considera "eco
+--    do GoTrue" uma reescrita que aconteça a poucos minutos da CRIAÇÃO
+--    da conta (o gap real medido foi 100-500ms; 2 minutos já é margem
+--    generosa) — combinado com OLD = '{}' (é uma "revivificação" do que
+--    acabamos de limpar, não uma edição por cima de metadata já
+--    preenchida). Uma atualização legítima de metadata dias/meses
+--    depois do signup, mesmo que também parta de '{}', cai fora da
+--    janela de tempo e não é tocada. Limitação documentada: uma
+--    hipotética atualização legítima ocorrendo nos primeiros 2 minutos
+--    de vida da conta também seria limpa — nenhum fluxo atual do
+--    produto faz isso; se algum dia fizer, essa janela precisa ser
+--    revisitada.
+--
+-- A checagem de "já existe entregadores/usuarios_loja pra esse
+-- auth_user_id" continua dentro do corpo da função (defesa adicional:
+-- garante que só tocamos linhas que ESTE mecanismo provisionou) — o
+-- WHEN não pode ter subquery/EXISTS (erro real do Postgres: "cannot use
+-- subquery in trigger WHEN condition"), só expressões escalares.
+create or replace function limpar_metadata_apos_provisionamento()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if exists (select 1 from entregadores where auth_user_id = new.id)
+    or exists (select 1 from usuarios_loja where auth_user_id = new.id) then
+    update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger trg_limpar_metadata_apos_provisionamento
+  after update on auth.users
+  for each row
+  when (
+    old.raw_user_meta_data is distinct from new.raw_user_meta_data
+    and old.raw_user_meta_data = '{}'::jsonb
+    and new.raw_user_meta_data <> '{}'::jsonb
+    and now() - new.created_at < interval '2 minutes'
+  )
+  execute function limpar_metadata_apos_provisionamento();
+
+-- ==============================================================
 -- REALTIME (seção B2 da análise de mercado) — sem isso, os canais
 -- postgres_changes abertos por painel-loja.html (iniciarAtualizacoesAoVivo())
 -- nunca disparam evento nenhum: uma tabela só entra no fluxo de Realtime do
