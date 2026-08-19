@@ -812,6 +812,17 @@ C:\Users\Usuário\Projetos\giro certo
       pendência esquecida.
 
 ## Pendências reais no momento
+- [ ] **BLOQUEIA fluxo de entregador real (não bloqueia o piloto desta
+      semana, que usa só um entregador de teste aprovado via SQL)**: não
+      existe NENHUMA UI em `painel-loja.html` pra loja aprovar um entregador
+      que se cadastrou pelo link `?loja=`. A aba "Entregadores" mostra
+      literalmente o texto `"Lista de entregadores cadastrados ainda não foi
+      construída."` — achado real, confirmado por grep, nunca documentado
+      antes desta sessão. Se um motoboy real se cadastrar, ele fica preso em
+      `status_verificacao = 'em_avaliacao'` (mensagem "resposta em até 7
+      dias") pra sempre, sem forma nenhuma de aprovação pela interface — só
+      via UPDATE direto no banco. Bloqueia divulgar o link `?loja=` pra
+      motoboys de verdade até essa tela existir.
 - [ ] **Auditoria de outros gaps latentes de Realtime/publication** (pedido
       explícito do usuário, não bloqueia o piloto desta semana) — o achado do
       item 17 (`pedidos`/`rotas_entrega` fora da publication, painel não
