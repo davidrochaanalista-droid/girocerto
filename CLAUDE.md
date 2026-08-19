@@ -810,6 +810,59 @@ C:\Users\Usuário\Projetos\giro certo
       como passos separados e deliberados, nunca automáticos. Reconectar via
       GitHub é uma escolha válida pra revisitar depois do piloto, não uma
       pendência esquecida.
+20. **"Definir localização" ganhou alternativa de endereço manual — GPS
+    sozinho não escalava** (18/08/2026, mesmo dia). Antes de qualquer
+    cadastro real acontecer, o usuário pediu a explicação técnica exata do
+    botão de GPS existente e decidiu, a partir disso, que dependência 100%
+    de `navigator.geolocation` sem fallback nenhum não era aceitável — nem
+    só pra hamburgueria de agora, nem pros próximos clientes.
+    - **Adicionado em `painel-loja.html`**: campo de endereço livre (texto)
+      como alternativa ao GPS, os dois convivem lado a lado — geocoding via
+      **Nominatim/OpenStreetMap** (gratuito, sem API key). Só dispara em
+      clique explícito no botão "Buscar" (nunca por tecla digitada), dentro
+      da política de uso deles (~1 req/s, sem autocomplete). Atribuição "©
+      colaboradores do OpenStreetMap" exibida sempre que um resultado
+      aparece (exigência da licença ODbL dos dados).
+    - **Ambiguidade tratada com lista de candidatos** (não erro genérico):
+      se o Nominatim retorna mais de 1 resultado, mostra todos pro usuário
+      escolher; endereço não encontrado mostra erro claro pedindo pra
+      revisar, nunca falha silenciosamente.
+    - **Confirmação antes de salvar**: mostra endereço formatado + lat/lng
+      + link "abrir no mapa" (OpenStreetMap, nova aba) — só grava em
+      `tenants.lat/lng` depois de um clique explícito de confirmação.
+    - **Testado com o endereço real da hamburgueria** (Avenida Basiléia,
+      97, Lauzane Paulista, São Paulo - SP, CEP 02440-060), contra um
+      tenant de teste (não o real, que ainda não existia no banco nesse
+      momento):
+      - **Achado real**: incluir a palavra "CEP" antes do número quebra a
+        busca no Nominatim (retorna vazio) — só o número isolado funciona.
+        Confirmado 2x, reproduzível. O proprietário precisa buscar SEM a
+        palavra "CEP" (só o número do CEP, se quiser incluir).
+      - **Achado real, mais importante**: o Nominatim **nunca** usou o
+        número "97" pra achar um ponto específico nessa avenida — com ou
+        sem o número na busca, os 3 resultados retornados são idênticos
+        (segmentos de via, `class: highway`, não endereço pontual). O OSM
+        não tem esse número mapeado como ponto de endereço nessa rua. A
+        lista de 3 candidatos (cada um com CEP diferente) permitiu
+        escolher o certo (`02440-060`) mesmo assim.
+      - Resultado salvo: lat `-23.4774474`, lng `-46.647413` — **118,3
+        metros** (Haversine exato, não estimativa) da referência de
+        sanidade fornecida pelo usuário, mesmo bairro (Lauzane Paulista,
+        Mandaqui, confirmado no próprio `display_name` do Nominatim). Bem
+        dentro do `raio_chamada_motoboy_km` default (1.5km).
+      - Fallback de ambiguidade retestado isolado (com e sem o número 97,
+        sem a palavra "CEP") — comportamento idêntico e consistente nos
+        dois casos, nunca falha silenciosamente.
+    - Suíte 122/122 (Railway pausado/restaurado, mesmo protocolo). Tenant
+      de teste limpo do banco ao final.
+    - **Limitação honesta, não escondida**: geocoding por endereço aqui
+      chega no nível "trecho de rua certo", não "casa exata" — suficiente
+      pro raio de despacho de motoboy (não é navegação turn-by-turn), mas
+      não é geocoding ponto-a-ponto perfeito. Documentado tanto pro
+      usuário quanto aqui, não apresentado como mais preciso do que é.
+    - Deploy manual na Vercel feito depois de revisão explícita do diff
+      pelo usuário (mesmo protocolo — nada de deploy sem aprovação
+      prévia).
 
 ## Pendências reais no momento
 - [ ] **BLOQUEIA fluxo de entregador real (não bloqueia o piloto desta
