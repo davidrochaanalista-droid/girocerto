@@ -863,19 +863,190 @@ C:\Users\Usuário\Projetos\giro certo
     - Deploy manual na Vercel feito depois de revisão explícita do diff
       pelo usuário (mesmo protocolo — nada de deploy sem aprovação
       prévia).
+21. **Teste real do fluxo de cadastro de entregador (`app-entregador.html`)
+    + achado crítico de configuração (Site URL apontando pra localhost) —
+    corrigido e revalidado em produção** (18-19/08/2026, mesmo dia).
+    Pedido: validar `signUp()` real de entregador contra um TENANT DE TESTE
+    (não a hamburgueria real, que ainda não existia no banco) mas usando o
+    endereço real dela (mesmo endereço do item 20), pra já exercitar
+    geolocalização/raio de despacho com coordenada real.
+    - **Fluxo completo testado com sucesso contra produção**
+      (`girocerto-mockups.vercel.app`): `signUp()` real (moto) sem erro
+      42501, trigger `provisionar_cadastro_pos_signup()` criou a linha em
+      `entregadores` corretamente vinculada ao tenant de teste, e-mail de
+      confirmação real recebido (Mailinator), login, tela "Falta pouco",
+      upload dos 3 documentos (CNH/CRLV/comprovante) pro bucket
+      `documentos-privados` com paths corretos, `verificacao_enviada_em`/
+      `verificacao_prazo_limite` gravados com a diferença exata de 7 dias
+      (A1 confirmado com dado real de entregador, não só de loja).
+    - **Achado crítico, real, pego durante o teste**: o link de
+      confirmação de e-mail do Supabase Auth apontava pra
+      `redirect_to=http://localhost:3000` — configuração de `Site URL` no
+      projeto hospedado nunca tinha sido trocada do valor padrão. Clicando
+      no link real (não simulado), o navegador ia parar em
+      `http://localhost:3000/#access_token=...`, página inacessível, com o
+      token de sessão preso na URL. A confirmação em si funcionava no
+      backend (`email_confirmed_at` gravado normalmente), mas um usuário
+      real — loja OU entregador, o bug afeta os dois igualmente, já que
+      nenhum dos dois `signUp()` no código passa `emailRedirectTo` — veria
+      "site inacessível" logo depois de confirmar o e-mail, sem noção de
+      como voltar pro app. Quase passou despercebido até o primeiro
+      cliente real confirmar o e-mail dele.
+    - **Corrigido via dashboard do Supabase** (`Authentication > URL
+      Configuration`, ação que exige login na conta do usuário — não é
+      algo que dá pra automatizar sem credenciais, então o usuário logou
+      manualmente e eu apliquei a mudança depois de autenticado): `Site
+      URL` trocado de `http://localhost:3000` pra
+      `https://girocerto-mockups.vercel.app/painel-loja.html`; adicionada
+      `https://girocerto-mockups.vercel.app/**` em `Redirect URLs`
+      (wildcard cobre os 3 mockups, inclusive querystring
+      `?loja=<tenant_id>` do link do entregador).
+    - **Revalidado com um novo cadastro de teste (loja) do zero**: link do
+      e-mail real veio com `redirect_to=https://girocerto-mockups.vercel.app/
+      painel-loja.html`; clicado de verdade, o navegador foi parar em
+      produção normalmente (não mais em localhost); `email_confirmed_at`
+      gravado. Fix confirmado funcionando ponta a ponta.
+    - **Limitação residual, não corrigida, registrada como pendência
+      nova**: como nenhum dos dois `signUp()` (loja em `cadastro-loja.html`,
+      entregador em `app-entregador.html`) passa `emailRedirectTo`
+      explícito, os dois caem no MESMO `Site URL` de fallback
+      (`painel-loja.html`). Isso resolve o bug crítico (não trava mais em
+      localhost), mas um entregador que confirmar o e-mail dele vai
+      aterrissar no painel da LOJA, não em `app-entregador.html` — página
+      errada pra ele, ainda que não quebrada. Fix completo exigiria passar
+      `options.emailRedirectTo` específico em cada `signUp()` (e, no caso
+      do entregador, preservar `?loja=<tenant_id>` nesse redirect) — não
+      feito nesta sessão, fica como pendência.
+    - Todo o dado de teste (2 tenants, incluindo um segundo criado só pra
+      revalidar o fix, 3 auth users — dono x2, entregador x1 — e os 3
+      arquivos no bucket `documentos-privados`) limpo do banco ao final,
+      confirmado sem resíduo.
+22. **`mockups/painel-dev.html` — ferramenta interna pro desenvolvedor
+    aprovar entregadores de teste sem SQL manual + achado de segurança real
+    corrigido no processo** (19-20/08/2026). Pedido explícito: arquivo
+    separado (não uma aba dentro de `painel-loja.html` — a hamburgueria
+    nunca deve ver isso), acesso restrito só ao dev, superfície de ação
+    mínima (só aprovar, nada de editar outros campos). Escopo final,
+    confirmado com o usuário depois de uma resposta inicial confusa/fora de
+    contexto dele: painel de 5 seções (aprovação, tenants, entregadores,
+    saúde do motor, pedidos recentes), não só aprovação.
+    - **Achado de segurança real, fora do escopo original, corrigido na
+      mesma mudança (decisão do usuário)**: a policy `"entregador atualiza
+      seu proprio cadastro"` (`FOR UPDATE`, sem `WITH CHECK`) permitia o
+      próprio entregador setar `status_verificacao='aprovado'` via update
+      direto — bypass total de qualquer processo de aprovação, manual ou
+      pela ferramenta nova. Corrigido com trigger `BEFORE UPDATE`
+      (`impedir_autoaprovacao_entregador()`, mesma técnica de
+      `proteger_bloqueado_ate()` — `WITH CHECK` não enxerga o valor ANTIGO
+      da coluna na mesma expressão) barrando mudança de
+      `status_verificacao`/`aprovado_por`/`aprovado_em`/`motivo_reprovacao`
+      pelo próprio entregador, com exceção só pro dev (`eh_desenvolvedor_admin()`).
+    - **Modelo de acesso** (revisado a fundo com o usuário antes de aplicar,
+      2 rodadas de perguntas sobre o mecanismo exato): tabela allowlist
+      `desenvolvedores_admin(auth_user_id)` — RLS habilitada e DE PROPÓSITO
+      sem nenhuma policy própria (só funções `SECURITY DEFINER` e service
+      role enxergam) — e função `eh_desenvolvedor_admin()` (mesmo padrão de
+      `minhas_tenant_ids()`) checando `auth.uid()` contra ela. **Ponto
+      confirmado explicitamente com o usuário**: o trigger de
+      auto-aprovação NÃO distingue "é a RPC chamando" de "é uma API direta"
+      — ele só verifica quem está autenticado. A proteção real contra um
+      PATCH direto do próprio dev é RLS (o dev nunca recebeu policy de
+      `UPDATE` em `entregadores`, só `SELECT`) — sem policy de `UPDATE`
+      aplicável, RLS nega o update de cara, então o trigger nunca chega a
+      ser avaliado por essa via; só a RPC `aprovar_entregador_teste()`
+      (`SECURITY DEFINER`, bypassa RLS mas não triggers) realmente escreve.
+      **Invariante documentada no próprio comentário SQL**: se algum dia uma
+      policy de `UPDATE` for adicionada pro dev em `entregadores`, esse
+      trigger sozinho deixa de ser suficiente.
+    - RPC `aprovar_entregador_teste(id)` (`SECURITY DEFINER`) em vez de uma
+      policy de `UPDATE` genérica pro dev — toca só `status_verificacao`/
+      `aprovado_em`, sempre, mesmo que a chamada tentasse mandar outros
+      campos (a assinatura só aceita o id). `aprovado_por` fica `NULL` de
+      propósito: quem aprova aqui não é um `usuarios_loja` (a FK de
+      `aprovado_por` referencia `usuarios_loja(id)`).
+    - **`is_teste` (boolean, default false) adicionado em `entregadores` E
+      `tenants`** — sinalizador explícito em vez de heurística de nome/
+      e-mail (pedido original só cobria `entregadores`; estendido a
+      `tenants` pela mesma razão, decisão comunicada e aprovada). Setado via
+      metadata opcional `is_teste` no `signUp()`
+      (`provisionar_cadastro_pos_signup()` estendida); cadastro real nunca
+      expõe esse campo, fica `false` por padrão. UI mostra o badge TESTE/
+      REAL a partir do campo (fonte de verdade), com um aviso visual
+      separado se nome/e-mail "parecem" teste mas o campo diz o contrário
+      (ou vice-versa) — não decide nada, só chama atenção pra possível erro
+      de cadastro.
+    - **"Saúde do motor" simplificada, decisão comunicada e aprovada**: não
+      usa `pg_stat_activity` (exigiria privilégio elevado só pra inspecionar
+      conexões de outros processos, e mesmo assim não dá pra identificar com
+      confiança qual conexão é o listener do Railway — falsa precisão). Usa
+      o sinal que o próprio usuário ofereceu como alternativa: tempo desde a
+      última linha em `tentativas_despacho`, com aviso na tela de que é
+      indireto (só há atividade quando um pedido fica pronto de verdade).
+    - **Conta dev criada via `admin.createUser`, não `signUp()`** (desvio
+      comunicado e aprovado): sem metadata o trigger de provisionamento não
+      cria nada (confirmado lendo o código antes de decidir), então
+      `signUp()` funcionaria, mas é uma conta de serviço, não um fluxo de
+      UX — `admin.createUser` evita gastar rate limit de e-mail à toa.
+      E-mail `girocerto2026@gmail.com` (mesmo endereço da conta da
+      plataforma Supabase, mas são identidades completamente separadas: uma
+      é login em supabase.com, outra é uma linha em `auth.users` do projeto
+      — sem conflito nenhum). Senha gerada e mostrada uma única vez no chat,
+      nunca gravada em arquivo nenhum.
+    - **Testado de ponta a ponta contra o banco hospedado real** (script
+      avulso, 20 asserts, não versionado — fora do padrão de
+      `tests/COBERTURA.md` porque é infraestrutura interna, não fluxo de
+      produto): entregador de teste criado com `is_teste=true` →
+      `status_verificacao='em_avaliacao'` confirmado; login do dev →
+      `eh_desenvolvedor_admin()=true`; policy de SELECT mostra o pendente;
+      **PATCH direto do dev tentando burlar a RPC → 0 linhas afetadas,
+      RLS bloqueou antes do trigger** (prova a garantia real); RPC aprova →
+      só `status_verificacao`/`aprovado_em` mudaram, `aprovado_por` continua
+      `null`, `chave_pix`/`cpf` intocados; **o próprio entregador tentando
+      se auto-aprovar (ou auto-reprovar) → bloqueado com erro `42501`
+      mencionando "aprovação"**, status não foi revertido; entregador ainda
+      consegue editar campos normais (`lat`/`lng`) depois disso — confirma
+      que o trigger não travou o resto do update, só os 4 campos
+      protegidos. Dado de teste limpo ao final (tenant + auth user).
+    - **`painel-dev.html` fica SÓ LOCAL, decisão explícita do usuário**: não
+      publicado na Vercel — ferramenta com poder de aprovar cadastros, sem
+      ganho real em expor uma URL publicamente descobrível só pra uso do
+      dev. Roda via `python -m http.server` quando precisar. Login+RLS já
+      protegeriam mesmo se publicado, mas reduzir a superfície por padrão
+      não custa nada.
+    - Não commitado, não deployado (nem os 3 mockups existentes, nem este
+      novo) — só a mudança de schema foi aplicada no banco hospedado
+      (`db/schema.sql` e a migration re-sincronizados, como sempre).
 
 ## Pendências reais no momento
-- [ ] **BLOQUEIA fluxo de entregador real (não bloqueia o piloto desta
-      semana, que usa só um entregador de teste aprovado via SQL)**: não
-      existe NENHUMA UI em `painel-loja.html` pra loja aprovar um entregador
-      que se cadastrou pelo link `?loja=`. A aba "Entregadores" mostra
-      literalmente o texto `"Lista de entregadores cadastrados ainda não foi
-      construída."` — achado real, confirmado por grep, nunca documentado
-      antes desta sessão. Se um motoboy real se cadastrar, ele fica preso em
-      `status_verificacao = 'em_avaliacao'` (mensagem "resposta em até 7
-      dias") pra sempre, sem forma nenhuma de aprovação pela interface — só
-      via UPDATE direto no banco. Bloqueia divulgar o link `?loja=` pra
-      motoboys de verdade até essa tela existir.
+- [ ] **`db/schema.sql`/migration do item 22 ainda não commitados** (mudança
+      de schema já está aplicada no banco hospedado, testada, funcionando —
+      só falta o `git commit`, aguardando instrução explícita como sempre).
+      `mockups/painel-dev.html` também não commitado — decisão em aberto,
+      não perguntada ainda: mesmo rodando só local, vale versionar o
+      arquivo (backup/histórico) ou prefere manter fora do git também?
+- [ ] **Loja e entregador caem no mesmo `Site URL` de fallback após
+      confirmar e-mail** (achado do item 21) — não é mais o bug crítico
+      (localhost inacessível, já corrigido), mas um entregador confirmando
+      o e-mail hoje aterrissa em `painel-loja.html` (painel da loja) em vez
+      de `app-entregador.html`. Corrigir exige passar
+      `options.emailRedirectTo` explícito em cada `signUp()` — em
+      `cadastro-loja.html` apontando pra `painel-loja.html` (já é o
+      comportamento atual, sem mudança), em `app-entregador.html` apontando
+      pra `app-entregador.html?loja=<tenant_id>` (precisa preservar o
+      tenant_id através do fluxo de confirmação). Não bloqueia o piloto
+      desta semana (usa só 1 entregador de teste aprovado via SQL, sem
+      passar pelo link real), mas bloqueia divulgar o link `?loja=` pra
+      motoboys reais com uma experiência limpa.
+- [ ] **BLOQUEIA fluxo de entregador real pela LOJA (não bloqueia mais o
+      dev)**: continua sem existir NENHUMA UI em `painel-loja.html` pra loja
+      aprovar um entregador que se cadastrou pelo link `?loja=` — a aba
+      "Entregadores" mostra literalmente o texto `"Lista de entregadores
+      cadastrados ainda não foi construída."`. `mockups/painel-dev.html`
+      (item 22) resolve isso só pro desenvolvedor (uso local, ferramenta
+      interna) — a hamburgueria continua sem nenhuma forma de aprovar
+      motoboy nenhum pela própria interface dela. Bloqueia divulgar o link
+      `?loja=` pra motoboys de verdade com a LOJA no controle do processo
+      (hoje só o dev consegue aprovar).
 - [ ] **Auditoria de outros gaps latentes de Realtime/publication** (pedido
       explícito do usuário, não bloqueia o piloto desta semana) — o achado do
       item 17 (`pedidos`/`rotas_entrega` fora da publication, painel não

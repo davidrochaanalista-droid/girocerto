@@ -129,6 +129,11 @@ create table if not exists tenants (
   fator_ajuste_preparo numeric(4,2) not null default 1.00,
   ajuste_preparo_atualizado_em timestamptz,
 
+  -- mesma marca explícita de teste de entregadores.is_teste (ver comentário
+  -- lá) — sessão de 19/08/2026, ferramenta painel-dev.html. Cadastro real
+  -- (cadastro-loja.html) nunca expõe esse campo, fica false por padrão.
+  is_teste boolean not null default false,
+
   criado_em timestamptz not null default now()
 );
 
@@ -240,6 +245,14 @@ create table if not exists entregadores (
   verificacao_prazo_limite timestamptz,
   aprovado_por uuid,  -- referencia usuarios_loja(id); FK adicionada após a criação dessa tabela, mais abaixo
   aprovado_em timestamptz,
+
+  -- marca explícita de cadastro de TESTE (ferramenta interna painel-dev.html,
+  -- sessão de 19/08/2026) — não depende de heurística de nome/e-mail, que é
+  -- frágil (falso positivo/negativo). Setado via metadata opcional `is_teste`
+  -- no signUp() (ver provisionar_cadastro_pos_signup() mais abaixo); cadastro
+  -- real (app-entregador.html, formulário do motoboy) nunca expõe esse campo,
+  -- então fica false por padrão sempre que vier de lá.
+  is_teste boolean not null default false,
 
   -- ------------------------------------------------------------
   -- ACESSO AO SISTEMA (seção 26) — a senha em si NUNCA fica nesta
@@ -850,6 +863,22 @@ left join avaliacoes_loja al
   and al.criado_em > now() - interval '30 days'
 group by t.id, t.nome, t.oferece_banheiro, t.oferece_abrigo_chuva;
 
+-- ------------------------------------------------------------
+-- DESENVOLVEDORES_ADMIN: allowlist pra painel-dev.html (ferramenta interna,
+-- sessão de 19/08/2026) — não a hamburgueria, não usuarios_loja, uma conta
+-- de acesso separada só pra aprovar cadastros de teste sem SQL manual.
+-- RLS habilitada e DE PROPÓSITO sem nenhuma policy: ninguém consegue ler
+-- esta tabela via PostgREST (nem o próprio dev logado) — só a função
+-- eh_desenvolvedor_admin() (SECURITY DEFINER, mais abaixo) e o service role
+-- enxergam. Não expõe nada além do próprio auth_user_id de quem está na
+-- lista, mas mantém o mesmo princípio de superfície mínima do resto do
+-- schema: se não precisa ser lido por ninguém via API, não expõe SELECT.
+-- ------------------------------------------------------------
+create table if not exists desenvolvedores_admin (
+  auth_user_id uuid primary key references auth.users(id) on delete cascade,
+  criado_em timestamptz not null default now()
+);
+
 -- ==============================================================
 -- ROW LEVEL SECURITY (seções 37/38)
 -- IMPORTANTE: o backend (Node.js, seção 4) usa a service role key
@@ -896,6 +925,23 @@ stable
 set search_path = public, pg_temp
 as $$
   select tenant_id from usuarios_loja where auth_user_id = auth.uid() and papel = 'dono';
+$$;
+
+-- ------------------------------------------------------------
+-- painel-dev.html (ferramenta interna, sessão de 19/08/2026): mesmo padrão
+-- das duas funções acima — SECURITY DEFINER pra consultar
+-- desenvolvedores_admin (que não tem NENHUMA policy própria, ver comentário
+-- na criação da tabela) sem reacionar RLS. Usada tanto pelas policies de
+-- SELECT quanto pela RPC de aprovação abaixo.
+-- ------------------------------------------------------------
+create or replace function eh_desenvolvedor_admin()
+returns boolean
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select exists(select 1 from desenvolvedores_admin where auth_user_id = auth.uid());
 $$;
 
 -- ------------------------------------------------------------
@@ -1024,6 +1070,39 @@ end;
 $$;
 
 -- ------------------------------------------------------------
+-- painel-dev.html (ferramenta interna, sessão de 19/08/2026): aprova um
+-- cadastro pendente sem precisar de SQL manual. SECURITY DEFINER porque o
+-- desenvolvedor não é o próprio entregador (auth_user_id não bate) nem um
+-- usuarios_loja do tenant — nenhuma policy de UPDATE existente cobriria
+-- isso. Deliberadamente uma RPC estreita, não uma policy de UPDATE genérica
+-- em entregadores: uma policy exporia a linha inteira a updates arbitrários
+-- via PostgREST (CPF, chave Pix, CNH etc.); esta função só é capaz de tocar
+-- os 2 campos abaixo, sempre, e nada além disso — mesmo que alguém tente
+-- mandar outros campos junto na chamada da RPC (a assinatura só aceita o
+-- id). aprovado_por fica NULL de propósito: quem aprova aqui não é um
+-- usuarios_loja (aprovado_por referencia usuarios_loja(id), não faria
+-- sentido forçar um valor artificial só pra preencher o campo).
+-- ------------------------------------------------------------
+create or replace function aprovar_entregador_teste(p_entregador_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not eh_desenvolvedor_admin() then
+    raise exception 'acesso negado' using errcode = '42501';
+  end if;
+
+  update entregadores
+  set status_verificacao = 'aprovado',
+      aprovado_em = now()
+  where id = p_entregador_id
+    and status_verificacao = 'em_avaliacao';
+end;
+$$;
+
+-- ------------------------------------------------------------
 -- Achado ultrareview (2ª rodada): a policy "entregador atualiza seu proprio
 -- cadastro" (FOR UPDATE, sem WITH CHECK) deixava o próprio entregador limpar
 -- bloqueado_ate via update direto — bypass total do bloqueio de descanso
@@ -1082,6 +1161,61 @@ create trigger trg_proteger_reativacao_turno_bloqueado
   before update on turnos
   for each row execute function proteger_reativacao_turno_bloqueado();
 
+-- ------------------------------------------------------------
+-- Achado (revisão de painel-dev.html, 19/08/2026): a policy "entregador
+-- atualiza seu proprio cadastro" (FOR UPDATE, sem WITH CHECK) permitia o
+-- próprio entregador setar status_verificacao='aprovado' via update direto
+-- — bypass total de qualquer processo de aprovação, manual ou pela
+-- ferramenta nova. Mesma técnica de proteger_bloqueado_ate() (trigger, não
+-- WITH CHECK, porque WITH CHECK não enxerga o valor ANTIGO da coluna na
+-- mesma expressão): aqui vale barrar com exceção (não silenciar), mesmo
+-- raciocínio de proteger_reativacao_turno_bloqueado() — essa transição
+-- nunca deveria acontecer por essa via.
+--
+-- O escape hatch eh_desenvolvedor_admin() NÃO distingue "é a RPC
+-- aprovar_entregador_teste() chamando" de "é uma chamada de API direta" —
+-- ele só verifica QUEM está autenticado (auth.uid(), derivado do JWT
+-- verificado pelo PostgREST; não é uma session variable setável pelo
+-- cliente, não tem o que forjar). O motivo de isso ser seguro mesmo assim:
+-- o dev NUNCA recebeu policy de UPDATE em entregadores (só SELECT, mais
+-- abaixo) — sem nenhuma policy de UPDATE aplicável, RLS nega update direto
+-- da sessão dele de cara (0 linhas afetadas), então esse trigger nunca
+-- chega a ser avaliado por essa via. O único caminho que realmente escreve
+-- é a RPC, que roda SECURITY DEFINER (bypassa RLS pra sua própria query
+-- interna, mas não bypassa este trigger) com uma lista fixa de 2 colunas —
+-- o escape hatch aqui só existe pra essa escrita legítima da RPC não cair
+-- na mesma exceção pensada pro entregador comum.
+-- INVARIANTE: se algum dia uma policy de UPDATE for adicionada pro dev em
+-- entregadores (hoje não existe nenhuma), este trigger sozinho deixa de ser
+-- suficiente pra impedir um update direto tocando os 4 campos — revisitar
+-- nesse caso.
+-- ------------------------------------------------------------
+create or replace function impedir_autoaprovacao_entregador()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if eh_desenvolvedor_admin() then
+    return new;
+  end if;
+
+  if new.status_verificacao is distinct from old.status_verificacao
+     or new.aprovado_por is distinct from old.aprovado_por
+     or new.aprovado_em is distinct from old.aprovado_em
+     or new.motivo_reprovacao is distinct from old.motivo_reprovacao then
+    raise exception 'entregador não pode alterar campos de aprovação do próprio cadastro' using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger trg_impedir_autoaprovacao_entregador
+  before update on entregadores
+  for each row execute function impedir_autoaprovacao_entregador();
+
 alter table pedidos enable row level security;
 alter table rotas_entrega enable row level security;
 alter table entregadores enable row level security;
@@ -1100,6 +1234,9 @@ alter table horarios_funcionamento enable row level security;
 -- tentativas_contato: revela pra quais entregadores uma rota foi
 -- oferecida e quem recusou/não respondeu.
 alter table tentativas_despacho enable row level security;
+-- desenvolvedores_admin: RLS habilitada e de propósito sem nenhuma policy
+-- (ver comentário na criação da tabela, seção de tabelas acima).
+alter table desenvolvedores_admin enable row level security;
 
 -- pedidos: loja vê e cria os do seu tenant
 create policy "loja ve seus pedidos" on pedidos for select using (
@@ -1263,6 +1400,22 @@ create policy "qualquer um le horario de funcionamento" on horarios_funcionament
 create policy "loja edita seu proprio horario" on horarios_funcionamento for all using (
   tenant_id in (select minhas_tenant_ids()));
 
+-- ------------------------------------------------------------
+-- painel-dev.html (ferramenta interna, sessão de 19/08/2026): SOMENTE
+-- LEITURA pras 4 tabelas que a tela precisa mostrar. Nenhuma dessas
+-- policies dá UPDATE/INSERT/DELETE nenhum — a única escrita possível pelo
+-- desenvolvedor é a RPC estreita aprovar_entregador_teste() (ver acima),
+-- não uma policy de tabela. Escopo mínimo: só o que a tela realmente lista.
+-- ------------------------------------------------------------
+create policy "dev admin ve todos entregadores" on entregadores for select using (
+  eh_desenvolvedor_admin());
+create policy "dev admin ve todos tenants" on tenants for select using (
+  eh_desenvolvedor_admin());
+create policy "dev admin ve todos pedidos" on pedidos for select using (
+  eh_desenvolvedor_admin());
+create policy "dev admin ve todas tentativas de despacho" on tentativas_despacho for select using (
+  eh_desenvolvedor_admin());
+
 -- ==============================================================
 -- PROVISIONAMENTO AUTOMÁTICO PÓS-SIGNUP (achado real, roteiro de teste
 -- manual, 17/08/2026): o projeto tem confirmação de e-mail obrigatória
@@ -1314,7 +1467,7 @@ begin
       tenant_id, auth_user_id, email, nome, tipo_veiculo, data_nascimento,
       endereco, numero_residencia, cep, chave_pix,
       cpf, cnh_numero, cnh_validade, placa, crlv_validade,
-      rg_numero, responsavel_nome,
+      rg_numero, responsavel_nome, is_teste,
       verificacao_enviada_em, verificacao_prazo_limite, consentimento_lgpd_aceito_em
     ) values (
       (meta->>'tenant_id')::uuid,
@@ -1334,6 +1487,7 @@ begin
       nullif(meta->>'crlv_validade', '')::date,
       meta->>'rg_numero',
       meta->>'responsavel_nome',
+      coalesce((meta->>'is_teste')::boolean, false),
       now(),
       now() + interval '7 days',
       now()
@@ -1360,7 +1514,7 @@ begin
       id, nome, proprietario_nome, proprietario_cpf, proprietario_data_nascimento,
       proprietario_endereco, proprietario_numero_endereco, proprietario_cep,
       cnpj, endereco_loja, numero_loja, cep_loja, segmento,
-      tempo_preparo_padrao_min, chave_pix, consentimento_lgpd_aceito_em
+      tempo_preparo_padrao_min, chave_pix, is_teste, consentimento_lgpd_aceito_em
     ) values (
       novo_tenant_id,
       meta->>'nome',
@@ -1377,6 +1531,7 @@ begin
       nullif(meta->>'segmento', ''),
       nullif(meta->>'tempo_preparo_padrao_min', '')::integer,
       meta->>'chave_pix',
+      coalesce((meta->>'is_teste')::boolean, false),
       now()
     )
     on conflict (id) do nothing;
