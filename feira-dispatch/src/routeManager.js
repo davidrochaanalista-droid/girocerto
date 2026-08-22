@@ -3,6 +3,7 @@
 const { encontrarMelhorInsercao } = require('./insertionEngine');
 const { agruparParadasMesmoLocal } = require('./stopGrouping');
 const { priorizarOfertaJusta } = require('./fairRotation');
+const { enviarPushBuzinaEntregador } = require('./notifications');
 
 /**
  * routeManager depende de um cliente Supabase já configurado, injetado
@@ -186,6 +187,26 @@ function createRouteManager(supabase) {
     if (error) throw error;
   }
 
+  /** Dispara o push de buzina pro entregador — fire-and-forget (planejamento
+   * FCM, 22/08/2026): busca o token na hora em vez de propagar por todo
+   * lado, e nunca deixa uma falha de push interromper o despacho em si
+   * (a oferta real já está no banco, chega via Realtime/polling de
+   * qualquer forma). */
+  async function notificarEntregadorPush(entregadorId) {
+    try {
+      const { data: entregador } = await supabase
+        .from('entregadores')
+        .select('push_token, push_plataforma')
+        .eq('id', entregadorId)
+        .single();
+      if (entregador?.push_token) {
+        await enviarPushBuzinaEntregador(entregador.push_token, entregador.push_plataforma);
+      }
+    } catch (err) {
+      console.error('[push] falha ao notificar entregador (não bloqueia o despacho):', err.message);
+    }
+  }
+
   /** Cria uma proposta de consolidação numa rota JÁ 'em_rota' (aceita pelo
    * entregador), em vez de inserir direto — achado real, 22/08/2026: o
    * entregador nunca ficava sabendo de uma parada nova adicionada à força
@@ -213,6 +234,8 @@ function createRouteManager(supabase) {
       .select()
       .single();
     if (error) throw error;
+
+    notificarEntregadorPush(rota.entregadorId); // fire-and-forget, ver comentário na função
 
     return proposta.id;
   }
@@ -256,6 +279,8 @@ function createRouteManager(supabase) {
       { ...pedido.paradaEntrega, tipo: 'entrega' },
     ];
     await salvarSequencia(rota.id, paradas);
+
+    notificarEntregadorPush(entregadorId); // fire-and-forget, ver comentário na função
 
     return rota.id;
   }

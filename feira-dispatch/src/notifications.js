@@ -1,5 +1,27 @@
 'use strict';
 
+const admin = require('firebase-admin');
+
+/**
+ * Inicialização lazy do firebase-admin — só na primeira chamada que
+ * precisar mandar push de verdade, não no require() do módulo (evita
+ * quebrar em ambiente/teste que não tem FIREBASE_SERVICE_ACCOUNT_JSON
+ * configurado e nunca chama nenhuma função de push).
+ *
+ * FIREBASE_SERVICE_ACCOUNT_JSON: o JSON inteiro da service account
+ * (Firebase Console > Project Settings > Service Accounts > Generate
+ * new private key), como STRING numa única variável de ambiente — não
+ * confundir com google-services.json, que é a config do app Android
+ * (client-side, vai commitado no repo) e não tem nada a ver com essa var.
+ */
+function appFirebase() {
+  if (!admin.apps.length) {
+    const credencial = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    admin.initializeApp({ credential: admin.credential.cert(credencial) });
+  }
+  return admin;
+}
+
 /**
  * Worker simples de notificações. Roda em cron curto (ex: a cada 15s)
  * consumindo a fila `notificacao` (ver migration 003) e despachando
@@ -182,18 +204,53 @@ async function enviarPushVoz(pushToken, plataforma, evento, audioInfo) {
     },
   };
 
-  const resp = await fetch('https://fcm.googleapis.com/v1/projects/SEU_PROJETO/messages:send', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.FCM_SERVER_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ message: payload }),
-  });
+  // FIX (planejamento FCM, 22/08/2026): a chamada antiga usava fetch()
+  // manual com um bearer estático (FCM_SERVER_TOKEN) contra o endpoint
+  // v1 — o v1 exige token OAuth2 de uma service account, não um server
+  // key fixo (modelo legado, hoje incompatível com esse endpoint).
+  // firebase-admin resolve o OAuth2 sozinho por trás de .send().
+  await appFirebase().messaging().send(payload);
+}
 
-  if (!resp.ok) {
-    throw new Error(`FCM respondeu ${resp.status}: ${await resp.text()}`);
-  }
+/**
+ * PUSH SÓ COM BUZINA pro ENTREGADOR — nova oferta de restaurante, nova
+ * oferta de feira, ou parada nova proposta numa rota já aceita. Som
+ * FIXO (buzina_bi_bi.mp3), nunca passa pelo pipeline de mistura
+ * buzina+voz (ttsGenerator.js/ElevenLabs) que é exclusivo do canal do
+ * CONSUMIDOR (enviarPushVoz acima) — o entregador ouve sempre o mesmo
+ * som, independente do evento, por isso essa função não recebe `evento`
+ * nem `audioInfo` nenhum.
+ *
+ * Só Android por enquanto (decisão explícita, 22/08/2026) — o projeto
+ * nunca teve suporte iOS (só @capacitor/android instalado); sem bloco
+ * `apns`, sem arquivo .caf. Adicionar iOS aqui fica pra quando/se decidir
+ * suportar a plataforma de verdade.
+ *
+ * Chamada direto do código de despacho (dispatch-engine/index.js e
+ * feira-dispatch/src/routeManager.js), fora da fila `notificacao` — ou
+ * seja, sem retry automático se o envio falhar (decisão explícita,
+ * 22/08/2026: aceitável nesta fase porque o push é só um AVISO, a oferta
+ * de verdade já está gravada no banco e chega pro app via Realtime/
+ * polling de qualquer forma — falha de push nunca bloqueia o despacho
+ * em si, só logada).
+ */
+async function enviarPushBuzinaEntregador(pushToken, plataforma) {
+  if (plataforma !== 'android') return; // sem suporte iOS ainda
+
+  await appFirebase().messaging().send({
+    token: pushToken,
+    notification: {
+      title: 'GiroCerto',
+      body: 'Nova entrega disponível',
+    },
+    android: {
+      priority: 'high',
+      notification: {
+        channel_id: 'girocerto_buzina_entregador', // precisa existir no app, som customizado
+        sound: 'buzina_bi_bi', // res/raw/buzina_bi_bi.mp3 — sem extensão no payload FCM
+      },
+    },
+  });
 }
 
 /**

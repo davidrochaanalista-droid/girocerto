@@ -5,12 +5,18 @@
   "description": "Motor de despacho do GiroCerto — escuta pedidos prontos via LISTEN/NOTIFY do Postgres, chama entregadores disponíveis, gerencia repique/timeout/failover. Hospedado no Railway.",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "sync-capacitor": "node -e \"require('fs').copyFileSync('../mockups/app-entregador.html','../capacitor-www/index.html')\" && npx cap sync"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/push-notifications": "^8.1.2",
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "firebase-admin": "^12.7.0",
     "pg": "^8.12.0"
   }
 }

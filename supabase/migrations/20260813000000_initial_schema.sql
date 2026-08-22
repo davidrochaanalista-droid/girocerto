@@ -2216,6 +2216,14 @@ comment on column entregadores.aceita_feira is
   'e feira (aceita_feira=true) no mesmo turno — tipo_perfil na rota '
   '(entrega_rota.tipo_perfil) diferencia o contexto, não a conta.';
 
+-- Push nativo pro entregador (planejamento FCM, 22/08/2026) — mesmas
+-- colunas que `usuarios` (consumidor) já tem, mas com SOM PRÓPRIO: o
+-- entregador só ouve buzina_bi_bi.mp3 fixo (ver enviarPushBuzinaEntregador
+-- em notifications.js), nunca o pipeline de mistura buzina+voz que é
+-- exclusivo do canal do consumidor.
+alter table entregadores add column if not exists push_token text;
+alter table entregadores add column if not exists push_plataforma text check (push_plataforma in ('android', 'ios'));
+
 -- ---------------------------------------------------------------------
 -- 1. TABELAS QUE O MÓDULO ASSUMIA JÁ EXISTIREM — criadas do zero
 -- ---------------------------------------------------------------------

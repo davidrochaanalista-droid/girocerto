@@ -18,9 +18,17 @@ Precisa de `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` e `DATABASE_URL` — a
 `DATABASE_URL` deve ser a conexão **direta** (`db.<ref>.supabase.co:5432`), não o
 pooler transacional (pgbouncer recicla a conexão e quebraria o `LISTEN`).
 
+Também precisa de `FIREBASE_SERVICE_ACCOUNT_JSON` (planejamento FCM, 22/08/2026)
+pra notificar o entregador via push nativo (só buzina, sem voz) quando uma nova
+oferta é criada — o JSON inteiro da service account do Firebase (Project Settings
+> Service Accounts > Generate new private key), como string numa única variável.
+Sem essa variável, `enviarPushBuzinaEntregador()` falha silenciosamente (logada,
+nunca bloqueia o despacho) — só afeta a notificação, a oferta em si continua
+chegando pro app via Realtime/polling.
+
 ## Deploy no Railway
 
-Configurar as mesmas 3 variáveis de ambiente no painel do Railway (não usar `.env`
+Configurar as mesmas variáveis de ambiente no painel do Railway (não usar `.env`
 commitado — Railway injeta via dashboard). Deploy como serviço padrão Node
 (`npm install && npm start`); expõe `/health` na porta de `PORT` (Railway define
 automaticamente).

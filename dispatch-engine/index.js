@@ -38,6 +38,7 @@ require('dotenv').config();
 const { Client } = require('pg');
 const { createClient } = require('@supabase/supabase-js');
 const express = require('express');
+const firebaseAdmin = require('firebase-admin');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -52,6 +53,41 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !DATABASE_URL) {
 const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
+
+// Push nativo pro entregador — cópia própria da mesma função de
+// feira-dispatch/src/notifications.js (planejamento FCM, 22/08/2026),
+// duplicada de propósito: os dois são processos Node separados, sem
+// pacote compartilhado, mesmo princípio já usado pra entrega_rota/
+// rota_parada (zero risco de acoplar os dois domínios pesa mais que
+// evitar a duplicação). Som FIXO (buzina_bi_bi), nunca o pipeline de
+// mistura buzina+voz do consumidor. Só Android por enquanto — projeto
+// nunca teve suporte iOS. Fire-and-forget: falha de push é só logada,
+// nunca bloqueia o despacho em si (a oferta real já está gravada em
+// tentativas_despacho, chega pro app via Realtime/polling de qualquer
+// forma).
+function appFirebase() {
+  if (!firebaseAdmin.apps.length) {
+    const credencial = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    firebaseAdmin.initializeApp({ credential: firebaseAdmin.credential.cert(credencial) });
+  }
+  return firebaseAdmin;
+}
+
+async function enviarPushBuzinaEntregador(pushToken, plataforma) {
+  if (plataforma !== 'android' || !pushToken) return;
+  try {
+    await appFirebase().messaging().send({
+      token: pushToken,
+      notification: { title: 'GiroCerto', body: 'Nova entrega disponível' },
+      android: {
+        priority: 'high',
+        notification: { channel_id: 'girocerto_buzina_entregador', sound: 'buzina_bi_bi' },
+      },
+    });
+  } catch (err) {
+    console.error('[push] falha ao notificar entregador (não bloqueia o despacho):', err.message);
+  }
+}
 
 function haversineKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
@@ -96,7 +132,7 @@ async function buscarProximoCandidato(tenantId, rotaId, tenantLat, tenantLng, ra
   const jaTentados = tentadosPorRota.get(rotaId) || new Set();
 
   const [candidatosRes, ocupadosRes] = await Promise.all([
-    admin.from('entregadores').select('id, lat, lng').eq('tenant_id', tenantId).eq('status', 'disponivel'),
+    admin.from('entregadores').select('id, lat, lng, push_token, push_plataforma').eq('tenant_id', tenantId).eq('status', 'disponivel'),
     admin.from('tentativas_despacho').select('entregador_id').is('resultado', null),
   ]);
   if (candidatosRes.error) throw new Error(`buscarProximoCandidato (candidatos): ${candidatosRes.error.message}`);
@@ -199,6 +235,7 @@ async function tentarDespachar(pedidoId) {
   }
 
   console.log(`[despacho] pedido ${pedidoId} -> oferecido ao entregador ${candidato.id} (tentativa ${tentativa.id})`);
+  enviarPushBuzinaEntregador(candidato.push_token, candidato.push_plataforma); // fire-and-forget, ver comentário na função
   agendarTimeout(tentativa.id, pedidoId, rotaId, config.segundos_timeout_despacho);
 }
 

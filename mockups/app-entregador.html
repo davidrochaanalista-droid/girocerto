@@ -753,6 +753,41 @@ async function enviarDocumentosPendentes(){
 // ------------------------------------------------------------
 // LOGIN
 // ------------------------------------------------------------
+/**
+ * Registra o token de push nativo do entregador (planejamento FCM,
+ * 22/08/2026) — som PRÓPRIO (buzina_bi_bi, sem voz), diferente do canal
+ * do consumidor. `window.Capacitor.Plugins.PushNotifications` só existe
+ * quando esta página roda DENTRO do app nativo (wrapper Capacitor) —
+ * mesmo arquivo também é servido como página comum no navegador
+ * (Vercel/local, testes deste projeto inteiro até aqui), então o guard
+ * abaixo é obrigatório: sem ele, todo teste via navegador quebraria.
+ */
+async function registrarPushEntregador(){
+  const PushNotifications = window.Capacitor?.Plugins?.PushNotifications;
+  if(!PushNotifications) return; // rodando no navegador comum, não no app nativo
+
+  try {
+    let perm = await PushNotifications.checkPermissions();
+    if(perm.receive !== 'granted') perm = await PushNotifications.requestPermissions();
+    if(perm.receive !== 'granted') return;
+
+    await PushNotifications.register();
+
+    PushNotifications.addListener('registration', async (token) => {
+      await supabaseClient.from('entregadores').update({
+        push_token: token.value,
+        push_plataforma: 'android', // só Android por enquanto (sem suporte iOS no projeto)
+      }).eq('id', entregadorId);
+    });
+
+    PushNotifications.addListener('registrationError', (err) => {
+      console.error('Erro ao registrar push do entregador:', err);
+    });
+  } catch(err){
+    console.error('Falha ao registrar push do entregador:', err.message || err);
+  }
+}
+
 async function login(){
   const msg = document.getElementById('loginMsg');
   msg.className = 'msg';
@@ -777,6 +812,7 @@ async function carregarEntregador(){
   if(error || !entregador){ mostrar('view-login'); return; }
 
   entregadorId = entregador.id;
+  registrarPushEntregador(); // no-op fora do app nativo (Capacitor) — ver função
 
   // documentos ainda não enviados (fluxo de completar cadastro pós-login,
   // ver enviarCadastro()) — sem isso o entregador ficaria preso vendo
