@@ -1681,6 +1681,10 @@ alter publication supabase_realtime add table rotas_entrega;
 -- Ver "REGRA GERAL" em CLAUDE.md: checar a publication é o PRIMEIRO passo
 -- ao criar qualquer canal novo, antes de debugar filtro/handler/RLS.
 alter publication supabase_realtime add table entrega_rota;
+-- proposta_consolidacao (achado real, sessão de 22/08/2026): mesma
+-- checklist já aplicada de cara desta vez — sem isso, o card de "nova
+-- parada proposta" nunca chegaria no app do entregador.
+alter publication supabase_realtime add table proposta_consolidacao;
 
 -- ==============================================================
 -- STORAGE (seção 39) — buckets privados pros documentos e fotos
@@ -2817,19 +2821,196 @@ begin
 end;
 $$ language plpgsql;
 
+-- ---------------------------------------------------------------------
+-- 14.1 PROPOSTA DE CONSOLIDAÇÃO EM ROTA JÁ ACEITA (achado real, 22/08/2026)
+-- Antes, consolidar um pedido novo numa rota que o entregador já tinha
+-- ACEITO (status='em_rota') era feito direto (inserir_grupo_em_rota_atomico
+-- + reescrita de rota_parada), sem o entregador poder recusar — ele só
+-- descobria a parada nova já commitada. Corrigido: consolidação numa rota
+-- 'em_montagem' (ainda não aceita) continua direta, sem mudança — o
+-- entregador vê o lote inteiro numa única oferta antes de aceitar, como
+-- sempre foi. Só consolidação numa rota JÁ 'em_rota' passa por aqui.
+-- Peso/paradas da rota só refletem o pedido depois do aceite (decisão
+-- explícita do usuário) — uma proposta pendente não reserva capacidade.
+-- ---------------------------------------------------------------------
+create table if not exists proposta_consolidacao (
+  id uuid primary key default gen_random_uuid(),
+  entrega_rota_id uuid references entrega_rota(id) not null,
+  pedido_grupo_id uuid references pedido_grupo(id) not null,
+  entregador_id uuid references entregadores(id) not null,
+  paradas_novas jsonb not null,     -- só as paradas DESSE pedido (coleta(s)+entrega) — usado se for redespachado como rota nova numa recusa
+  paradas_resultado jsonb not null, -- sequência completa proposta (pendentes atuais da rota + as novas) — usado no aceite
+  peso_grupo numeric(10,3) not null,
+  status text not null default 'pendente' check (status in ('pendente','aceita','recusada')),
+  criada_em timestamptz default now(),
+  respondida_em timestamptz
+);
+
+create index if not exists idx_proposta_consolidacao_entregador on proposta_consolidacao(entregador_id, status);
+
+create or replace function aceitar_proposta_consolidacao(p_proposta_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_proposta record;
+  v_resultado jsonb;
+begin
+  select * into v_proposta from proposta_consolidacao where id = p_proposta_id for update;
+
+  if v_proposta is null then
+    raise exception 'proposta não encontrada' using errcode = '02000';
+  end if;
+  if v_proposta.entregador_id <> (select meu_entregador_id_feira()) then
+    raise exception 'proposta não pertence a este entregador' using errcode = '42501';
+  end if;
+  if v_proposta.status <> 'pendente' then
+    raise exception 'proposta já respondida' using errcode = '22023';
+  end if;
+
+  -- recheca peso na hora do aceite (não só na hora da proposta) — outra
+  -- consolidação pode ter ocupado espaço nesse meio-tempo; mesmo lock
+  -- advisory já usado em qualquer inserção nessa rota.
+  v_resultado := inserir_grupo_em_rota_atomico(v_proposta.entrega_rota_id, v_proposta.pedido_grupo_id);
+
+  if not (v_resultado->>'sucesso')::boolean then
+    update proposta_consolidacao set status = 'recusada', respondida_em = now() where id = p_proposta_id;
+    return v_resultado;
+  end if;
+
+  delete from rota_parada
+    where entrega_rota_id = v_proposta.entrega_rota_id and status = 'pendente';
+
+  insert into rota_parada (entrega_rota_id, tipo, pedido_id, pedido_grupo_id, latitude, longitude, ordem, status)
+  select
+    v_proposta.entrega_rota_id,
+    (p->>'tipo')::text,
+    nullif(p->>'pedidoId','')::uuid,
+    nullif(p->>'pedidoGrupoId','')::uuid,
+    (p->>'latitude')::double precision,
+    (p->>'longitude')::double precision,
+    (ordinalidade - 1)::int,
+    'pendente'
+  from jsonb_array_elements(v_proposta.paradas_resultado) with ordinality as t(p, ordinalidade);
+
+  update proposta_consolidacao set status = 'aceita', respondida_em = now() where id = p_proposta_id;
+  return jsonb_build_object('sucesso', true);
+end;
+$$;
+
+create or replace function recusar_proposta_consolidacao(p_proposta_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_proposta record;
+  v_primeira_coleta jsonb;
+  v_lat double precision;
+  v_lng double precision;
+  v_novo_entregador_id uuid;
+  v_nova_rota_id uuid;
+begin
+  select * into v_proposta from proposta_consolidacao where id = p_proposta_id for update;
+
+  if v_proposta is null then
+    raise exception 'proposta não encontrada' using errcode = '02000';
+  end if;
+  if v_proposta.entregador_id <> (select meu_entregador_id_feira()) then
+    raise exception 'proposta não pertence a este entregador' using errcode = '42501';
+  end if;
+  if v_proposta.status <> 'pendente' then
+    raise exception 'proposta já respondida' using errcode = '22023';
+  end if;
+
+  update proposta_consolidacao set status = 'recusada', respondida_em = now() where id = p_proposta_id;
+
+  -- redespacho: mesmo princípio de redespachar_apos_recusa_feira() (recusa
+  -- de rota nova), só que aqui o pedido recusado como CONSOLIDAÇÃO vira
+  -- uma rota NOVA (em_montagem) pro próximo entregador disponível dentro
+  -- do raio — passa a ser uma oferta normal pra ele, com aceite/recusa
+  -- de novo. Se ninguém estiver no raio, o pedido fica sem rota (mesmo
+  -- fallback: retorna null, sem forçar).
+  select p into v_primeira_coleta
+  from jsonb_array_elements(v_proposta.paradas_novas) as p
+  where p->>'tipo' = 'coleta'
+  limit 1;
+
+  if v_primeira_coleta is null then
+    return null;
+  end if;
+
+  v_lat := (v_primeira_coleta->>'latitude')::double precision;
+  v_lng := (v_primeira_coleta->>'longitude')::double precision;
+
+  select e.id into v_novo_entregador_id
+  from entregadores e
+  join veiculo_config vc on vc.tipo_veiculo = e.tipo_veiculo
+  where e.status = 'disponivel'
+    and e.aceita_feira = true
+    and e.id <> v_proposta.entregador_id
+    and calcular_distancia_km(e.lat, e.lng, v_lat, v_lng) <= vc.raio_coleta_km
+  order by point(e.lng, e.lat) <-> point(v_lng, v_lat)
+  limit 1;
+
+  if v_novo_entregador_id is null then
+    return null;
+  end if;
+
+  insert into entrega_rota (entregador_id, tipo_perfil, status)
+  values (v_novo_entregador_id, 'feira', 'em_montagem')
+  returning id into v_nova_rota_id;
+
+  insert into entrega_rota_grupo (entrega_rota_id, pedido_grupo_id)
+  values (v_nova_rota_id, v_proposta.pedido_grupo_id);
+
+  insert into rota_parada (entrega_rota_id, tipo, pedido_id, pedido_grupo_id, latitude, longitude, ordem, status)
+  select
+    v_nova_rota_id,
+    (p->>'tipo')::text,
+    nullif(p->>'pedidoId','')::uuid,
+    nullif(p->>'pedidoGrupoId','')::uuid,
+    (p->>'latitude')::double precision,
+    (p->>'longitude')::double precision,
+    (ordinalidade - 1)::int,
+    'pendente'
+  from jsonb_array_elements(v_proposta.paradas_novas) with ordinality as t(p, ordinalidade);
+
+  return v_novo_entregador_id;
+end;
+$$;
+
 create or replace function aceitar_rota(
   p_entrega_rota_id uuid,
   p_distancia_ate_feira_km numeric default null,
   p_bonus_deslocamento numeric default null
 )
 returns void as $$
+declare
+  v_entregador_id uuid;
 begin
   update entrega_rota
     set aceita_em = now(),
         status = 'em_rota',
         distancia_ate_feira_km = p_distancia_ate_feira_km,
         bonus_deslocamento = p_bonus_deslocamento
-    where id = p_entrega_rota_id and status = 'em_montagem';
+    where id = p_entrega_rota_id and status = 'em_montagem'
+    returning entregador_id into v_entregador_id;
+
+  -- FIX (achado real, 22/08/2026): sem isso, entregadores.status nunca
+  -- saía de 'disponivel' durante uma rota de feira em andamento — o
+  -- despacho de um pedido novo (buscar_entregador_mais_proximo, que
+  -- filtra status='disponivel') podia escolher o MESMO entregador já
+  -- ocupado e abrir uma 2ª rota solta, em vez de consolidar na rota
+  -- existente. Guard "<> 'pausado'" no mesmo padrão de
+  -- concluir_rota_ao_entregar (restaurante): não sobrescreve uma pausa
+  -- explícita que tenha acontecido nesse meio-tempo.
+  if v_entregador_id is not null then
+    update entregadores set status = 'em_rota' where id = v_entregador_id and status <> 'pausado';
+  end if;
 end;
 $$ language plpgsql;
 
@@ -3155,6 +3336,7 @@ create or replace function finalizar_rota_se_completa()
 returns trigger as $$
 declare
   pendentes int;
+  v_entregador_id uuid;
 begin
   if new.status = 'concluida' and old.status is distinct from 'concluida' then
     select count(*) into pendentes
@@ -3164,7 +3346,16 @@ begin
     if pendentes = 0 then
       update entrega_rota
         set status = 'finalizada', fechada_em = now()
-        where id = new.entrega_rota_id;
+        where id = new.entrega_rota_id
+        returning entregador_id into v_entregador_id;
+
+      -- FIX (achado real, 22/08/2026): espelha concluir_rota_ao_entregar do
+      -- restaurante — libera o entregador (status='disponivel') quando a
+      -- rota de feira fecha de verdade (última parada concluída), sem
+      -- sobrescrever uma pausa explícita feita nesse meio-tempo.
+      if v_entregador_id is not null then
+        update entregadores set status = 'disponivel' where id = v_entregador_id and status <> 'pausado';
+      end if;
     end if;
   end if;
   return new;
@@ -3399,6 +3590,7 @@ alter table pedido_nota enable row level security;
 alter table dispatch_config enable row level security;
 alter table entrega_rota enable row level security;
 alter table entrega_rota_grupo enable row level security;
+alter table proposta_consolidacao enable row level security;
 alter table rota_parada enable row level security;
 alter table entrega_metrica enable row level security;
 alter table veiculo_config enable row level security;
@@ -3507,6 +3699,12 @@ create policy "entregador ve e atualiza sua rota" on entrega_rota for all using 
   entregador_id in (select meu_entregador_id_feira()));
 create policy "entregador ve grupos da sua rota" on entrega_rota_grupo for select using (
   entrega_rota_id in (select id from entrega_rota where entregador_id in (select meu_entregador_id_feira())));
+-- só SELECT/UPDATE (status pendente->aceita/recusada) pro entregador — o
+-- INSERT da proposta em si só acontece via routeManager.js (service role);
+-- o "for all" aqui cobre o que o entregador de fato precisa fazer (ler e
+-- responder), sem abrir insert direto pra ele.
+create policy "entregador ve e responde suas propostas de consolidacao" on proposta_consolidacao for all using (
+  entregador_id in (select meu_entregador_id_feira()));
 create policy "entregador ve e atualiza paradas da sua rota" on rota_parada for all using (
   entrega_rota_id in (select id from entrega_rota where entregador_id in (select meu_entregador_id_feira())));
 

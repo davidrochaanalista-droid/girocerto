@@ -439,6 +439,18 @@ referências a tentativas_despacho no arquivo inteiro antes desta sessão). -->
   </div>
 </div>
 
+<!-- ===================== MODAL: PARADA NOVA NUMA ROTA DE FEIRA JÁ ACEITA ===================== -->
+<div class="overlay" id="modalPropostaConsolidacao">
+  <div class="modal">
+    <h2 style="margin-bottom:4px;">🧺 Parada nova pra sua rota</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 16px;" id="propostaConsolidacao_resumo">—</p>
+    <div style="display:flex;gap:10px;">
+      <button class="btn-ghost" style="flex:1;" onclick="recusarPropostaConsolidacao()">Recusar</button>
+      <button class="btn-primary" style="flex:1;background:linear-gradient(135deg,#8B6F3F,#5C4A2A);" onclick="aceitarPropostaConsolidacao()">Aceitar</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===================== MODAL: AVALIAR APÓS ROTA DE FEIRA ===================== -->
 <div class="overlay" id="modalAvaliacaoFeira">
   <div class="modal">
@@ -513,6 +525,20 @@ let ofertaFeiraCanalAtivo = false;
 let notaAvaliacaoFeira = 0;
 let ofertaFeiraPrimeiraColeta = null; // {latitude, longitude} — usado no bônus de deslocamento ao aceitar
 const VALOR_KM_MOTO_CHEGADA_FEIRA = 1.8; // mesma taxa de arrivalBonus.js (feira-dispatch/src/), por consistência
+
+// Proposta de consolidação em rota já aceita (achado real, 22/08/2026) —
+// diferente da oferta de rota nova acima: aqui a rota já é do entregador,
+// só uma parada nova está sendo proposta, com aceite/recusa próprios.
+let propostaConsolidacaoId = null;
+let propostaConsolidacaoCanalAtivo = false;
+let propostaConsolidacaoPollingAtivo = false;
+// achado real, 22/08/2026: fechar o modal zera propostaConsolidacaoId —
+// se o polling ler um snapshot 'pendente' ainda não atualizado pelo
+// UPDATE da própria resposta (corrida real, reproduzida ao vivo), o
+// guard por id não bastava e o card reaparecia já respondido. Este Set
+// não depende do modal estar aberto — uma vez respondida, nunca mais
+// reexibe essa proposta nesta sessão, mesmo com leitura atrasada.
+const propostasConsolidacaoRespondidas = new Set();
 
 // ------------------------------------------------------------
 // B1: rastreio de posição real — antes disso, localizacoes_entregador
@@ -850,6 +876,7 @@ async function checarTurnoAtivo(){
     iniciarRastreioPosicao(); // B1 — ativo enquanto turnos.status = 'ativo', pausa inclusa (ver nota na função)
     iniciarEscutaDeOfertas(); // motor de despacho (restaurante) — ativo enquanto o turno estiver ativo
     iniciarEscutaDeOfertasFeira(); // motor de despacho (feira) — mesmo turno, mesma tela, sem seletor de modo
+    iniciarEscutaDePropostasConsolidacao(); // parada nova numa rota de feira já aceita — aceite/recusa próprios
   } else {
     document.getElementById('turnoOffline').style.display = 'block';
     document.getElementById('turnoAtivo').style.display = 'none';
@@ -1173,13 +1200,28 @@ function iniciarEscutaDeOfertasFeira(){
       if(pendentes && pendentes.length) mostrarOfertaFeira(pendentes[0]);
 
       // rota já aceita também pode ter mudado (consolidação, conclusão)
-      // sem o canal ter avisado — mesmo princípio de segurança.
-      verificarRotaFeiraAtiva();
+      // sem o canal ter avisado — mesmo princípio de segurança. Se a tela
+      // da rota estiver aberta, reconsulta as paradas também (achado real,
+      // 22/08/2026): sem isso, uma parada nova consolidada só apareceria
+      // se o Realtime tivesse entregue o evento, contrariando o próprio
+      // propósito do polling de ser independente dele.
+      await verificarRotaFeiraAtiva();
+      if(document.getElementById('view-rota-feira').classList.contains('active')) montarRotaFeira();
     }, POLL_INTERVAL_FEIRA_MS);
   }
 }
 
 async function mostrarOfertaFeira(rota){
+  // Consolidação numa rota JÁ aceita agora passa por proposta_consolidacao
+  // (o entregador vê um card pra aceitar/recusar — ver
+  // iniciarEscutaDePropostasConsolidacao/mostrarPropostaConsolidacao), não
+  // mais um commit direto. Esse UPDATE em entrega_rota (peso_total mudando
+  // por causa do ACEITE de uma proposta) só precisa refrescar a tela, sem
+  // alertar de novo — o entregador acabou de agir no card.
+  if(rota.status === 'em_rota' && rota.id === rotaFeiraAtivaId){
+    if(document.getElementById('view-rota-feira').classList.contains('active')) montarRotaFeira();
+    return;
+  }
   if(rota.status !== 'em_montagem' || rota.aceita_em) return; // já respondida ou não é uma oferta nova
 
   ofertaFeiraRotaId = rota.id;
@@ -1278,6 +1320,97 @@ async function recusarOfertaFeira(){
     alert('Recusa registrada — a rota foi oferecida a outro entregador disponível.');
   } else {
     alert('Recusa registrada. Nenhum outro entregador disponível dentro do raio agora — avise a organização da feira se precisar de ajuda.');
+  }
+}
+
+// ------------------------------------------------------------
+// Proposta de consolidação em rota já aceita (achado real, 22/08/2026):
+// diferente da oferta de rota nova acima — aqui a rota já é do
+// entregador, e só a parada nova (de um pedido consolidado depois do
+// aceite) está sendo proposta, com aceite/recusa próprios. Peso/paradas
+// da rota só mudam de verdade depois do aceite (aceitar_proposta_consolidacao
+// RPC) — enquanto pendente, não reserva capacidade nenhuma.
+// ------------------------------------------------------------
+function iniciarEscutaDePropostasConsolidacao(){
+  if(propostaConsolidacaoCanalAtivo) return;
+  propostaConsolidacaoCanalAtivo = true;
+
+  supabaseClient
+    .channel('propostas-consolidacao')
+    .on('postgres_changes', {
+      event: 'INSERT', schema: 'public', table: 'proposta_consolidacao',
+      filter: `entregador_id=eq.${entregadorId}`,
+    }, (payload) => mostrarPropostaConsolidacao(payload.new))
+    .subscribe();
+
+  // mesmo fallback de polling já usado pra oferta de rota nova/feira —
+  // sem ele, uma proposta criada com a tela em segundo plano (aba
+  // bloqueada entre entregas) ficaria perdida até o próximo F5.
+  if(!propostaConsolidacaoPollingAtivo){
+    propostaConsolidacaoPollingAtivo = true;
+    setInterval(async () => {
+      const { data: pendentes } = await supabaseClient
+        .from('proposta_consolidacao')
+        .select('*')
+        .eq('entregador_id', entregadorId)
+        .eq('status', 'pendente')
+        .order('criada_em', { ascending: false })
+        .limit(1);
+
+      if(pendentes && pendentes.length) mostrarPropostaConsolidacao(pendentes[0]);
+    }, POLL_INTERVAL_FEIRA_MS);
+  }
+}
+
+function mostrarPropostaConsolidacao(proposta){
+  if(proposta.status !== 'pendente') return;
+  if(propostasConsolidacaoRespondidas.has(proposta.id)) return; // já respondida nesta sessão (mesmo com leitura atrasada do polling)
+  if(propostaConsolidacaoId === proposta.id) return; // já exibindo essa mesma proposta
+
+  propostaConsolidacaoId = proposta.id;
+
+  const paradas = proposta.paradas_novas || [];
+  const qtdColetas = paradas.filter(p => p.tipo === 'coleta').length;
+  document.getElementById('propostaConsolidacao_resumo').textContent =
+    qtdColetas + ' coleta(s) nova(s) · ' + Number(proposta.peso_grupo || 0).toFixed(1) + 'kg — vai entrar na sua rota atual, no caminho.';
+
+  document.getElementById('modalPropostaConsolidacao').classList.add('show');
+}
+
+function fecharModalPropostaConsolidacao(){
+  document.getElementById('modalPropostaConsolidacao').classList.remove('show');
+  propostaConsolidacaoId = null;
+}
+
+async function aceitarPropostaConsolidacao(){
+  if(!propostaConsolidacaoId) return;
+  const id = propostaConsolidacaoId;
+  propostasConsolidacaoRespondidas.add(id);
+  fecharModalPropostaConsolidacao();
+
+  const { data, error } = await supabaseClient.rpc('aceitar_proposta_consolidacao', { p_proposta_id: id });
+  if(error){ alert('Não deu pra aceitar a parada nova: ' + error.message); return; }
+  if(data && data.sucesso === false){
+    alert('Essa parada não coube mais na sua rota (peso excedido nesse meio-tempo) — foi recusada automaticamente.');
+    return;
+  }
+
+  if(document.getElementById('view-rota-feira').classList.contains('active')) montarRotaFeira();
+}
+
+async function recusarPropostaConsolidacao(){
+  if(!propostaConsolidacaoId) return;
+  const id = propostaConsolidacaoId;
+  propostasConsolidacaoRespondidas.add(id);
+  fecharModalPropostaConsolidacao();
+
+  const { data: novoEntregadorId, error } = await supabaseClient.rpc('recusar_proposta_consolidacao', { p_proposta_id: id });
+  if(error){ alert('Não deu pra registrar a recusa: ' + error.message); return; }
+
+  if(novoEntregadorId){
+    alert('Recusa registrada — o pedido foi oferecido a outro entregador disponível.');
+  } else {
+    alert('Recusa registrada. Nenhum outro entregador disponível dentro do raio agora.');
   }
 }
 

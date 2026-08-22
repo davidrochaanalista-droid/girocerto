@@ -113,16 +113,25 @@ function createRouteManager(supabase) {
     };
   }
 
-  /** Busca rotas 'em_montagem' de entregadores disponíveis dentro de um raio (km). */
+  /** Busca rotas 'em_montagem' OU 'em_rota' de entregadores dentro de um raio (km).
+   *
+   * FIX (achado real, 22/08/2026): antes só considerava 'em_montagem' — uma
+   * vez que o entregador aceitava a rota (status vira 'em_rota'), ela saía
+   * da consolidação, e um pedido novo que devia ser inserido "no caminho"
+   * acabava abrindo uma 2ª rota separada pro MESMO entregador (via
+   * buscar_entregador_mais_proximo, que não o excluía por engano — ver
+   * fix em aceitar_rota()). Paradas já 'concluida' continuam fora da
+   * reotimização (filtro abaixo só pega 'pendente'), então isso nunca
+   * reordena uma coleta/entrega que já aconteceu. */
   async function buscarRotasCandidatas(tipoPerfil, raioKm = 8) {
     const { data: rotas, error } = await supabase
       .from('entrega_rota')
       .select(
-        `id, entregador_id, tipo_perfil, peso_total,
+        `id, entregador_id, tipo_perfil, peso_total, status,
          entregadores(lat, lng, tipo_veiculo),
          rota_parada(id, tipo, pedido_id, pedido_grupo_id, latitude, longitude, ordem, status)`
       )
-      .eq('status', 'em_montagem')
+      .in('status', ['em_montagem', 'em_rota'])
       .in('tipo_perfil', [tipoPerfil, 'misto']);
 
     if (error) throw error;
@@ -131,6 +140,8 @@ function createRouteManager(supabase) {
       .filter((r) => r.entregadores) // entregador precisa ter posição conhecida
       .map((r) => ({
         entregaRotaId: r.id,
+        entregadorId: r.entregador_id,
+        statusRota: r.status,
         tipoPerfil: r.tipo_perfil,
         tipoVeiculo: r.entregadores.tipo_veiculo,
         pesoTotalAtual: Number(r.peso_total),
@@ -173,6 +184,37 @@ function createRouteManager(supabase) {
 
     const { error } = await supabase.from('rota_parada').insert(linhas);
     if (error) throw error;
+  }
+
+  /** Cria uma proposta de consolidação numa rota JÁ 'em_rota' (aceita pelo
+   * entregador), em vez de inserir direto — achado real, 22/08/2026: o
+   * entregador nunca ficava sabendo de uma parada nova adicionada à força
+   * numa rota que ele já tinha aceito. Peso/paradas da rota só refletem
+   * o pedido depois que ele aceitar a proposta (aceitar_proposta_consolidacao
+   * RPC) — uma proposta pendente não reserva capacidade. */
+  async function criarPropostaConsolidacao(pedido, rota, sequenciaResultante) {
+    const paradasNovas = [
+      ...pedido.paradasColeta.map((c) => ({
+        tipo: 'coleta', pedidoId: c.pedidoId, latitude: c.latitude, longitude: c.longitude,
+      })),
+      { tipo: 'entrega', pedidoGrupoId: pedido.pedidoGrupoId, latitude: pedido.paradaEntrega.latitude, longitude: pedido.paradaEntrega.longitude },
+    ];
+
+    const { data: proposta, error } = await supabase
+      .from('proposta_consolidacao')
+      .insert({
+        entrega_rota_id: rota.entregaRotaId,
+        pedido_grupo_id: pedido.pedidoGrupoId,
+        entregador_id: rota.entregadorId,
+        paradas_novas: paradasNovas,
+        paradas_resultado: sequenciaResultante,
+        peso_grupo: pedido.pesoTotal,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+
+    return proposta.id;
   }
 
   /** Abre uma rota nova. Se `entregadorIdForcado` for informado (rodízio
@@ -278,6 +320,16 @@ function createRouteManager(supabase) {
 
     if (melhor) {
       const { rota } = melhor;
+
+      // FIX (achado real, 22/08/2026): rota 'em_rota' já foi ACEITA pelo
+      // entregador — inserir direto tirava a decisão dele. Vira uma
+      // proposta (aceitar/recusar), não um commit imediato. Rota ainda
+      // 'em_montagem' continua com o comportamento antigo: o entregador
+      // vê o lote inteiro consolidado numa única oferta antes de aceitar.
+      if (rota.statusRota === 'em_rota') {
+        const propostaId = await criarPropostaConsolidacao(pedido, rota, melhor.resultado.sequenciaResultante);
+        return { entregaRotaId: rota.entregaRotaId, acao: 'proposta_consolidacao_criada', propostaId };
+      }
 
       // insert atômico via função Postgres com advisory lock — evita
       // que dois pedidos ficando prontos ao mesmo tempo estourem o
