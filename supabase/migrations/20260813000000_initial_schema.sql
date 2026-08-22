@@ -2214,6 +2214,7 @@ create table if not exists estabelecimentos (
   nome text not null,
   tipo_negocio text not null default 'feirante'
     check (tipo_negocio in ('restaurante', 'feirante', 'outro')),
+  telefone text,  -- número usado pro worker de notificação (WhatsApp)
   chave_pix text,
   latitude double precision,   -- endereço cadastral, fallback se a banca
   longitude double precision,  -- não tiver latitude_banca/longitude_banca
@@ -3508,7 +3509,14 @@ create policy "entregador ve suas proprias metricas" on entrega_metrica for sele
 
 -- oferta_recusada / entregador_flag_revisao: sem SELECT pra ninguém além do
 -- service role — dados sensíveis de análise agregada / revisão humana, não
--- expostos a app cliente nenhum (mesmo padrão de desenvolvedores_admin)
+-- expostos a app cliente nenhum (mesmo padrão de desenvolvedores_admin).
+-- Achado (rewrite de app-entregador.html, 22/08/2026): faltava INSERT pro
+-- próprio entregador registrar a recusa (botão "Recusar" da oferta de
+-- feira) — sem policy nenhuma, RLS bloqueava de cara. Write-only de
+-- propósito: ele registra a recusa, mas não lê o histórico de volta (seria
+-- a mesma classe de dado sensível de análise agregada).
+create policy "entregador registra sua propria recusa" on oferta_recusada for insert with check (
+  entregador_id in (select meu_entregador_id_feira()));
 
 -- notificacao: cada destinatário vê só a própria (campo destinatario_id
 -- aponta pra usuarios/estabelecimentos/entregadores dependendo do tipo —
@@ -3532,4 +3540,18 @@ create policy "avaliado ve avaliacoes recebidas" on avaliacao for select using (
 create policy "consumidor cria avaliacao do seu pedido" on avaliacao for insert with check (
   avaliador_tipo = 'consumidor' and avaliador_id in (select meu_usuario_id())
   and pedido_grupo_id in (select id from pedido_grupo where consumidor_id in (select meu_usuario_id()))
+);
+
+-- achado (rewrite de app-entregador.html, 22/08/2026): faltava a policy do
+-- entregador avaliar o feirante depois da rota (TelaAvaliacao em
+-- FeiraApp.jsx) — só existia a do consumidor. Escopada ao próprio
+-- pedido_grupo que passou pela rota dele (não dá pra avaliar um grupo
+-- qualquer que nunca visitou).
+create policy "entregador cria avaliacao da sua rota" on avaliacao for insert with check (
+  avaliador_tipo = 'entregador' and avaliador_id in (select meu_entregador_id_feira())
+  and pedido_grupo_id in (
+    select erg.pedido_grupo_id from entrega_rota_grupo erg
+    join entrega_rota er on er.id = erg.entrega_rota_id
+    where er.entregador_id in (select meu_entregador_id_feira())
+  )
 );

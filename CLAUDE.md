@@ -1016,9 +1016,10 @@ C:\Users\Usuário\Projetos\giro certo
     - Não commitado, não deployado (nem os 3 mockups existentes, nem este
       novo) — só a mudança de schema foi aplicada no banco hospedado
       (`db/schema.sql` e a migration re-sincronizados, como sempre).
-23. **Módulo feira (`feira-dispatch`) — planejamento extenso + schema
-    aplicado no banco hospedado; integração de código ainda pendente**
-    (21-22/08/2026). Usuário trouxe um módulo pronto (`C:\Users\Usuário\
+23. **Módulo feira (`feira-dispatch`) — planejamento extenso, schema
+    aplicado, `feira-dispatch/` criado e `app-entregador.html` reescrito
+    pra absorver a parte do entregador** (21-22/08/2026). Usuário trouxe
+    um módulo pronto (`C:\Users\Usuário\
     Projetos\feira-dispatch\feira-dispatch\`, fora deste repo) pra integrar
     — dispatch multi-parada de feira (carrinho multi-feirante, peso máximo,
     Pix peer-to-peer direto pro feirante, voz automática). Pedido inicial
@@ -1109,10 +1110,75 @@ C:\Users\Usuário\Projetos\giro certo
       falha intermitente do próprio `despacho_motor` na 2ª rodada foi
       apenas timing, confirmado reproduzindo o arquivo sozinho logo em
       seguida, sem nenhuma mudança — não é regressão).
-    - **Não commitado ainda** — só o schema foi aplicado no banco
-      hospedado. `feira-dispatch/` (diretório novo com o código `src/`) e
-      a reescrita de `app-entregador.html` ainda não foram feitos — ver
-      pendências.
+    - **Checkpoint commitado** (`281ae52`) antes da etapa de maior risco
+      (reescrita de `app-entregador.html`), a pedido explícito do usuário —
+      schema + migration + `CLAUDE.md`, sem push.
+    - **`feira-dispatch/` criado** (sibling de `dispatch-engine/`, próprio
+      `package.json`/`src`/`tests`) — 15 arquivos de `src/` avaliados um a
+      um, não copiados às cegas: 9 sem dependência de `entregadores`
+      (cópia direta, incluindo `insertionEngine.js`/`routeOptimizer.js`/
+      `fairRotation.js`/`proximityNotifier.js`/`checkout.js`, que na
+      inspeção acabaram sendo lógica pura também, não só os 7 óbvios) e
+      6 ajustados (`routeManager.js`, `notifications.js`, `index.js`, e as
+      2 funções SQL que faltavam o fix lat/lng). **2 bugs reais do módulo
+      original encontrados e corrigidos nesse processo** (não achismo —
+      confirmado lendo o código): `buscarBikesOciosas()` filtrava
+      `entrega_rota.tipo_veiculo`, coluna que não existe nessa tabela (só
+      `entregadores.tipo_veiculo`) — a query sempre teria quebrado/voltado
+      vazia, nenhuma bike jamais teria sido considerada ocupada;
+      `notifications.js` selecionava uma coluna `whatsapp` que não existe
+      em tabela nenhuma (`estabelecimentos`/`usuarios` ganharam `telefone`
+      como fix). Os 9 testes standalone do próprio módulo (sem dependência
+      de Supabase) rodam contra o código portado: `cd feira-dispatch && npm
+      test` — 100% passando.
+    - **`app-entregador.html` reescrito pra absorver a parte do entregador
+      de `FeiraApp.jsx`** (`PainelEntregador`, `ExtratoEntregador`,
+      `TelaAvaliacao`) — sem seletor de modo, exatamente como decidido: o
+      botão "🧺 Ver rota da feira" aparece ao lado do fluxo do restaurante
+      quando existe uma rota ativa, mesma tela, mesma conta. Novo canal
+      Realtime (`ofertas-feira`, INSERT em `entrega_rota`) espelha o
+      padrão já usado pro restaurante (`ofertas-despacho`/
+      `tentativas_despacho`). Fluxo completo: oferta (modal com paradas/
+      peso) → aceitar (`aceitar_rota` RPC) → checklist com "Cheguei"
+      (`registrar_chegada_parada`, início da espera remunerada da migration
+      007) → confirmar coleta por código (`pedido_nota`) ou marcar entrega
+      → ao concluir a última parada, modal de avaliação por estrelas
+      (grava em `avaliacao`) → extrato (`extrato_entregador`).
+    - **2 bugs de RLS pegos e corrigidos durante a própria reescrita**
+      (antes de qualquer teste — revisão do próprio schema que eu tinha
+      acabado de escrever, não achado por terceiro): faltava policy de
+      INSERT em `oferta_recusada` pro entregador (botão "Recusar" quebraria
+      com RLS); faltava policy de INSERT em `avaliacao` pro entregador
+      avaliar o feirante (só existia a do consumidor) — essa especificamente
+      **perguntada ao usuário antes de corrigir**, aprovada explicitamente.
+    - **Simplificação documentada, não bug**: o bônus de deslocamento até a
+      feira (`arrivalBonus.js` no módulo original, calculado com a posição
+      real do entregador no aceite) não foi portado pro
+      `app-entregador.html` nesta rodada — `aceitar_rota()` já aceita
+      `null` pros 2 parâmetros opcionais e grava a rota aceita normalmente,
+      só sem o bônus. Comentário no próprio código sinaliza isso.
+    - **Gap conhecido do módulo original, mantido de propósito** (decisão
+      explícita do usuário, não implementar failover novo): "Recusar" uma
+      oferta de feira registra em `oferta_recusada` mas NÃO reatribui a
+      rota pra outro entregador automaticamente — diferente do failover
+      real que já existe pro restaurante (`dispatch-engine/`). O app avisa
+      isso explicitamente pro entregador ao recusar, em vez de fingir que
+      resolve sozinho.
+    - **Correção pontual, mesmo dia**: tratamento formal Sr./Sra. removido
+      de toda mensagem/áudio pro cliente final (`notifications.js`,
+      `ttsGenerator.js`) — texto final é só buzina + primeiro nome ("Olá,
+      [Nome]!" / "[Nome], seu pedido está chegando!..."). `usuarios.genero`
+      (adicionado horas antes só pra decidir Sr./Sra.) removido da tabela
+      por não servir mais pra nada — aplicado no banco hospedado antes de
+      qualquer dado real existir ali.
+    - **Suíte completa rodada mais uma vez depois de todos os ajustes**
+      (mesmo protocolo, Railway pausado/restaurado) — 122/122 (mesma falha
+      intermitente e inofensiva do `despacho_motor` reproduzida e
+      descartada como não-regressão, 2ª vez na mesma sessão).
+    - **Ainda não commitado** — `feira-dispatch/`, a reescrita de
+      `app-entregador.html`, e os ajustes de RLS/Sr.Sra. ficaram só
+      aplicados/editados, aguardando aprovação explícita pra commit (ver
+      pendências).
 
 ## Pendências reais no momento
 - [x] ~~`db/schema.sql`/migration do item 22 não commitados~~ — commitado
@@ -1121,15 +1187,33 @@ C:\Users\Usuário\Projetos\giro certo
       `mockups/painel-dev.html` ficou de fora do commit por decisão
       explícita do usuário exatamente por causa disso — adicionado ao
       `mockups/.gitignore`, roda só local.
-- [ ] **Módulo feira (item 23) — schema aplicado, RLS escrita, testado,
-      mas a integração NÃO está completa**: falta criar o diretório
-      `feira-dispatch/` (grupo A copiável direto + grupo B com o fix
-      lat/lng), e a maior peça, reescrever a parte do entregador de
-      `FeiraApp.jsx` (`PainelEntregador`, `ExtratoEntregador`,
-      `TelaAvaliacao` p/ entregador) em vanilla JS dentro de
-      `app-entregador.html`, escutando os dois canais de oferta (
-      restaurante + feira) sem seletor de modo. Nada disso foi feito
-      ainda — só o schema. Ver item 23 pro plano completo já aprovado.
+- [x] ~~Módulo feira — criar `feira-dispatch/` e reescrever a parte do
+      entregador em `app-entregador.html`~~ — feito (item 23), testado
+      (122/122 + 9 testes standalone do módulo), ainda não commitado.
+- [ ] **Módulo feira — commit pendente**: `feira-dispatch/` (novo
+      diretório), a reescrita de `app-entregador.html`, e os últimos
+      ajustes de RLS/remoção do Sr.Sra. estão todos aplicados/editados mas
+      não commitados — aguardando instrução explícita, mesmo protocolo de
+      sempre.
+- [ ] **Bônus de deslocamento até a feira não portado** (`arrivalBonus.js`)
+      — `aceitar_rota()` aceita a rota normalmente sem o bônus (parâmetros
+      opcionais, `null` por padrão). Não bloqueia o fluxo, só significa que
+      o entregador não recebe esse valor extra ainda.
+- [ ] **Sem failover pra "Recusar" oferta de feira** — decisão explícita do
+      usuário (não implementar agora): recusar só registra em
+      `oferta_recusada`, a rota não é reatribuída automaticamente pra
+      outro entregador (diferente do restaurante, que tem failover real no
+      `dispatch-engine/`). O app avisa isso na hora pro entregador.
+- [ ] **Nenhum cron do módulo feira está rodando** — `fecharRotasExpiradas`,
+      `expirar_pedidos_pendentes`, `processarLote` (notificações) existem
+      como funções/endpoints em `feira-dispatch/src/`, mas nada os
+      dispara periodicamente ainda (precisaria de `node-cron` ou um
+      processo tipo `dispatch-engine/` rodando no Railway).
+- [ ] **`PainelFeirante`/`DashboardFeirante` e `CheckoutConsumidor`** —
+      ainda fora de escopo, sem tela existente pra integrar (ver item 23).
+- [ ] **Wrapper Capacitor** (push nativo com som customizado + tracking em
+      background) — decidido que embrulha `app-entregador.html`, mas o
+      wrapper em si não foi criado.
 - [ ] **`PainelFeirante`/`DashboardFeirante` e `CheckoutConsumidor`** (as
       outras 2 de 4 personas de `FeiraApp.jsx`) — fora de escopo por
       decisão explícita do usuário nesta sessão. Não têm tela existente

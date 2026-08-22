@@ -303,6 +303,15 @@
         <button class="btn-primary" onclick="mostrar('view-rota')" style="margin-bottom:12px;">Ver rota ativa</button>
       </div>
 
+      <!-- Módulo feira (sessão de 22/08/2026, ver CLAUDE.md item 23): a MESMA
+      conta atende restaurante e feira, sem seletor de modo — se as duas
+      existirem ao mesmo tempo, os dois botões aparecem juntos aqui. -->
+      <div id="comRotaFeira" style="display:none;">
+        <button class="btn-primary" onclick="abrirRotaFeira()" style="margin-bottom:12px;background:linear-gradient(135deg,#8B6F3F,#5C4A2A);">🧺 Ver rota da feira</button>
+      </div>
+
+      <button class="link-btn" onclick="abrirExtratoFeira()" style="display:block;text-align:center;width:100%;margin-bottom:14px;">Ver extrato da feira</button>
+
       <button class="btn-primary" id="btnContinuar" onclick="clicarContinuar()" style="margin-bottom:10px;display:none;">Continuar</button>
       <button class="btn-outline" id="btnPausar" onclick="clicarPausar()" style="margin-bottom:10px;">Pausar</button>
       <button class="btn-ghost" onclick="clicarFinalizar()">Finalizar turno</button>
@@ -374,6 +383,31 @@
     <button class="btn-primary" onclick="confirmarEntrega()">Confirmar entrega</button>
   </div>
 
+  <!-- ===================== VIEW: ROTA DA FEIRA ===================== -->
+  <!-- Módulo feira (sessão de 22/08/2026) — tela única de checklist
+  (coleta em N bancas + 1 entrega), diferente do fluxo rota→entrega do
+  restaurante porque a feira sempre tem múltiplas paradas por rota.
+  Confirmação de coleta por código (pedido_nota.codigo_curto) só existe
+  de verdade quando o feirante "finaliza a separação" do pedido — como
+  o painel do feirante ainda não foi construído (fora de escopo desta
+  sessão, ver CLAUDE.md item 23), esse código nunca é gerado na prática
+  ainda. A tela já está correta pro fluxo pretendido, só fica inerte até
+  o painel do feirante existir — mesmo padrão já usado noutras partes do
+  projeto pra peças construídas antes da dependência que as ativa. -->
+  <div class="view" id="view-rota-feira">
+    <button class="link-btn" onclick="mostrar('view-turno')" style="margin-bottom:14px;">← Voltar</button>
+    <h2 style="margin-bottom:4px;">🧺 Rota da feira</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 18px;" id="rf_resumo">—</p>
+    <div id="rfParadasBox"></div>
+  </div>
+
+  <!-- ===================== VIEW: EXTRATO DA FEIRA ===================== -->
+  <div class="view" id="view-extrato-feira">
+    <button class="link-btn" onclick="mostrar('view-turno')" style="margin-bottom:14px;">← Voltar</button>
+    <h2 style="margin-bottom:14px;">Seu extrato (feira)</h2>
+    <div id="extratoFeiraBox"></div>
+  </div>
+
 </div>
 
 <!-- ===================== MODAL: NOVA OFERTA DE ENTREGA ===================== -->
@@ -389,6 +423,30 @@ referências a tentativas_despacho no arquivo inteiro antes desta sessão). -->
       <button class="btn-ghost" style="flex:1;" onclick="recusarOferta()">Recusar</button>
       <button class="btn-primary" style="flex:1;" onclick="aceitarOferta()">Aceitar</button>
     </div>
+  </div>
+</div>
+
+<!-- ===================== MODAL: NOVA ROTA DE FEIRA ===================== -->
+<div class="overlay" id="modalOfertaFeira">
+  <div class="modal">
+    <h2 style="margin-bottom:4px;">🧺 Nova rota de feira disponível</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 10px;" id="ofertaFeira_resumo">—</p>
+    <div id="ofertaFeira_paradas" style="text-align:left;font-size:12.5px;color:var(--gray);margin-bottom:16px;max-height:160px;overflow-y:auto;"></div>
+    <div style="display:flex;gap:10px;">
+      <button class="btn-ghost" style="flex:1;" onclick="recusarOfertaFeira()">Recusar</button>
+      <button class="btn-primary" style="flex:1;background:linear-gradient(135deg,#8B6F3F,#5C4A2A);" onclick="aceitarOfertaFeira()">Aceitar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== MODAL: AVALIAR APÓS ROTA DE FEIRA ===================== -->
+<div class="overlay" id="modalAvaliacaoFeira">
+  <div class="modal">
+    <h3 style="margin-bottom:4px;">Como foi com <span id="av_nomeAvaliado">a banca</span>?</h3>
+    <p style="color:var(--gray);font-size:12.5px;margin-bottom:14px;">Sua avaliação ajuda a manter a feira confiável.</p>
+    <div id="av_estrelas" style="font-size:32px;letter-spacing:4px;margin-bottom:18px;cursor:pointer;">☆☆☆☆☆</div>
+    <button class="btn-primary" style="background:linear-gradient(135deg,#8B6F3F,#5C4A2A);margin-bottom:8px;" onclick="enviarAvaliacaoFeira()">Enviar avaliação</button>
+    <button class="btn-ghost" onclick="fecharModalAvaliacaoFeira()">Pular</button>
   </div>
 </div>
 
@@ -446,6 +504,13 @@ let turnoIniciadoEm = null;
 let tenantConfig = { horas_alerta_fadiga: 8, horas_descanso_obrigatorio: 8 };
 let ganhoVisivel = true;
 let paradaAtualPedidoId = null;
+
+// Módulo feira (sessão de 22/08/2026) — mesma conta, mesma tela, sem
+// seletor de modo. Ver CLAUDE.md item 23 pro histórico da integração.
+let rotaFeiraAtivaId = null;
+let ofertaFeiraRotaId = null;
+let ofertaFeiraCanalAtivo = false;
+let notaAvaliacaoFeira = 0;
 
 // ------------------------------------------------------------
 // B1: rastreio de posição real — antes disso, localizacoes_entregador
@@ -779,8 +844,10 @@ async function checarTurnoAtivo(){
 
     atualizarStatsTurno();
     verificarRotaAtiva();
+    verificarRotaFeiraAtiva();
     iniciarRastreioPosicao(); // B1 — ativo enquanto turnos.status = 'ativo', pausa inclusa (ver nota na função)
-    iniciarEscutaDeOfertas(); // motor de despacho — ativo enquanto o turno estiver ativo
+    iniciarEscutaDeOfertas(); // motor de despacho (restaurante) — ativo enquanto o turno estiver ativo
+    iniciarEscutaDeOfertasFeira(); // motor de despacho (feira) — mesmo turno, mesma tela, sem seletor de modo
   } else {
     document.getElementById('turnoOffline').style.display = 'block';
     document.getElementById('turnoAtivo').style.display = 'none';
@@ -1044,6 +1111,339 @@ async function recusarOferta(){
   // — o dispatch-engine nunca ficava sabendo, e a oferta só resolvia pelo
   // timeout em vez de falhar pro próximo candidato na hora.
   if(error){ alert('Não deu pra recusar a oferta: ' + error.message + '. Tente de novo.'); }
+}
+
+// ------------------------------------------------------------
+// MÓDULO FEIRA — oferta de rota (sessão de 22/08/2026, ver CLAUDE.md item 23)
+// Diferente do restaurante (tentativas_despacho, uma linha por oferta),
+// a feira usa a própria entrega_rota: abrirRotaNova() já cria a linha com
+// entregador_id preenchido e status='em_montagem' — o INSERT em si é a
+// "oferta". Aceitar chama a RPC aceitar_rota() (status -> em_rota).
+// ------------------------------------------------------------
+function iniciarEscutaDeOfertasFeira(){
+  if(ofertaFeiraCanalAtivo) return; // já escutando, não duplica o channel
+  ofertaFeiraCanalAtivo = true;
+
+  supabaseClient
+    .channel('ofertas-feira')
+    .on('postgres_changes', {
+      event: 'INSERT', schema: 'public', table: 'entrega_rota',
+      filter: `entregador_id=eq.${entregadorId}`,
+    }, (payload) => mostrarOfertaFeira(payload.new))
+    .subscribe();
+}
+
+async function mostrarOfertaFeira(rota){
+  if(rota.status !== 'em_montagem' || rota.aceita_em) return; // já respondida ou não é uma oferta nova
+
+  ofertaFeiraRotaId = rota.id;
+
+  const { data: paradas } = await supabaseClient
+    .from('rota_parada')
+    .select('id, tipo, pedido:pedido_id(estabelecimento_id, estabelecimentos(nome))')
+    .eq('entrega_rota_id', rota.id)
+    .order('ordem', { ascending: true });
+
+  const qtdColetas = (paradas || []).filter(p => p.tipo === 'coleta').length;
+  document.getElementById('ofertaFeira_resumo').textContent =
+    qtdColetas + ' coleta(s) · ' + Number(rota.peso_total || 0).toFixed(1) + 'kg';
+
+  document.getElementById('ofertaFeira_paradas').innerHTML = (paradas || []).map(p => {
+    const local = p.tipo === 'coleta'
+      ? (p.pedido?.estabelecimentos?.nome || 'Banca')
+      : 'Entrega ao cliente';
+    return `<div style="padding:4px 0;">${p.tipo === 'coleta' ? '🏪' : '📍'} ${escapeHtml(local)}</div>`;
+  }).join('');
+
+  document.getElementById('modalOfertaFeira').classList.add('show');
+}
+
+function fecharModalOfertaFeira(){
+  document.getElementById('modalOfertaFeira').classList.remove('show');
+  ofertaFeiraRotaId = null;
+}
+
+async function aceitarOfertaFeira(){
+  if(!ofertaFeiraRotaId) return;
+  const id = ofertaFeiraRotaId;
+  fecharModalOfertaFeira();
+
+  // NOTA (pendência documentada, não bug): o bônus de deslocamento até a
+  // feira (arrivalBonus.js no módulo original, calculado a partir da
+  // posição real do entregador no aceite) não foi portado nesta rodada —
+  // aceitar_rota() aceita null pros 2 parâmetros opcionais e grava a rota
+  // como aceita normalmente, só sem o bônus. Ver CLAUDE.md item 23.
+  const { error } = await supabaseClient.rpc('aceitar_rota', { p_entrega_rota_id: id });
+  if(error){ alert('Não deu pra aceitar a rota da feira: ' + error.message); return; }
+  verificarRotaFeiraAtiva();
+}
+
+async function recusarOfertaFeira(){
+  if(!ofertaFeiraRotaId) return;
+  const id = ofertaFeiraRotaId;
+  fecharModalOfertaFeira();
+
+  const { error } = await supabaseClient.from('oferta_recusada').insert({
+    entregador_id: entregadorId,
+    entrega_rota_id: id,
+  });
+  if(error){ alert('Não deu pra registrar a recusa: ' + error.message); return; }
+
+  // achado documentado (README do módulo, CLAUDE.md item 23): recusar NÃO
+  // reatribui a rota pra outro entregador automaticamente hoje — só
+  // registra a recusa, sem failover como o motor do restaurante tem.
+  alert('Recusa registrada. Essa rota não é reatribuída automaticamente ainda — avise a organização da feira se precisar de ajuda.');
+}
+
+async function verificarRotaFeiraAtiva(){
+  const { data: rotas } = await supabaseClient
+    .from('entrega_rota')
+    .select('id')
+    .eq('entregador_id', entregadorId)
+    .eq('status', 'em_rota')
+    .order('aberta_em', { ascending: false })
+    .limit(1);
+
+  if(rotas && rotas.length){
+    rotaFeiraAtivaId = rotas[0].id;
+    document.getElementById('comRotaFeira').style.display = 'block';
+  } else {
+    rotaFeiraAtivaId = null;
+    document.getElementById('comRotaFeira').style.display = 'none';
+  }
+}
+
+function abrirRotaFeira(){
+  mostrar('view-rota-feira');
+  montarRotaFeira();
+}
+
+async function montarRotaFeira(){
+  if(!rotaFeiraAtivaId) return;
+
+  const { data: paradas, error } = await supabaseClient
+    .from('rota_parada')
+    .select('*, pedido:pedido_id(id, estabelecimento_id, estabelecimentos(nome))')
+    .eq('entrega_rota_id', rotaFeiraAtivaId)
+    .order('ordem', { ascending: true });
+
+  if(error){ console.error('Não deu pra carregar a rota da feira:', error.message); return; }
+
+  const pendentes = (paradas || []).filter(p => p.status !== 'concluida');
+  const proximaId = pendentes[0]?.id;
+
+  document.getElementById('rf_resumo').textContent =
+    (paradas.length - pendentes.length) + '/' + paradas.length + ' paradas concluídas';
+
+  document.getElementById('rfParadasBox').innerHTML = (paradas || []).map((p, i) => {
+    const concluida = p.status === 'concluida';
+    const atual = p.id === proximaId;
+    const isEntrega = p.tipo === 'entrega';
+    const local = isEntrega ? 'Entrega ao cliente' : (p.pedido?.estabelecimentos?.nome || 'Banca');
+
+    // "Cheguei" primeiro (marca chegou_em, início da espera remunerada —
+    // migration 007) — só depois disso a ação de confirmar aparece. Mesmo
+    // fluxo do PainelEntregador em FeiraApp.jsx.
+    let acao = '';
+    if(atual && !concluida && !p.chegou_em){
+      acao = `<button class="btn-outline" style="margin-top:12px;border-color:#8B6F3F;color:#5C4A2A;" data-parada-id="${escapeHtml(p.id)}" onclick="marcarChegadaFeira(this)">⏱ Cheguei</button>`;
+    } else if(atual && !concluida && p.chegou_em){
+      acao = isEntrega
+        ? `<button class="btn-primary" style="margin-top:12px;background:linear-gradient(135deg,#8B6F3F,#5C4A2A);" data-parada-id="${escapeHtml(p.id)}" data-tipo="entrega" onclick="confirmarParadaFeira(this)">Marcar como entregue</button>`
+        : `<div style="margin-top:12px;">
+             <p style="font-size:11px;color:var(--gray);margin-bottom:6px;">Aguardando desde a chegada — espera é remunerada.</p>
+             <div class="field codigo-box" style="margin-bottom:8px;">
+               <input type="text" maxlength="4" placeholder="Código do ticket" id="codigo-parada-${escapeHtml(p.id)}" style="text-align:center;">
+             </div>
+             <button class="btn-primary" style="background:linear-gradient(135deg,#8B6F3F,#5C4A2A);" data-parada-id="${escapeHtml(p.id)}" data-tipo="coleta" data-pedido-id="${escapeHtml(p.pedido?.id || '')}" onclick="confirmarParadaFeira(this)">Confirmar coleta</button>
+           </div>`;
+    }
+
+    return `
+      <div class="stop-card" style="${concluida ? 'opacity:.55;' : ''}">
+        <div class="stop-head">
+          <div class="stop-num">${i+1}</div>
+          <div class="stop-addr">${isEntrega ? '📍' : '🏪'} ${escapeHtml(local)}</div>
+        </div>
+        <div class="stop-meta">${isEntrega ? 'Entrega' : 'Coleta'}${concluida ? ' · concluída ✓' : ''}</div>
+        ${acao}
+      </div>
+    `;
+  }).join('');
+}
+
+async function marcarChegadaFeira(btn){
+  const paradaId = btn.dataset.paradaId;
+  const { error } = await supabaseClient.rpc('registrar_chegada_parada', { p_parada_id: paradaId });
+  if(error){ alert('Não deu pra registrar a chegada: ' + error.message); return; }
+  await montarRotaFeira();
+}
+
+// Confirma uma parada (coleta ou entrega) com a posição real do device —
+// mesmo princípio de calcular_divergencia_m() no banco (migration 003):
+// sinaliza divergência, nunca bloqueia o fluxo por causa dela.
+function confirmarParadaFeira(btn){
+  const paradaId = btn.dataset.paradaId;
+  const tipo = btn.dataset.tipo;
+  const pedidoId = btn.dataset.pedidoId;
+
+  if(!navigator.geolocation){
+    executarConfirmacaoParadaFeira(paradaId, tipo, pedidoId, null, null);
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    (pos) => executarConfirmacaoParadaFeira(paradaId, tipo, pedidoId, pos.coords.latitude, pos.coords.longitude),
+    () => executarConfirmacaoParadaFeira(paradaId, tipo, pedidoId, null, null),
+    { enableHighAccuracy: true, timeout: 8000 }
+  );
+}
+
+async function executarConfirmacaoParadaFeira(paradaId, tipo, pedidoId, lat, lng){
+  if(tipo === 'coleta'){
+    const input = document.getElementById('codigo-parada-' + paradaId);
+    const codigoDigitado = (input?.value || '').trim().toUpperCase();
+
+    const { data: nota } = await supabaseClient
+      .from('pedido_nota')
+      .select('codigo_curto')
+      .eq('pedido_id', pedidoId)
+      .maybeSingle();
+
+    // ver comentário na view-rota-feira: sem o painel do feirante ainda,
+    // pedido_nota nunca chega a existir na prática — trata como "sem
+    // código pra conferir" em vez de travar o entregador sem saída.
+    if(nota && codigoDigitado !== nota.codigo_curto){
+      alert('Código não confere com esta banca — confira o ticket.');
+      return;
+    }
+  }
+
+  const { data: parada } = await supabaseClient
+    .from('rota_parada')
+    .select('latitude, longitude')
+    .eq('id', paradaId)
+    .single();
+
+  let divergencia = null;
+  if(lat !== null && parada){
+    const { data } = await supabaseClient.rpc('calcular_divergencia_m', {
+      lat1: parada.latitude, lng1: parada.longitude, lat2: lat, lng2: lng,
+    });
+    divergencia = data;
+  }
+
+  const { error } = await supabaseClient
+    .from('rota_parada')
+    .update({
+      latitude_confirmada: lat, longitude_confirmada: lng,
+      divergencia_m: divergencia, status: 'concluida', concluida_em: new Date().toISOString(),
+    })
+    .eq('id', paradaId);
+
+  if(error){ alert('Não deu pra confirmar: ' + error.message); return; }
+
+  await montarRotaFeira();
+  await verificarSeRotaFeiraTerminou();
+}
+
+async function verificarSeRotaFeiraTerminou(){
+  const { data: paradas } = await supabaseClient
+    .from('rota_parada')
+    .select('id, status, pedido:pedido_id(estabelecimento_id, estabelecimentos(nome))')
+    .eq('entrega_rota_id', rotaFeiraAtivaId);
+
+  const todasConcluidas = (paradas || []).every(p => p.status === 'concluida');
+  if(!todasConcluidas) return;
+
+  const primeiraBanca = (paradas || []).find(p => p.pedido?.estabelecimentos?.nome);
+  abrirModalAvaliacaoFeira(primeiraBanca?.pedido?.estabelecimentos?.nome || 'a banca');
+}
+
+// ------------------------------------------------------------
+// MÓDULO FEIRA — avaliação pós-rota (estrelas, ver TelaAvaliacao em
+// FeiraApp.jsx) — entregador avalia o feirante da rota que acabou de concluir.
+// ------------------------------------------------------------
+function abrirModalAvaliacaoFeira(nomeAvaliado){
+  notaAvaliacaoFeira = 0;
+  document.getElementById('av_nomeAvaliado').textContent = nomeAvaliado;
+  renderEstrelasAvaliacaoFeira();
+  document.getElementById('modalAvaliacaoFeira').classList.add('show');
+}
+
+function renderEstrelasAvaliacaoFeira(){
+  const el = document.getElementById('av_estrelas');
+  el.innerHTML = '';
+  for(let n = 1; n <= 5; n++){
+    const span = document.createElement('span');
+    span.textContent = n <= notaAvaliacaoFeira ? '★' : '☆';
+    span.style.color = n <= notaAvaliacaoFeira ? 'var(--amber)' : 'var(--gray-soft)';
+    span.onclick = () => { notaAvaliacaoFeira = n; renderEstrelasAvaliacaoFeira(); };
+    el.appendChild(span);
+  }
+}
+
+function fecharModalAvaliacaoFeira(){
+  document.getElementById('modalAvaliacaoFeira').classList.remove('show');
+  mostrar('view-turno');
+  verificarRotaFeiraAtiva();
+}
+
+async function enviarAvaliacaoFeira(){
+  if(notaAvaliacaoFeira === 0){ fecharModalAvaliacaoFeira(); return; }
+
+  const { data: paradas } = await supabaseClient
+    .from('rota_parada')
+    .select('pedido:pedido_id(pedido_grupo_id, estabelecimento_id)')
+    .eq('entrega_rota_id', rotaFeiraAtivaId)
+    .eq('tipo', 'coleta')
+    .limit(1);
+
+  const pedidoGrupoId = paradas?.[0]?.pedido?.pedido_grupo_id;
+  const estabelecimentoId = paradas?.[0]?.pedido?.estabelecimento_id;
+
+  if(pedidoGrupoId && estabelecimentoId){
+    const { error } = await supabaseClient.from('avaliacao').insert({
+      pedido_grupo_id: pedidoGrupoId,
+      avaliador_tipo: 'entregador',
+      avaliador_id: entregadorId,
+      avaliado_tipo: 'feirante',
+      avaliado_id: estabelecimentoId,
+      nota: notaAvaliacaoFeira,
+    });
+    if(error) console.warn('Não deu pra registrar a avaliação:', error.message);
+  }
+
+  fecharModalAvaliacaoFeira();
+}
+
+// ------------------------------------------------------------
+// MÓDULO FEIRA — extrato (ver ExtratoEntregador em FeiraApp.jsx)
+// ------------------------------------------------------------
+async function abrirExtratoFeira(){
+  mostrar('view-extrato-feira');
+  const box = document.getElementById('extratoFeiraBox');
+  box.innerHTML = '<p style="color:var(--gray);font-size:13px;">Carregando…</p>';
+
+  const { data, error } = await supabaseClient
+    .from('extrato_entregador')
+    .select('*')
+    .eq('entregador_id', entregadorId)
+    .order('concluida_em', { ascending: false })
+    .limit(50);
+
+  if(error){ box.innerHTML = `<p style="color:var(--gray);font-size:13px;">Erro ao carregar: ${escapeHtml(error.message)}</p>`; return; }
+  if(!data || data.length === 0){ box.innerHTML = '<p style="color:var(--gray);font-size:13px;">Nenhuma corrida de feira concluída ainda.</p>'; return; }
+
+  box.innerHTML = data.map(r => `
+    <div class="stop-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div style="font-weight:700;">${formatarReal(Number(r.ganho_total || 0))}</div>
+          <div style="font-size:12px;color:var(--gray);">${r.concluida_em ? new Date(r.concluida_em).toLocaleString('pt-BR') : '—'}</div>
+        </div>
+      </div>
+    </div>
+  `).join('');
 }
 
 // ------------------------------------------------------------
