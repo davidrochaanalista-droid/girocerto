@@ -511,6 +511,8 @@ let rotaFeiraAtivaId = null;
 let ofertaFeiraRotaId = null;
 let ofertaFeiraCanalAtivo = false;
 let notaAvaliacaoFeira = 0;
+let ofertaFeiraPrimeiraColeta = null; // {latitude, longitude} — usado no bônus de deslocamento ao aceitar
+const VALOR_KM_MOTO_CHEGADA_FEIRA = 1.8; // mesma taxa de arrivalBonus.js (feira-dispatch/src/), por consistência
 
 // ------------------------------------------------------------
 // B1: rastreio de posição real — antes disso, localizacoes_entregador
@@ -1124,10 +1126,20 @@ function iniciarEscutaDeOfertasFeira(){
   if(ofertaFeiraCanalAtivo) return; // já escutando, não duplica o channel
   ofertaFeiraCanalAtivo = true;
 
+  // UPDATE além de INSERT: achado real (sessão de 22/08/2026) — o
+  // redespacho por recusa (redespachar_apos_recusa_feira RPC) reatribui
+  // entrega_rota.entregador_id numa linha JÁ EXISTENTE (não cria uma
+  // rota nova), então o novo candidato só recebe o evento se o canal
+  // também escutar UPDATE — mesmo motivo pelo qual o canal do
+  // restaurante (ofertas-despacho) já escuta os dois.
   supabaseClient
     .channel('ofertas-feira')
     .on('postgres_changes', {
       event: 'INSERT', schema: 'public', table: 'entrega_rota',
+      filter: `entregador_id=eq.${entregadorId}`,
+    }, (payload) => mostrarOfertaFeira(payload.new))
+    .on('postgres_changes', {
+      event: 'UPDATE', schema: 'public', table: 'entrega_rota',
       filter: `entregador_id=eq.${entregadorId}`,
     }, (payload) => mostrarOfertaFeira(payload.new))
     .subscribe();
@@ -1140,9 +1152,12 @@ async function mostrarOfertaFeira(rota){
 
   const { data: paradas } = await supabaseClient
     .from('rota_parada')
-    .select('id, tipo, pedido:pedido_id(estabelecimento_id, estabelecimentos(nome))')
+    .select('id, tipo, latitude, longitude, pedido:pedido_id(estabelecimento_id, estabelecimentos(nome))')
     .eq('entrega_rota_id', rota.id)
     .order('ordem', { ascending: true });
+
+  const primeiraColeta = (paradas || []).find(p => p.tipo === 'coleta');
+  ofertaFeiraPrimeiraColeta = primeiraColeta ? { latitude: primeiraColeta.latitude, longitude: primeiraColeta.longitude } : null;
 
   const qtdColetas = (paradas || []).filter(p => p.tipo === 'coleta').length;
   document.getElementById('ofertaFeira_resumo').textContent =
@@ -1166,14 +1181,38 @@ function fecharModalOfertaFeira(){
 async function aceitarOfertaFeira(){
   if(!ofertaFeiraRotaId) return;
   const id = ofertaFeiraRotaId;
+  const primeiraColeta = ofertaFeiraPrimeiraColeta;
   fecharModalOfertaFeira();
 
-  // NOTA (pendência documentada, não bug): o bônus de deslocamento até a
-  // feira (arrivalBonus.js no módulo original, calculado a partir da
-  // posição real do entregador no aceite) não foi portado nesta rodada —
-  // aceitar_rota() aceita null pros 2 parâmetros opcionais e grava a rota
-  // como aceita normalmente, só sem o bônus. Ver CLAUDE.md item 23.
-  const { error } = await supabaseClient.rpc('aceitar_rota', { p_entrega_rota_id: id });
+  // Bônus de deslocamento até a feira (arrivalBonus.js no módulo original)
+  // — calculado com a posição REAL do entregador no momento do aceite,
+  // é o único instante em que dá pra saber de onde ele está saindo.
+  // Reaproveita calcular_distancia_km() (mesma função SQL usada em todo
+  // o resto do motor) em vez de duplicar a fórmula de haversine em JS.
+  let distanciaKm = null, bonus = null;
+  if(primeiraColeta && navigator.geolocation){
+    try {
+      const pos = await new Promise((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 8000 })
+      );
+      const { data } = await supabaseClient.rpc('calcular_distancia_km', {
+        lat1: pos.coords.latitude, lng1: pos.coords.longitude,
+        lat2: primeiraColeta.latitude, lng2: primeiraColeta.longitude,
+      });
+      if(data !== null && data !== undefined){
+        distanciaKm = Number(data);
+        bonus = Number((distanciaKm * VALOR_KM_MOTO_CHEGADA_FEIRA).toFixed(2));
+      }
+    } catch(err){
+      console.warn('Não deu pra obter a posição pro bônus de deslocamento:', err.message || err);
+    }
+  }
+
+  const { error } = await supabaseClient.rpc('aceitar_rota', {
+    p_entrega_rota_id: id,
+    p_distancia_ate_feira_km: distanciaKm,
+    p_bonus_deslocamento: bonus,
+  });
   if(error){ alert('Não deu pra aceitar a rota da feira: ' + error.message); return; }
   verificarRotaFeiraAtiva();
 }
@@ -1189,10 +1228,23 @@ async function recusarOfertaFeira(){
   });
   if(error){ alert('Não deu pra registrar a recusa: ' + error.message); return; }
 
-  // achado documentado (README do módulo, CLAUDE.md item 23): recusar NÃO
-  // reatribui a rota pra outro entregador automaticamente hoje — só
-  // registra a recusa, sem failover como o motor do restaurante tem.
-  alert('Recusa registrada. Essa rota não é reatribuída automaticamente ainda — avise a organização da feira se precisar de ajuda.');
+  // Redespacho real pro próximo entregador mais próximo dentro do mesmo
+  // raio, excluindo quem já recusou (redespachar_apos_recusa_feira RPC,
+  // sessão de 22/08/2026) — cobre a recusa EXPLÍCITA. Timeout (entregador
+  // que nunca responde) ainda não tem cobertura nenhuma: depende de um
+  // processo vivo checando o prazo, que não existe ainda pra feira (ver
+  // pendência no CLAUDE.md). Se essa MESMA rota ficar parada sem ninguém
+  // recusar nem aceitar, é esse gap, não um bug novo.
+  const { data: novoEntregadorId, error: errRedespacho } = await supabaseClient
+    .rpc('redespachar_apos_recusa_feira', { p_entrega_rota_id: id });
+
+  if(errRedespacho){
+    alert('Recusa registrada, mas não deu pra tentar redespachar: ' + errRedespacho.message);
+  } else if(novoEntregadorId){
+    alert('Recusa registrada — a rota foi oferecida a outro entregador disponível.');
+  } else {
+    alert('Recusa registrada. Nenhum outro entregador disponível dentro do raio agora — avise a organização da feira se precisar de ajuda.');
+  }
 }
 
 async function verificarRotaFeiraAtiva(){

@@ -1179,6 +1179,59 @@ C:\Users\Usuário\Projetos\giro certo
       `app-entregador.html`, e os ajustes de RLS/Sr.Sra. ficaram só
       aplicados/editados, aguardando aprovação explícita pra commit (ver
       pendências).
+    - **Commitado** (`f3b5368`) depois de confirmar por grep completo que
+      nenhum código vivo referenciava mais `usuarios.genero` (só
+      documentação mencionando a remoção em si, e um falso positivo de
+      substring em "generosa").
+    - **Failover de feira ao recusar — implementado, mesmo dia** (pedido
+      explícito do usuário, depois de perguntar se a rotação justa entre
+      bikes já cobria isso — não cobria, são mecanismos diferentes: uma
+      decide quem é oferecido primeiro, a outra decide o que fazer depois
+      de uma recusa, e essa segunda nunca tinha sido endereçada pelo
+      módulo original). Nova RPC `redespachar_apos_recusa_feira()` —
+      mesmo princípio do failover real do restaurante (próximo mais
+      próximo dentro do MESMO raio, nunca relaxa), mas síncrona, chamada
+      pelo próprio client no momento da recusa, sem precisar de nenhum
+      serviço Node rodando. Reaproveita `oferta_recusada` como lista de
+      exclusão (já tinha exatamente os dados certos) em vez de criar
+      tabela nova. `SECURITY DEFINER` com guard interno: só quem já
+      registrou a própria recusa pra aquela rota específica pode disparar
+      o redespacho (testado: entregador não-envolvido tentando "sequestrar"
+      a rota de outro é bloqueado). **Bug real pego antes de qualquer
+      teste** (acompanhando o próprio raciocínio, não achado por
+      terceiro): o canal Realtime do entregador só escutava `INSERT` em
+      `entrega_rota` — uma reatribuição é `UPDATE` numa linha existente, o
+      novo candidato nunca veria a oferta sem escutar os dois eventos
+      (mesmo motivo pelo qual o canal do restaurante já escuta ambos).
+      Testado com 3 entregadores de teste (A perto, B um pouco mais longe
+      mas dentro do raio, C fora do raio): recusa de A → RPC atribui a B
+      corretamente; recusa de B → RPC retorna `null` (C está fora do raio,
+      não é forçado); entregador não-envolvido tentando chamar a RPC pra
+      rota alheia é bloqueado. 12/12 asserts, dado de teste limpo ao
+      final.
+    - **Limitação explicitamente documentada, a pedido do usuário** (pra
+      não virar surpresa quando alguém notar uma rota "presa"): o
+      failover acima cobre só RECUSA EXPLÍCITA. **TIMEOUT (entregador que
+      nunca responde, nem aceita nem recusa) não tem cobertura nenhuma
+      ainda** — precisaria de um processo vivo checando
+      `now() - aberta_em > prazo` periodicamente, que não existe pra
+      feira (mesma pendência já registrada de "nenhum cron do módulo
+      feira está rodando", não é uma lacuna nova). Uma rota que fica
+      "presa" sem ninguém ter recusado nada é esperado hoje, não um bug.
+    - **Bônus de deslocamento (`arrivalBonus.js`) portado** — honestamente,
+      tinha sido cortado de escopo por mim sob pressão de tempo, não uma
+      decisão discutida (diferente do failover, que foi conscientemente
+      adiado com o aval do usuário). Perguntado, reconhecido, corrigido:
+      `aceitarOfertaFeira()` agora pega a posição GPS real do entregador
+      no momento do aceite (`getCurrentPosition`, mesmo padrão já usado em
+      `confirmarParadaFeira()`), calcula a distância via `calcular_distancia_km()`
+      (reaproveita a função SQL já existente, não duplica a fórmula de
+      haversine em JS) e passa `p_distancia_ate_feira_km`/
+      `p_bonus_deslocamento` pro `aceitar_rota()` RPC, que já aceitava
+      esses parâmetros desde o schema original.
+    - **Suíte completa rodada mais uma vez** (mesmo protocolo) — 122/122,
+      limpo desta vez (sem a falha intermitente do `despacho_motor` das
+      rodadas anteriores).
 
 ## Pendências reais no momento
 - [x] ~~`db/schema.sql`/migration do item 22 não commitados~~ — commitado
@@ -1190,20 +1243,23 @@ C:\Users\Usuário\Projetos\giro certo
 - [x] ~~Módulo feira — criar `feira-dispatch/` e reescrever a parte do
       entregador em `app-entregador.html`~~ — feito (item 23), testado
       (122/122 + 9 testes standalone do módulo), ainda não commitado.
-- [ ] **Módulo feira — commit pendente**: `feira-dispatch/` (novo
-      diretório), a reescrita de `app-entregador.html`, e os últimos
-      ajustes de RLS/remoção do Sr.Sra. estão todos aplicados/editados mas
-      não commitados — aguardando instrução explícita, mesmo protocolo de
-      sempre.
-- [ ] **Bônus de deslocamento até a feira não portado** (`arrivalBonus.js`)
-      — `aceitar_rota()` aceita a rota normalmente sem o bônus (parâmetros
-      opcionais, `null` por padrão). Não bloqueia o fluxo, só significa que
-      o entregador não recebe esse valor extra ainda.
-- [ ] **Sem failover pra "Recusar" oferta de feira** — decisão explícita do
-      usuário (não implementar agora): recusar só registra em
-      `oferta_recusada`, a rota não é reatribuída automaticamente pra
-      outro entregador (diferente do restaurante, que tem failover real no
-      `dispatch-engine/`). O app avisa isso na hora pro entregador.
+- [x] ~~Módulo feira — commit pendente~~ — commitado (`f3b5368`).
+- [x] ~~Bônus de deslocamento até a feira não portado~~ — portado e
+      testado (ver item 23).
+- [x] ~~Sem failover pra "Recusar" oferta de feira~~ — implementado
+      (`redespachar_apos_recusa_feira()`, ver item 23) e commitado. Cobre
+      só recusa EXPLÍCITA — ver pendência de timeout logo abaixo, que
+      continua real.
+- [ ] **TIMEOUT no despacho de feira não tem cobertura nenhuma**
+      (entregador recebe a oferta e nunca responde — nem aceita, nem
+      recusa). O failover de recusa explícita (`redespachar_apos_recusa_feira()`)
+      só dispara quando alguém efetivamente clica "Recusar" — sem isso,
+      uma rota fica "presa" com `status='em_montagem'` indefinidamente.
+      Resolver exige um processo vivo checando `now() - aberta_em > prazo`
+      periodicamente (mesmo problema da pendência de cron abaixo — não é
+      uma lacuna nova, é a mesma). **Registrado explicitamente a pedido do
+      usuário**, pra não virar surpresa quando alguém notar uma rota
+      presa sem entender por quê: hoje isso é esperado, não bug.
 - [ ] **Nenhum cron do módulo feira está rodando** — `fecharRotasExpiradas`,
       `expirar_pedidos_pendentes`, `processarLote` (notificações) existem
       como funções/endpoints em `feira-dispatch/src/`, mas nada os

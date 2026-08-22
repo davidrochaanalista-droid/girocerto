@@ -3518,6 +3518,90 @@ create policy "entregador ve suas proprias metricas" on entrega_metrica for sele
 create policy "entregador registra sua propria recusa" on oferta_recusada for insert with check (
   entregador_id in (select meu_entregador_id_feira()));
 
+-- ------------------------------------------------------------
+-- Failover de feira ao recusar (sessão de 22/08/2026) — achado real,
+-- levantado pelo usuário: o módulo original nunca endereçou "o que
+-- acontece quando o entregador atribuído recusa" (oferta_recusada era só
+-- log de análise agregada, não sinal de redespacho). Mesmo princípio do
+-- failover real do restaurante (dispatch-engine): próximo mais próximo
+-- dentro do MESMO raio, nunca relaxa, excluindo quem já recusou — mas
+-- aqui como RPC síncrona chamada pelo próprio client no momento da
+-- recusa, não um processo Node rodando (dispatch-engine/ não existe pra
+-- feira ainda). Isso resolve o caminho de RECUSA EXPLÍCITA hoje, sem
+-- precisar de nenhum serviço novo — mas não resolve TIMEOUT (entregador
+-- que nunca responde): esse caminho segue precisando de um processo vivo
+-- checando `now() - aberta_em > timeout`, que não existe ainda (mesma
+-- pendência já documentada de "nenhum cron do módulo feira está
+-- rodando"). Ver "Pendências reais" no CLAUDE.md — registrado
+-- explicitamente pra não virar surpresa quando uma rota ficar "presa" por
+-- falta de resposta, sem ninguém ter recusado nada.
+--
+-- Exclusão reaproveita oferta_recusada (não cria tabela nova) — os dados
+-- já são exatamente os necessários (entregador_id, entrega_rota_id). Ler
+-- de volta aqui não viola o princípio "nunca pontuar" do PL 2479/25: não
+-- estamos avaliando o entregador, só evitando reoferecer a MESMA rota
+-- pra quem specifically já disse não a ela.
+--
+-- SECURITY DEFINER necessário: reatribuir entrega_rota.entregador_id pra
+-- OUTRO entregador não passaria pelo WITH CHECK da policy "entregador ve
+-- e atualiza sua rota" (o entregador_id resultante não é mais o do
+-- chamador). Guard explícito dentro da função: só quem JÁ registrou sua
+-- própria recusa pra essa rota específica pode disparar o redespacho —
+-- não dá pra um entregador qualquer chamar isso pra sequestrar a rota de
+-- outro.
+-- ------------------------------------------------------------
+create or replace function redespachar_apos_recusa_feira(p_entrega_rota_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_lat double precision;
+  v_lng double precision;
+  v_novo_entregador_id uuid;
+begin
+  if not exists (
+    select 1 from oferta_recusada
+    where entrega_rota_id = p_entrega_rota_id
+      and entregador_id in (select meu_entregador_id_feira())
+  ) then
+    raise exception 'só quem recusou esta rota pode disparar o redespacho' using errcode = '42501';
+  end if;
+
+  select rp.latitude, rp.longitude into v_lat, v_lng
+  from rota_parada rp
+  where rp.entrega_rota_id = p_entrega_rota_id and rp.tipo = 'coleta'
+  order by rp.ordem asc
+  limit 1;
+
+  if v_lat is null then
+    return null; -- rota sem parada de coleta — não deveria acontecer
+  end if;
+
+  select e.id into v_novo_entregador_id
+  from entregadores e
+  join veiculo_config vc on vc.tipo_veiculo = e.tipo_veiculo
+  where e.status = 'disponivel'
+    and e.aceita_feira = true
+    and e.id <> (select entregador_id from entrega_rota where id = p_entrega_rota_id)
+    and e.id not in (
+      select entregador_id from oferta_recusada where entrega_rota_id = p_entrega_rota_id
+    )
+    and calcular_distancia_km(e.lat, e.lng, v_lat, v_lng) <= vc.raio_coleta_km
+  order by point(e.lng, e.lat) <-> point(v_lng, v_lat)
+  limit 1;
+
+  if v_novo_entregador_id is not null then
+    update entrega_rota
+    set entregador_id = v_novo_entregador_id
+    where id = p_entrega_rota_id and status = 'em_montagem';
+  end if;
+
+  return v_novo_entregador_id;
+end;
+$$;
+
 -- notificacao: cada destinatário vê só a própria (campo destinatario_id
 -- aponta pra usuarios/estabelecimentos/entregadores dependendo do tipo —
 -- 3 condições, uma por tipo, nenhum ciclo)
