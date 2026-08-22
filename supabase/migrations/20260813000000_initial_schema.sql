@@ -1197,7 +1197,16 @@ security definer
 set search_path = public, pg_temp
 as $$
 begin
-  if eh_desenvolvedor_admin() then
+  -- auth.uid() is null = sem sessão JWT nenhuma (pg_cron chamando direto,
+  -- ex: verificar_documentos_vencidos(), ou qualquer outra automação
+  -- SECURITY DEFINER que rode fora do contexto do PostgREST). Achado real,
+  -- pego pela suíte completa (tests/onboarding.test.js) depois de aplicar
+  -- este trigger pra painel-dev.html: o job de reprovação automática por
+  -- documento vencido passou a ser bloqueado por engano, porque ele também
+  -- faz UPDATE direto em status_verificacao/motivo_reprovacao. Nenhuma
+  -- requisição real de entregador (via PostgREST/anon+authenticated) chega
+  -- aqui com auth.uid() null — só automação de backend.
+  if eh_desenvolvedor_admin() or auth.uid() is null then
     return new;
   end if;
 
@@ -2147,3 +2156,1380 @@ $$;
 create trigger trg_concluir_rota_ao_entregar
   after update on pedidos
   for each row execute function concluir_rota_ao_entregar();
+
+-- ==============================================================
+-- MÓDULO FEIRA (feira-dispatch) — sessão de 21/08/2026
+-- Domínio paralelo ao restaurante (tenants/pedidos/rotas_entrega), por
+-- decisão explícita do usuário: o relacionamento de pagamento (Pix
+-- peer-to-peer direto pro feirante, a plataforma nunca toca o dinheiro do
+-- produto) é estruturalmente diferente de tenant único, não é só um jeito
+-- diferente de modelar a mesma coisa. `entregadores` continua 100%
+-- COMPARTILHADO (mesma frota atende os dois domínios na mesma conta,
+-- tipo_perfil na rota diferencia, não a conta) — é a única tabela que os
+-- dois domínios têm em comum.
+--
+-- Este bloco representa o ESTADO FINAL depois de consolidar as 9
+-- migrations do módulo (`_feira-incoming`/feira-dispatch), não uma cópia
+-- literal de cada uma — funções que uma migration posterior redefinia
+-- (create or replace) aparecem aqui só na versão final. Duas adaptações
+-- foram necessárias em cima do que o módulo trouxe:
+--   1. `estabelecimentos`, `usuarios`, `produtos` — o módulo assumia que já
+--      existiam (comentário do próprio arquivo: "Assume que já existem").
+--      Não existem no GiroCerto — criadas do zero aqui, com o mínimo de
+--      colunas exigido pelo uso real em todas as 9 migrations + o código
+--      em src/.
+--   2. Toda referência a `entregadores.latitude`/`.longitude` corrigida
+--      pra `entregadores.lat`/`.lng` (nome real da coluna, confirmado
+--      contra o banco hospedado antes de aplicar) — o módulo assumia
+--      `latitude`/`longitude`, que não existe.
+--   3. `entregadores.tenant_id` vira nullable (entregador 100% feira, sem
+--      vínculo de restaurante) + novo `entregadores.aceita_feira` (
+--      elegibilidade pra oferta de feira, independente de tenant_id — a
+--      MESMA conta pode ter tenant_id preenchido E aceita_feira=true).
+--
+-- RLS não veio no módulo nenhuma (zero `enable row level security`, zero
+-- `create policy` nos 9 arquivos originais) — escrita do zero aqui,
+-- seguindo o mesmo padrão do resto do schema (funções SECURITY DEFINER
+-- pra qualquer lookup de identidade, nunca subselect cru repetido).
+-- ==============================================================
+
+-- ---------------------------------------------------------------------
+-- 0. AJUSTES EM `entregadores` (tabela compartilhada)
+-- ---------------------------------------------------------------------
+alter table entregadores alter column tenant_id drop not null;
+
+alter table entregadores add column if not exists aceita_feira boolean not null default false;
+comment on column entregadores.aceita_feira is
+  'Elegibilidade pra receber oferta de despacho da feira. Independente de '
+  'tenant_id: a mesma conta pode atender restaurante (tenant_id preenchido) '
+  'e feira (aceita_feira=true) no mesmo turno — tipo_perfil na rota '
+  '(entrega_rota.tipo_perfil) diferencia o contexto, não a conta.';
+
+-- ---------------------------------------------------------------------
+-- 1. TABELAS QUE O MÓDULO ASSUMIA JÁ EXISTIREM — criadas do zero
+-- ---------------------------------------------------------------------
+create table if not exists estabelecimentos (
+  id uuid primary key default gen_random_uuid(),
+  auth_user_id uuid references auth.users(id),
+  nome text not null,
+  tipo_negocio text not null default 'feirante'
+    check (tipo_negocio in ('restaurante', 'feirante', 'outro')),
+  chave_pix text,
+  latitude double precision,   -- endereço cadastral, fallback se a banca
+  longitude double precision,  -- não tiver latitude_banca/longitude_banca
+  criado_em timestamptz not null default now()
+);
+
+create table if not exists usuarios (
+  id uuid primary key default gen_random_uuid(),
+  auth_user_id uuid references auth.users(id),
+  nome text not null,
+  telefone text,
+  push_token text,
+  push_plataforma text check (push_plataforma in ('android', 'ios')),
+  criado_em timestamptz not null default now()
+);
+
+create table if not exists produtos (
+  id uuid primary key default gen_random_uuid(),
+  estabelecimento_id uuid references estabelecimentos(id) not null,
+  nome text not null,
+  preco numeric(10,2) not null default 0,
+  peso_kg numeric(6,3) not null default 0,
+  ativo boolean not null default true,
+  criado_em timestamptz not null default now()
+);
+
+-- ---------------------------------------------------------------------
+-- 2. FEIRA (entidade normalizada — vários feirantes compartilham a mesma)
+-- ---------------------------------------------------------------------
+create table if not exists feira (
+  id uuid primary key default gen_random_uuid(),
+  nome text not null,
+  bairro text,
+  cidade text,
+  valor_minimo_pedido numeric(10,2) not null default 25.00,
+  created_at timestamptz default now()
+);
+
+create table if not exists feira_ocorrencia (
+  id uuid primary key default gen_random_uuid(),
+  feira_id uuid references feira(id) not null,
+  dia_semana int not null check (dia_semana between 0 and 6), -- 0=domingo
+  endereco text not null,
+  latitude double precision not null,
+  longitude double precision not null,
+  horario_inicio time not null,
+  horario_fim time not null,
+  corte_pedido_min_antes int not null default 120,
+  created_at timestamptz default now(),
+  unique (feira_id, dia_semana)
+);
+
+create table if not exists feira_ocorrencia_excecao (
+  id uuid primary key default gen_random_uuid(),
+  feira_ocorrencia_id uuid references feira_ocorrencia(id) not null,
+  data date not null,
+  disponivel boolean not null default false,
+  motivo text,
+  created_at timestamptz default now(),
+  unique (feira_ocorrencia_id, data)
+);
+
+-- ---------------------------------------------------------------------
+-- 3. VÍNCULO FEIRANTE <-> FEIRA (participação) + exceção individual +
+--    posição real da banca (migration 004 — sem hub de coleta único, a
+--    taxa de entrega depende de onde a banca fica DENTRO da feira, não só
+--    do endereço cadastral do feirante)
+-- ---------------------------------------------------------------------
+create table if not exists feirante_participacao (
+  id uuid primary key default gen_random_uuid(),
+  estabelecimento_id uuid references estabelecimentos(id) not null,
+  feira_ocorrencia_id uuid references feira_ocorrencia(id) not null,
+  ativo boolean not null default true,
+  latitude_banca double precision,
+  longitude_banca double precision,
+  created_at timestamptz default now(),
+  unique (estabelecimento_id, feira_ocorrencia_id)
+);
+
+comment on column feirante_participacao.latitude_banca is
+  'Posição real da banca dentro da feira. Se nulo, o motor de taxa usa '
+  'estabelecimentos.latitude/longitude como aproximação (endereço cadastral, '
+  'menos preciso). Preencher via "marcar minha banca no mapa" no app do feirante.';
+
+create table if not exists feirante_excecoes (
+  id uuid primary key default gen_random_uuid(),
+  estabelecimento_id uuid references estabelecimentos(id) not null,
+  feira_ocorrencia_id uuid references feira_ocorrencia(id) not null,
+  data date not null,
+  disponivel boolean not null default false,
+  motivo text,
+  created_at timestamptz default now(),
+  unique (estabelecimento_id, feira_ocorrencia_id, data)
+);
+
+-- ---------------------------------------------------------------------
+-- 4. PEDIDO EM DUAS CAMADAS: grupo (1 consumidor, 1 feira, N feirantes)
+--    e pedido individual (1 feirante dentro do grupo) — inclui as colunas
+--    de auditoria/timeout/métricas que migrations 003/005 adicionaram
+-- ---------------------------------------------------------------------
+create table if not exists pedido_grupo (
+  id uuid primary key default gen_random_uuid(),
+  consumidor_id uuid references usuarios(id) not null,
+  feira_ocorrencia_id uuid references feira_ocorrencia(id) not null,
+  entregador_id uuid references entregadores(id),
+  taxa_entrega numeric(10,2) not null default 0,
+  qtd_paradas int not null default 1,
+  status text not null default 'aguardando_pagamentos'
+    check (status in ('aguardando_pagamentos','pronto_para_coleta','em_rota','entregue','cancelado')),
+  endereco_entrega text not null,
+  latitude_entrega double precision not null,
+  longitude_entrega double precision not null,
+  expira_em timestamptz default (now() + interval '20 minutes'),
+  trecho_a_pe_km numeric(8,3),
+  trecho_ate_entrega_km numeric(8,3),
+  qtd_bancas int,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create table if not exists pedido (
+  id uuid primary key default gen_random_uuid(),
+  pedido_grupo_id uuid references pedido_grupo(id) not null,
+  estabelecimento_id uuid references estabelecimentos(id) not null,
+  valor_produtos numeric(10,2) not null default 0,
+  chave_pix_feirante text not null,
+  status_pagamento text not null default 'pendente'
+    check (status_pagamento in ('pendente','confirmado')),
+  status_pagamento_final text
+    check (status_pagamento_final in ('confirmado','expirado')) default null,
+  status_coleta text not null default 'aguardando'
+    check (status_coleta in ('aguardando','liberado_pagamento','finalizado','coletado')),
+  confirmado_por uuid references usuarios(id),
+  confirmado_em timestamptz,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create table if not exists pedido_item (
+  id uuid primary key default gen_random_uuid(),
+  pedido_id uuid references pedido(id) not null,
+  produto_id uuid references produtos(id) not null,
+  quantidade numeric(10,3) not null,
+  preco_unitario numeric(10,2) not null,
+  peso_unitario numeric(6,3) not null default 0,
+  subtotal numeric(10,2) generated always as (quantidade * preco_unitario) stored,
+  peso_subtotal numeric(10,3) generated always as (quantidade * peso_unitario) stored
+);
+
+-- ---------------------------------------------------------------------
+-- 5. NOTA DE IDENTIFICAÇÃO (gerada quando feirante finaliza separação)
+-- ---------------------------------------------------------------------
+create table if not exists pedido_nota (
+  id uuid primary key default gen_random_uuid(),
+  pedido_id uuid references pedido(id) not null unique,
+  codigo_curto char(4) not null,
+  nome_cliente text not null,
+  qtd_itens int not null,
+  peso_total numeric(10,3) not null,
+  gerada_em timestamptz default now()
+);
+
+-- ---------------------------------------------------------------------
+-- 6. ROTA DO ENTREGADOR (multi-pickup, multi-dropoff — feira ou
+--    restaurante; própria da feira, NÃO compartilhada com rotas_entrega
+--    do restaurante — decisão explícita: zero risco pro que já está em
+--    produção pesa mais que evitar essa duplicação)
+-- ---------------------------------------------------------------------
+create table if not exists dispatch_config (
+  tipo_perfil text primary key,
+  max_paradas int not null,
+  max_detour_pct numeric not null,
+  max_espera_montagem_seg int not null,
+  peso_max_kg numeric not null default 15,
+  margem_seguranca_kg numeric not null default 2
+);
+
+insert into dispatch_config (tipo_perfil, max_paradas, max_detour_pct, max_espera_montagem_seg, peso_max_kg, margem_seguranca_kg)
+values
+  ('feira', 5, 0.40, 240, 15, 2),
+  ('restaurante', 3, 0.15, 60, 15, 1),
+  ('misto', 4, 0.25, 120, 15, 2)
+on conflict (tipo_perfil) do update set
+  max_paradas = excluded.max_paradas,
+  max_detour_pct = excluded.max_detour_pct,
+  max_espera_montagem_seg = excluded.max_espera_montagem_seg,
+  peso_max_kg = excluded.peso_max_kg,
+  margem_seguranca_kg = excluded.margem_seguranca_kg;
+
+create table if not exists entrega_rota (
+  id uuid primary key default gen_random_uuid(),
+  entregador_id uuid references entregadores(id) not null,
+  tipo_perfil text not null default 'feira' references dispatch_config(tipo_perfil),
+  status text not null default 'em_montagem'
+    check (status in ('em_montagem','em_rota','finalizada','cancelada')),
+  peso_total numeric(10,3) not null default 0,
+  distancia_total_km numeric(10,3),
+  aceita_em timestamptz,
+  distancia_ate_feira_km numeric(8,3),
+  bonus_deslocamento numeric(10,2),
+  tempo_espera_total_seg int default 0,
+  valor_tempo_espera numeric(10,2) default 0,
+  aberta_em timestamptz default now(),
+  fechada_em timestamptz
+);
+
+create table if not exists entrega_rota_grupo (
+  id uuid primary key default gen_random_uuid(),
+  entrega_rota_id uuid references entrega_rota(id) not null,
+  pedido_grupo_id uuid references pedido_grupo(id) not null,
+  unique (pedido_grupo_id)
+);
+
+-- paradas físicas sequenciadas (coleta em feirante ou entrega ao consumidor)
+create table if not exists rota_parada (
+  id uuid primary key default gen_random_uuid(),
+  entrega_rota_id uuid references entrega_rota(id) not null,
+  tipo text not null check (tipo in ('coleta','entrega')),
+  pedido_id uuid references pedido(id),
+  pedido_grupo_id uuid references pedido_grupo(id),
+  latitude double precision not null,
+  longitude double precision not null,
+  latitude_confirmada double precision,
+  longitude_confirmada double precision,
+  divergencia_m numeric,
+  ordem int not null,
+  status text not null default 'pendente' check (status in ('pendente','concluida')),
+  chegou_em timestamptz,
+  concluida_em timestamptz,
+  notificado_a_caminho boolean default false,
+  notificado_proximidade boolean default false,
+  check (
+    (tipo = 'coleta' and pedido_id is not null) or
+    (tipo = 'entrega' and pedido_grupo_id is not null)
+  )
+);
+
+-- ---------------------------------------------------------------------
+-- 6.1 AVALIAÇÕES — criada aqui (antes das views da seção 11, que incluem
+--     avaliacao_media referenciando esta tabela)
+-- ---------------------------------------------------------------------
+create table if not exists avaliacao (
+  id uuid primary key default gen_random_uuid(),
+  pedido_grupo_id uuid references pedido_grupo(id) not null,
+  avaliador_tipo text not null check (avaliador_tipo in ('consumidor','feirante','entregador')),
+  avaliador_id uuid not null,
+  avaliado_tipo text not null check (avaliado_tipo in ('feirante','entregador')),
+  avaliado_id uuid not null,
+  nota int not null check (nota between 1 and 5),
+  comentario text,
+  created_at timestamptz default now(),
+  unique (pedido_grupo_id, avaliador_id, avaliado_id)
+);
+
+-- ---------------------------------------------------------------------
+-- 7. MÉTRICAS REAIS DE CORRIDA (migration 005) — 1 linha por rota
+--    finalizada, pra revisar o piso mínimo com dado real, não estimativa
+-- ---------------------------------------------------------------------
+create table if not exists entrega_metrica (
+  id uuid primary key default gen_random_uuid(),
+  entrega_rota_id uuid references entrega_rota(id) not null unique,
+  entregador_id uuid references entregadores(id) not null,
+  tipo_perfil text not null,
+  qtd_grupos int not null,
+  qtd_bancas_total int not null,
+  peso_total_kg numeric(8,3) not null,
+  trecho_a_pe_km_total numeric(8,3) not null,
+  trecho_ate_entrega_km_total numeric(8,3) not null,
+  taxa_cobrada_total numeric(10,2) not null,
+  aceita_em timestamptz not null,
+  primeira_coleta_em timestamptz,
+  ultima_entrega_em timestamptz,
+  tempo_total_seg int,
+  remuneracao_por_hora numeric(10,2),
+  created_at timestamptz default now()
+);
+
+-- ---------------------------------------------------------------------
+-- 8. REGRAS POR VEÍCULO (migration 006) — não altera entregadores.tipo_veiculo
+--    (já existe, mesma definição: not null default 'moto', check moto/bicicleta)
+-- ---------------------------------------------------------------------
+create table if not exists veiculo_config (
+  tipo_veiculo text primary key,
+  raio_coleta_km numeric not null,
+  peso_max_kg numeric not null
+);
+
+insert into veiculo_config (tipo_veiculo, raio_coleta_km, peso_max_kg) values
+  ('moto', 1.5, 15),
+  ('bicicleta', 0.8, 5)
+on conflict (tipo_veiculo) do update set
+  raio_coleta_km = excluded.raio_coleta_km,
+  peso_max_kg = excluded.peso_max_kg;
+
+create table if not exists veiculo_raio_entrega (
+  tipo_veiculo text not null,
+  tipo_perfil text not null,
+  raio_entrega_km numeric not null,
+  primary key (tipo_veiculo, tipo_perfil)
+);
+
+insert into veiculo_raio_entrega (tipo_veiculo, tipo_perfil, raio_entrega_km) values
+  ('moto', 'feira', 8),
+  ('moto', 'restaurante', 6),
+  ('moto', 'misto', 6),
+  ('bicicleta', 'feira', 2),
+  ('bicicleta', 'restaurante', 2),
+  ('bicicleta', 'misto', 2)
+on conflict (tipo_veiculo, tipo_perfil) do update set raio_entrega_km = excluded.raio_entrega_km;
+
+-- ---------------------------------------------------------------------
+-- 9. PISO REGULATÓRIO DE REFERÊNCIA (migration 007 — PL 2479/25)
+-- ---------------------------------------------------------------------
+create table if not exists piso_regulatorio_config (
+  id int primary key default 1,
+  valor_base numeric not null default 10.00,
+  km_base numeric not null default 4.0,
+  valor_km_adicional numeric not null default 2.50,
+  valor_minuto_espera numeric not null default 0.60,
+  fonte text default 'PL 2479/25 - pacote do governo federal (referência, não lei vigente)',
+  atualizado_em timestamptz default now(),
+  check (id = 1)
+);
+insert into piso_regulatorio_config (id) values (1) on conflict (id) do nothing;
+
+create table if not exists oferta_recusada (
+  id uuid primary key default gen_random_uuid(),
+  entregador_id uuid references entregadores(id) not null,
+  entrega_rota_id uuid references entrega_rota(id),
+  taxa_ofertada numeric(10,2),
+  distancia_km numeric(8,3),
+  tempo_estimado_min numeric(8,1),
+  recusada_em timestamptz default now()
+);
+comment on table oferta_recusada is
+  'Apenas para análise agregada de precificação. NUNCA usar para pontuar, '
+  'despriorizar ou suspender um entregador individualmente — conforme PL 2479/25.';
+
+create table if not exists entregador_flag_revisao (
+  id uuid primary key default gen_random_uuid(),
+  entregador_id uuid references entregadores(id) not null,
+  motivo text not null,
+  detalhe jsonb default '{}',
+  status text not null default 'aguardando_revisao'
+    check (status in ('aguardando_revisao', 'revisado_sem_acao', 'revisado_com_advertencia', 'revisado_com_suspensao')),
+  revisado_por uuid references usuarios(id),
+  revisado_em timestamptz,
+  created_at timestamptz default now()
+);
+
+-- ---------------------------------------------------------------------
+-- 10. NOTIFICAÇÃO (migrations 003/008/009 — fila consumida por worker
+--     externo; canal push_voz depende do app nativo Capacitor, ver plano)
+-- ---------------------------------------------------------------------
+create table if not exists notificacao (
+  id uuid primary key default gen_random_uuid(),
+  destinatario_tipo text not null check (destinatario_tipo in ('consumidor','feirante','entregador')),
+  destinatario_id uuid not null,
+  canal text not null default 'whatsapp' check (canal in ('whatsapp','push','push_voz')),
+  evento text not null,
+  payload jsonb not null default '{}',
+  status text not null default 'pendente' check (status in ('pendente','enviado','falhou')),
+  created_at timestamptz default now(),
+  enviado_em timestamptz
+);
+
+create table if not exists notificacao_proximidade_config (
+  id int primary key default 1,
+  distancia_aviso_km numeric not null default 0.4,
+  intervalo_minimo_atualizacao_seg int not null default 15,
+  check (id = 1)
+);
+insert into notificacao_proximidade_config (id) values (1) on conflict (id) do nothing;
+
+create table if not exists notificacao_audio (
+  evento text primary key,
+  url_audio text not null,
+  duracao_seg numeric not null,
+  texto_referencia text not null,
+  atualizado_em timestamptz default now()
+);
+
+insert into notificacao_audio (evento, url_audio, duracao_seg, texto_referencia) values
+  ('saiu_entrega', 'https://cdn.girocerto.com/audio/saiu_entrega.mp3', 2.0,
+   'Bi-bi (buzina) + "Seu pedido está a caminho!" (voz genérica, sem nome)'),
+  ('proximidade_chegada', 'https://cdn.girocerto.com/audio/proximidade.mp3', 2.5,
+   'Bi-bi (buzina) + "Seu pedido está chegando! Vá até a portaria ou o portão, por favor." (voz genérica, sem nome)')
+on conflict (evento) do update set
+  url_audio = excluded.url_audio,
+  texto_referencia = excluded.texto_referencia;
+
+-- ---------------------------------------------------------------------
+-- 11. VIEWS DE APOIO
+-- ---------------------------------------------------------------------
+create or replace view pedido_com_peso as
+select p.id as pedido_id, p.pedido_grupo_id,
+       coalesce(sum(pi.peso_subtotal), 0) as peso_total,
+       coalesce(sum(pi.subtotal), 0) as valor_total,
+       count(pi.id) as qtd_itens
+from pedido p
+left join pedido_item pi on pi.pedido_id = p.id
+group by p.id;
+
+create or replace view pedido_grupo_com_peso as
+select pg.id as pedido_grupo_id,
+       coalesce(sum(pcp.peso_total), 0) as peso_total
+from pedido_grupo pg
+join pedido_com_peso pcp on pcp.pedido_grupo_id = pg.id
+group by pg.id;
+
+create or replace view rota_disponivel as
+select
+  er.id as entrega_rota_id,
+  er.entregador_id,
+  er.status,
+  er.peso_total,
+  count(distinct erg.pedido_grupo_id) as qtd_grupos,
+  count(rp.id) filter (where rp.status = 'pendente') as paradas_pendentes
+from entrega_rota er
+left join entrega_rota_grupo erg on erg.entrega_rota_id = er.id
+left join rota_parada rp on rp.entrega_rota_id = er.id
+group by er.id;
+
+create or replace view avaliacao_media as
+select avaliado_tipo, avaliado_id,
+       round(avg(nota)::numeric, 2) as nota_media,
+       count(*) as qtd_avaliacoes
+from avaliacao
+group by avaliado_tipo, avaliado_id;
+
+create or replace view dashboard_vendas_feirante as
+select
+  p.estabelecimento_id,
+  date_trunc('week', p.created_at) as semana,
+  count(distinct p.id) as qtd_pedidos,
+  sum(pcp.valor_total) as receita_total,
+  round(avg(pcp.valor_total), 2) as ticket_medio
+from pedido p
+join pedido_com_peso pcp on pcp.pedido_id = p.id
+where p.status_pagamento = 'confirmado'
+group by p.estabelecimento_id, date_trunc('week', p.created_at);
+
+create or replace view produtos_mais_vendidos as
+select
+  p.estabelecimento_id,
+  pi.produto_id,
+  prod.nome as produto_nome,
+  sum(pi.quantidade) as qtd_total_vendida,
+  sum(pi.subtotal) as receita_total
+from pedido_item pi
+join pedido p on p.id = pi.pedido_id
+join produtos prod on prod.id = pi.produto_id
+where p.status_pagamento = 'confirmado'
+group by p.estabelecimento_id, pi.produto_id, prod.nome
+order by qtd_total_vendida desc;
+
+create or replace view analise_piso_minimo as
+select
+  case
+    when trecho_a_pe_km_total < 0.05 then '1. quase zero (bancas coladas)'
+    when trecho_a_pe_km_total < 0.15 then '2. curto (até 150m)'
+    when trecho_a_pe_km_total < 0.30 then '3. médio (150-300m)'
+    else '4. longo (300m+)'
+  end as faixa_trecho_a_pe,
+  count(*) as qtd_corridas,
+  round(avg(tempo_total_seg) / 60.0, 1) as tempo_medio_min,
+  round(avg(taxa_cobrada_total), 2) as taxa_media,
+  round(avg(remuneracao_por_hora), 2) as remuneracao_hora_media,
+  round(min(remuneracao_por_hora), 2) as remuneracao_hora_pior_caso
+from entrega_metrica
+where tipo_perfil = 'feira' and remuneracao_por_hora is not null
+group by faixa_trecho_a_pe
+order by faixa_trecho_a_pe;
+
+create or replace view extrato_entregador as
+select
+  em.entregador_id,
+  em.entrega_rota_id,
+  em.tipo_perfil,
+  em.taxa_cobrada_total as ganho_total,
+  em.tempo_total_seg,
+  em.remuneracao_por_hora,
+  er.bonus_deslocamento,
+  er.valor_tempo_espera,
+  er.aceita_em,
+  em.ultima_entrega_em as concluida_em
+from entrega_metrica em
+join entrega_rota er on er.id = em.entrega_rota_id
+order by em.ultima_entrega_em desc;
+
+-- ---------------------------------------------------------------------
+-- 13. FUNÇÕES DE APOIO (Haversine — versões km/graus e metros)
+-- ---------------------------------------------------------------------
+create or replace function calcular_distancia_km(
+  lat1 double precision, lng1 double precision,
+  lat2 double precision, lng2 double precision
+) returns numeric as $$
+  select 6371 * 2 * asin(sqrt(
+    sin(radians(lat2 - lat1) / 2) ^ 2 +
+    cos(radians(lat1)) * cos(radians(lat2)) * sin(radians(lng2 - lng1) / 2) ^ 2
+  ));
+$$ language sql immutable;
+
+create or replace function calcular_divergencia_m(
+  lat1 double precision, lng1 double precision,
+  lat2 double precision, lng2 double precision
+) returns numeric as $$
+  select 6371000 * 2 * asin(sqrt(
+    sin(radians(lat2 - lat1) / 2) ^ 2 +
+    cos(radians(lat1)) * cos(radians(lat2)) * sin(radians(lng2 - lng1) / 2) ^ 2
+  ));
+$$ language sql immutable;
+
+-- FIX aplicado: usa entregadores.lat/entregadores.lng (não latitude/longitude,
+-- que o módulo assumia e não existe). Versão final (migration 006 substituiu
+-- a de 002 — só uma sobrevive, com tipo_veiculo no retorno).
+create or replace function buscar_entregador_mais_proximo(
+  p_latitude double precision,
+  p_longitude double precision
+)
+returns table (id uuid, latitude double precision, longitude double precision, tipo_veiculo text)
+language sql
+as $$
+  select e.id, e.lat, e.lng, e.tipo_veiculo
+  from entregadores e
+  join veiculo_config vc on vc.tipo_veiculo = e.tipo_veiculo
+  where e.status = 'disponivel'
+    and e.aceita_feira = true
+    and calcular_distancia_km(e.lat, e.lng, p_latitude, p_longitude) <= vc.raio_coleta_km
+  order by point(e.lng, e.lat) <-> point(p_longitude, p_latitude)
+  limit 1;
+$$;
+
+create index if not exists idx_entregadores_veiculo on entregadores(tipo_veiculo, status);
+create index if not exists idx_entregadores_aceita_feira on entregadores(aceita_feira) where aceita_feira = true;
+
+-- FIX aplicado: lat/lng. Grava na MESMA coluna que o app-entregador.html já
+-- usa hoje (entregadores.lat/lng), não numa coluna paralela — o rastreio de
+-- posição do entregador continua único, compartilhado entre os dois domínios.
+create or replace function atualizar_localizacao_entregador(
+  p_entregador_id uuid,
+  p_latitude double precision,
+  p_longitude double precision
+) returns void as $$
+begin
+  update entregadores
+    set lat = p_latitude,
+        lng = p_longitude,
+        localizacao_atualizada_em = now()
+    where id = p_entregador_id;
+end;
+$$ language plpgsql;
+
+-- ---------------------------------------------------------------------
+-- 14. LOCK DE CONCORRÊNCIA NA INSERÇÃO DE ROTA
+-- ---------------------------------------------------------------------
+create or replace function inserir_grupo_em_rota_atomico(
+  p_entrega_rota_id uuid,
+  p_pedido_grupo_id uuid
+) returns jsonb as $$
+declare
+  v_peso_novo numeric;
+  v_peso_atual numeric;
+  v_limite numeric;
+  v_perfil text;
+begin
+  perform pg_advisory_xact_lock(hashtext(p_entrega_rota_id::text));
+
+  select tipo_perfil into v_perfil from entrega_rota where id = p_entrega_rota_id;
+  select (peso_max_kg - margem_seguranca_kg) into v_limite
+    from dispatch_config where tipo_perfil = v_perfil;
+
+  select coalesce(peso_total, 0) into v_peso_novo
+    from pedido_grupo_com_peso where pedido_grupo_id = p_pedido_grupo_id;
+
+  select coalesce(sum(pcp.peso_total), 0) into v_peso_atual
+    from entrega_rota_grupo erg
+    join pedido_grupo_com_peso pcp on pcp.pedido_grupo_id = erg.pedido_grupo_id
+    where erg.entrega_rota_id = p_entrega_rota_id;
+
+  if (v_peso_atual + coalesce(v_peso_novo, 0)) > v_limite then
+    return jsonb_build_object(
+      'sucesso', false, 'motivo', 'peso_excedido',
+      'peso_atual', v_peso_atual, 'peso_tentativa', v_peso_novo, 'limite', v_limite
+    );
+  end if;
+
+  insert into entrega_rota_grupo (entrega_rota_id, pedido_grupo_id)
+  values (p_entrega_rota_id, p_pedido_grupo_id)
+  on conflict (pedido_grupo_id) do nothing;
+
+  return jsonb_build_object('sucesso', true);
+end;
+$$ language plpgsql;
+
+create or replace function aceitar_rota(
+  p_entrega_rota_id uuid,
+  p_distancia_ate_feira_km numeric default null,
+  p_bonus_deslocamento numeric default null
+)
+returns void as $$
+begin
+  update entrega_rota
+    set aceita_em = now(),
+        status = 'em_rota',
+        distancia_ate_feira_km = p_distancia_ate_feira_km,
+        bonus_deslocamento = p_bonus_deslocamento
+    where id = p_entrega_rota_id and status = 'em_montagem';
+end;
+$$ language plpgsql;
+
+create or replace function registrar_chegada_parada(p_parada_id uuid)
+returns void as $$
+begin
+  update rota_parada set chegou_em = now() where id = p_parada_id and chegou_em is null;
+end;
+$$ language plpgsql;
+
+create or replace function calcular_piso_regulatorio(p_distancia_total_km numeric)
+returns numeric as $$
+declare
+  cfg record;
+  excedente numeric;
+begin
+  select * into cfg from piso_regulatorio_config where id = 1;
+  excedente := greatest(p_distancia_total_km - cfg.km_base, 0);
+  return cfg.valor_base + (excedente * cfg.valor_km_adicional);
+end;
+$$ language plpgsql stable;
+
+create or replace function escolher_canal_notificacao(p_consumidor_id uuid, p_evento text)
+returns text as $$
+declare
+  v_tem_push boolean;
+  v_tem_audio boolean;
+begin
+  select push_token is not null into v_tem_push from usuarios where id = p_consumidor_id;
+  select exists(select 1 from notificacao_audio where evento = p_evento) into v_tem_audio;
+
+  if v_tem_push and v_tem_audio then
+    return 'push_voz';
+  end if;
+  return 'whatsapp';
+end;
+$$ language plpgsql;
+
+-- FIX aplicado: lat/lng. Versão final (migration 009 substituiu a de 008 —
+-- adiciona escolha de canal push_voz/whatsapp).
+create or replace function verificar_proximidade_entregas(p_entregador_id uuid)
+returns table(pedido_grupo_id uuid, distancia_km numeric) as $$
+declare
+  v_entregador record;
+  v_cfg record;
+  v_parada record;
+  v_dist numeric;
+  v_consumidor_id uuid;
+  v_canal text;
+begin
+  select lat as latitude, lng as longitude into v_entregador from entregadores where id = p_entregador_id;
+  select * into v_cfg from notificacao_proximidade_config where id = 1;
+
+  for v_parada in
+    select rp.id, rp.latitude, rp.longitude, rp.pedido_grupo_id
+    from rota_parada rp
+    join entrega_rota er on er.id = rp.entrega_rota_id
+    where er.entregador_id = p_entregador_id
+      and er.status = 'em_rota'
+      and rp.tipo = 'entrega'
+      and rp.status = 'pendente'
+      and rp.notificado_proximidade = false
+      and rp.notificado_a_caminho = true
+  loop
+    v_dist := calcular_distancia_km(v_entregador.latitude, v_entregador.longitude, v_parada.latitude, v_parada.longitude);
+
+    if v_dist <= v_cfg.distancia_aviso_km then
+      update rota_parada set notificado_proximidade = true where id = v_parada.id;
+
+      select consumidor_id into v_consumidor_id from pedido_grupo where id = v_parada.pedido_grupo_id;
+      v_canal := escolher_canal_notificacao(v_consumidor_id, 'proximidade_chegada');
+
+      insert into notificacao (destinatario_tipo, destinatario_id, evento, canal, payload)
+      values ('consumidor', v_consumidor_id, 'proximidade_chegada', v_canal,
+        jsonb_build_object('pedido_grupo_id', v_parada.pedido_grupo_id, 'distancia_km', v_dist));
+
+      pedido_grupo_id := v_parada.pedido_grupo_id;
+      distancia_km := v_dist;
+      return next;
+    end if;
+  end loop;
+end;
+$$ language plpgsql;
+
+create or replace function expirar_pedidos_pendentes()
+returns table(pedido_grupo_id uuid, pedidos_expirados int, pedidos_confirmados int) as $$
+declare
+  grupo record;
+  qtd_expirados int;
+  qtd_confirmados int;
+begin
+  for grupo in
+    select pg.id from pedido_grupo pg
+    where pg.status = 'aguardando_pagamentos'
+      and pg.expira_em < now()
+  loop
+    update pedido
+      set status_pagamento_final = 'expirado'
+      where pedido.pedido_grupo_id = grupo.id
+        and status_pagamento = 'pendente';
+
+    select count(*) into qtd_expirados
+      from pedido where pedido.pedido_grupo_id = grupo.id and status_pagamento_final = 'expirado';
+    select count(*) into qtd_confirmados
+      from pedido where pedido.pedido_grupo_id = grupo.id and status_pagamento = 'confirmado';
+
+    if qtd_confirmados = 0 then
+      update pedido_grupo set status = 'cancelado', updated_at = now() where id = grupo.id;
+    else
+      update pedido_grupo set status = 'pronto_para_coleta', updated_at = now() where id = grupo.id;
+    end if;
+
+    pedido_grupo_id := grupo.id;
+    pedidos_expirados := qtd_expirados;
+    pedidos_confirmados := qtd_confirmados;
+    return next;
+  end loop;
+end;
+$$ language plpgsql;
+
+-- ---------------------------------------------------------------------
+-- 15. TRIGGERS
+-- ---------------------------------------------------------------------
+create or replace function checar_peso_rota()
+returns trigger as $$
+declare
+  peso_novo numeric;
+  peso_atual numeric;
+  limite numeric;
+  perfil text;
+begin
+  select tipo_perfil into perfil from entrega_rota where id = new.entrega_rota_id;
+  select peso_max_kg into limite from dispatch_config where tipo_perfil = perfil;
+
+  select peso_total into peso_novo
+  from pedido_grupo_com_peso where pedido_grupo_id = new.pedido_grupo_id;
+
+  select coalesce(sum(pcp.peso_total), 0) into peso_atual
+  from entrega_rota_grupo erg
+  join pedido_grupo_com_peso pcp on pcp.pedido_grupo_id = erg.pedido_grupo_id
+  where erg.entrega_rota_id = new.entrega_rota_id;
+
+  if (peso_atual + coalesce(peso_novo,0)) > limite then
+    raise exception 'Peso excede %kg permitido nesta rota (atual: %kg, tentando somar: %kg)',
+      limite, peso_atual, peso_novo;
+  end if;
+
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_checar_peso_rota on entrega_rota_grupo;
+create trigger trg_checar_peso_rota
+before insert on entrega_rota_grupo
+for each row execute function checar_peso_rota();
+
+create or replace function atualizar_peso_total_rota()
+returns trigger as $$
+declare
+  rota_id uuid;
+  novo_total numeric;
+begin
+  rota_id := coalesce(new.entrega_rota_id, old.entrega_rota_id);
+
+  select coalesce(sum(pcp.peso_total), 0) into novo_total
+  from entrega_rota_grupo erg
+  join pedido_grupo_com_peso pcp on pcp.pedido_grupo_id = erg.pedido_grupo_id
+  where erg.entrega_rota_id = rota_id;
+
+  update entrega_rota set peso_total = novo_total where id = rota_id;
+  return null;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_atualizar_peso_total_rota on entrega_rota_grupo;
+create trigger trg_atualizar_peso_total_rota
+after insert or delete on entrega_rota_grupo
+for each row execute function atualizar_peso_total_rota();
+
+create or replace function gerar_nota_pedido()
+returns trigger as $$
+declare
+  cliente_nome text;
+  qtd int;
+  peso numeric;
+  codigo text;
+  tentativas int := 0;
+begin
+  if new.status_coleta = 'finalizado' and old.status_coleta is distinct from 'finalizado' then
+    select u.nome into cliente_nome
+    from pedido_grupo pg join usuarios u on u.id = pg.consumidor_id
+    where pg.id = new.pedido_grupo_id;
+
+    select count(*), coalesce(sum(peso_subtotal),0) into qtd, peso
+    from pedido_item where pedido_id = new.id;
+
+    loop
+      codigo := upper(substr(md5(random()::text || new.id::text || tentativas::text), 1, 4));
+      tentativas := tentativas + 1;
+
+      exit when not exists (
+        select 1 from pedido_nota pn
+        join pedido p2 on p2.id = pn.pedido_id
+        where pn.codigo_curto = codigo
+          and p2.estabelecimento_id = new.estabelecimento_id
+          and p2.status_coleta != 'coletado'
+      ) or tentativas > 10;
+    end loop;
+
+    insert into pedido_nota (pedido_id, codigo_curto, nome_cliente, qtd_itens, peso_total)
+    values (new.id, codigo, cliente_nome, qtd, peso)
+    on conflict (pedido_id) do nothing;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_gerar_nota on pedido;
+create trigger trg_gerar_nota
+before update on pedido
+for each row execute function gerar_nota_pedido();
+
+create or replace function checar_liberacao_grupo()
+returns trigger as $$
+declare
+  pendentes int;
+begin
+  if new.status_pagamento = 'confirmado' and old.status_pagamento is distinct from 'confirmado' then
+    select count(*) into pendentes
+    from pedido
+    where pedido_grupo_id = new.pedido_grupo_id
+      and status_pagamento != 'confirmado';
+
+    if pendentes = 0 then
+      update pedido_grupo set status = 'pronto_para_coleta', updated_at = now()
+      where id = new.pedido_grupo_id;
+    end if;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_checar_liberacao_grupo on pedido;
+create trigger trg_checar_liberacao_grupo
+after update on pedido
+for each row execute function checar_liberacao_grupo();
+
+create or replace function registrar_confirmacao_pagamento()
+returns trigger as $$
+begin
+  if new.status_pagamento = 'confirmado' and old.status_pagamento is distinct from 'confirmado' then
+    new.confirmado_em := now();
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_registrar_confirmacao on pedido;
+create trigger trg_registrar_confirmacao
+before update on pedido
+for each row execute function registrar_confirmacao_pagamento();
+
+create or replace function notificar_novo_pedido()
+returns trigger as $$
+begin
+  insert into notificacao (destinatario_tipo, destinatario_id, evento, payload)
+  values ('feirante', new.estabelecimento_id, 'pedido_novo',
+    jsonb_build_object('pedido_id', new.id, 'pedido_grupo_id', new.pedido_grupo_id));
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_notificar_novo_pedido on pedido;
+create trigger trg_notificar_novo_pedido
+after insert on pedido
+for each row execute function notificar_novo_pedido();
+
+create or replace function notificar_grupo_pronto()
+returns trigger as $$
+begin
+  if new.status = 'pronto_para_coleta' and old.status is distinct from 'pronto_para_coleta' then
+    insert into notificacao (destinatario_tipo, destinatario_id, evento, payload)
+    values ('consumidor', new.consumidor_id, 'pronto_coleta',
+      jsonb_build_object('pedido_grupo_id', new.id));
+  elsif new.status = 'cancelado' and old.status is distinct from 'cancelado' then
+    insert into notificacao (destinatario_tipo, destinatario_id, evento, payload)
+    values ('consumidor', new.consumidor_id, 'grupo_cancelado',
+      jsonb_build_object('pedido_grupo_id', new.id));
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_notificar_grupo_pronto on pedido_grupo;
+create trigger trg_notificar_grupo_pronto
+after update on pedido_grupo
+for each row execute function notificar_grupo_pronto();
+
+create or replace function checar_valor_minimo()
+returns trigger as $$
+declare
+  total numeric;
+  minimo numeric;
+begin
+  select coalesce(sum(pcp.valor_total), 0) into total
+  from pedido_com_peso pcp where pcp.pedido_grupo_id = new.pedido_grupo_id;
+
+  select f.valor_minimo_pedido into minimo
+  from pedido_grupo pg
+  join feira_ocorrencia fo on fo.id = pg.feira_ocorrencia_id
+  join feira f on f.id = fo.feira_id
+  where pg.id = new.pedido_grupo_id;
+
+  if total < minimo then
+    raise exception 'Pedido abaixo do valor mínimo desta feira (mínimo: R$%, atual: R$%)', minimo, total;
+  end if;
+
+  return new;
+end;
+$$ language plpgsql;
+
+create or replace function finalizar_rota_se_completa()
+returns trigger as $$
+declare
+  pendentes int;
+begin
+  if new.status = 'concluida' and old.status is distinct from 'concluida' then
+    select count(*) into pendentes
+      from rota_parada
+      where entrega_rota_id = new.entrega_rota_id and status = 'pendente';
+
+    if pendentes = 0 then
+      update entrega_rota
+        set status = 'finalizada', fechada_em = now()
+        where id = new.entrega_rota_id;
+    end if;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_finalizar_rota_se_completa on rota_parada;
+create trigger trg_finalizar_rota_se_completa
+after update on rota_parada
+for each row execute function finalizar_rota_se_completa();
+
+-- versão final (migration 007 substituiu a de 005 — inclui valor_tempo_espera no ganho total)
+create or replace function registrar_metrica_rota()
+returns trigger as $$
+declare
+  v_qtd_grupos int;
+  v_qtd_bancas int;
+  v_trecho_a_pe numeric;
+  v_trecho_entrega numeric;
+  v_taxa_total numeric;
+  v_primeira_coleta timestamptz;
+  v_ultima_entrega timestamptz;
+  v_tempo_seg int;
+  v_remuneracao numeric;
+  v_ganho_total numeric;
+begin
+  if new.status = 'finalizada' and old.status is distinct from 'finalizada' then
+
+    select count(*), coalesce(sum(pg.qtd_bancas),0), coalesce(sum(pg.trecho_a_pe_km),0),
+           coalesce(sum(pg.trecho_ate_entrega_km),0), coalesce(sum(pg.taxa_entrega),0)
+      into v_qtd_grupos, v_qtd_bancas, v_trecho_a_pe, v_trecho_entrega, v_taxa_total
+    from entrega_rota_grupo erg
+    join pedido_grupo pg on pg.id = erg.pedido_grupo_id
+    where erg.entrega_rota_id = new.id;
+
+    select min(concluida_em) into v_primeira_coleta
+      from rota_parada where entrega_rota_id = new.id and tipo = 'coleta';
+    select max(concluida_em) into v_ultima_entrega
+      from rota_parada where entrega_rota_id = new.id and tipo = 'entrega';
+
+    v_ganho_total := v_taxa_total + coalesce(new.bonus_deslocamento, 0) + coalesce(new.valor_tempo_espera, 0);
+
+    if new.aceita_em is not null and v_ultima_entrega is not null then
+      v_tempo_seg := extract(epoch from (v_ultima_entrega - new.aceita_em));
+      if v_tempo_seg > 0 then
+        v_remuneracao := round((v_ganho_total / (v_tempo_seg / 3600.0))::numeric, 2);
+      end if;
+    end if;
+
+    insert into entrega_metrica (
+      entrega_rota_id, entregador_id, tipo_perfil, qtd_grupos, qtd_bancas_total,
+      peso_total_kg, trecho_a_pe_km_total, trecho_ate_entrega_km_total,
+      taxa_cobrada_total, aceita_em, primeira_coleta_em, ultima_entrega_em,
+      tempo_total_seg, remuneracao_por_hora
+    ) values (
+      new.id, new.entregador_id, new.tipo_perfil, v_qtd_grupos, v_qtd_bancas,
+      new.peso_total, v_trecho_a_pe, v_trecho_entrega,
+      v_ganho_total, new.aceita_em, v_primeira_coleta, v_ultima_entrega,
+      v_tempo_seg, v_remuneracao
+    )
+    on conflict (entrega_rota_id) do nothing;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_registrar_metrica_rota on entrega_rota;
+create trigger trg_registrar_metrica_rota
+after update on entrega_rota
+for each row execute function registrar_metrica_rota();
+
+create or replace function acumular_tempo_espera()
+returns trigger as $$
+declare
+  v_espera_seg int;
+  v_valor_min numeric;
+begin
+  if new.status = 'concluida' and old.status is distinct from 'concluida'
+     and new.chegou_em is not null then
+
+    v_espera_seg := extract(epoch from (new.concluida_em - new.chegou_em));
+    if v_espera_seg > 0 then
+      select valor_minuto_espera into v_valor_min from piso_regulatorio_config where id = 1;
+
+      update entrega_rota
+        set tempo_espera_total_seg = coalesce(tempo_espera_total_seg, 0) + v_espera_seg,
+            valor_tempo_espera = coalesce(valor_tempo_espera, 0) + round((v_espera_seg / 60.0) * v_valor_min, 2)
+        where id = new.entrega_rota_id;
+    end if;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_acumular_tempo_espera on rota_parada;
+create trigger trg_acumular_tempo_espera
+after update on rota_parada
+for each row execute function acumular_tempo_espera();
+
+create or replace function flagar_divergencia_geolocalizacao()
+returns trigger as $$
+begin
+  if new.divergencia_m is not null and new.divergencia_m > 150
+     and (old.divergencia_m is null or old.divergencia_m <= 150) then
+    insert into entregador_flag_revisao (entregador_id, motivo, detalhe)
+    select er.entregador_id, 'divergencia_geolocalizacao',
+           jsonb_build_object('rota_parada_id', new.id, 'divergencia_m', new.divergencia_m)
+    from entrega_rota er where er.id = new.entrega_rota_id;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_flagar_divergencia on rota_parada;
+create trigger trg_flagar_divergencia
+after update on rota_parada
+for each row execute function flagar_divergencia_geolocalizacao();
+
+create or replace function verificar_saiu_para_entrega()
+returns trigger as $$
+declare
+  v_pedido_grupo_id uuid;
+  v_pendentes int;
+  v_entrega_parada_id uuid;
+  v_consumidor_id uuid;
+begin
+  if new.tipo = 'coleta' and new.status = 'concluida' and old.status is distinct from 'concluida' then
+    select p.pedido_grupo_id into v_pedido_grupo_id from pedido p where p.id = new.pedido_id;
+
+    select count(*) into v_pendentes
+      from rota_parada rp
+      join pedido p on p.id = rp.pedido_id
+      where rp.entrega_rota_id = new.entrega_rota_id
+        and rp.tipo = 'coleta'
+        and p.pedido_grupo_id = v_pedido_grupo_id
+        and rp.status != 'concluida';
+
+    if v_pendentes = 0 then
+      select id into v_entrega_parada_id
+        from rota_parada
+        where entrega_rota_id = new.entrega_rota_id
+          and tipo = 'entrega'
+          and pedido_grupo_id = v_pedido_grupo_id
+        limit 1;
+
+      if v_entrega_parada_id is not null then
+        update rota_parada set notificado_a_caminho = true
+          where id = v_entrega_parada_id and notificado_a_caminho = false;
+
+        if found then
+          select consumidor_id into v_consumidor_id from pedido_grupo where id = v_pedido_grupo_id;
+          insert into notificacao (destinatario_tipo, destinatario_id, evento, payload)
+          values ('consumidor', v_consumidor_id, 'saiu_entrega',
+            jsonb_build_object('pedido_grupo_id', v_pedido_grupo_id));
+        end if;
+      end if;
+    end if;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_verificar_saiu_para_entrega on rota_parada;
+create trigger trg_verificar_saiu_para_entrega
+after update on rota_parada
+for each row execute function verificar_saiu_para_entrega();
+
+-- ---------------------------------------------------------------------
+-- 16. ÍNDICES
+-- ---------------------------------------------------------------------
+create index if not exists idx_pedido_grupo_status on pedido_grupo(status);
+create index if not exists idx_pedido_grupo_expira on pedido_grupo(expira_em) where status = 'aguardando_pagamentos';
+create index if not exists idx_pedido_pedido_grupo on pedido(pedido_grupo_id);
+create index if not exists idx_pedido_status_coleta on pedido(status_coleta);
+create index if not exists idx_rota_parada_rota on rota_parada(entrega_rota_id, ordem);
+create index if not exists idx_rota_parada_notificacao on rota_parada(entrega_rota_id, tipo, status) where tipo = 'entrega';
+create index if not exists idx_entrega_rota_status on entrega_rota(status, entregador_id);
+create index if not exists idx_feirante_participacao_ocorrencia on feirante_participacao(feira_ocorrencia_id);
+create index if not exists idx_avaliacao_avaliado on avaliacao(avaliado_tipo, avaliado_id);
+create index if not exists idx_flag_revisao_pendente on entregador_flag_revisao(status) where status = 'aguardando_revisao';
+create index if not exists idx_entrega_metrica_perfil on entrega_metrica(tipo_perfil);
+create index if not exists idx_notificacao_pendente on notificacao(status) where status = 'pendente';
+
+-- ---------------------------------------------------------------------
+-- 17. RLS — não veio nenhuma no módulo original, escrita do zero.
+-- Funções SECURITY DEFINER pra qualquer lookup de identidade, mesmo
+-- padrão de minhas_tenant_ids() — evita repetir subselect cru em toda
+-- policy e mantém o mesmo ponto único de manutenção.
+-- ---------------------------------------------------------------------
+create or replace function meu_estabelecimento_id()
+returns setof uuid
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select id from estabelecimentos where auth_user_id = auth.uid();
+$$;
+
+create or replace function meu_usuario_id()
+returns setof uuid
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select id from usuarios where auth_user_id = auth.uid();
+$$;
+
+create or replace function meu_entregador_id_feira()
+returns setof uuid
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select id from entregadores where auth_user_id = auth.uid();
+$$;
+
+alter table estabelecimentos enable row level security;
+alter table usuarios enable row level security;
+alter table produtos enable row level security;
+alter table feira enable row level security;
+alter table feira_ocorrencia enable row level security;
+alter table feira_ocorrencia_excecao enable row level security;
+alter table feirante_participacao enable row level security;
+alter table feirante_excecoes enable row level security;
+alter table pedido_grupo enable row level security;
+alter table pedido enable row level security;
+alter table pedido_item enable row level security;
+alter table pedido_nota enable row level security;
+alter table dispatch_config enable row level security;
+alter table entrega_rota enable row level security;
+alter table entrega_rota_grupo enable row level security;
+alter table rota_parada enable row level security;
+alter table entrega_metrica enable row level security;
+alter table veiculo_config enable row level security;
+alter table veiculo_raio_entrega enable row level security;
+alter table piso_regulatorio_config enable row level security;
+alter table oferta_recusada enable row level security;
+alter table entregador_flag_revisao enable row level security;
+alter table notificacao enable row level security;
+alter table notificacao_proximidade_config enable row level security;
+alter table notificacao_audio enable row level security;
+alter table avaliacao enable row level security;
+
+-- feira/feira_ocorrencia/dispatch_config/veiculo_config/veiculo_raio_entrega/
+-- piso_regulatorio_config/notificacao_audio/notificacao_proximidade_config:
+-- config compartilhada, sem PII — leitura pública pra qualquer autenticado
+-- (mesmo padrão de "qualquer um le horario de funcionamento"), escrita só
+-- via service role (nenhuma policy de insert/update/delete)
+create policy "autenticado le feiras" on feira for select using (auth.uid() is not null);
+create policy "autenticado le ocorrencias de feira" on feira_ocorrencia for select using (auth.uid() is not null);
+create policy "autenticado le dispatch config" on dispatch_config for select using (auth.uid() is not null);
+create policy "autenticado le veiculo config" on veiculo_config for select using (auth.uid() is not null);
+create policy "autenticado le veiculo raio entrega" on veiculo_raio_entrega for select using (auth.uid() is not null);
+create policy "autenticado le piso regulatorio" on piso_regulatorio_config for select using (auth.uid() is not null);
+create policy "autenticado le notificacao audio" on notificacao_audio for select using (auth.uid() is not null);
+
+-- estabelecimentos: feirante vê/edita o próprio; entregador vê os das
+-- próprias coletas (join até entrega_rota via entregadores, sem ciclo —
+-- estabelecimentos não tem policy nenhuma que subselect de volta em rota_parada/pedido)
+create policy "feirante ve e edita seu estabelecimento" on estabelecimentos for all using (
+  auth_user_id = auth.uid());
+create policy "autenticado cria seu proprio estabelecimento" on estabelecimentos for insert with check (
+  auth_user_id = auth.uid());
+create policy "entregador ve estabelecimentos das suas coletas" on estabelecimentos for select using (
+  id in (
+    select p.estabelecimento_id from pedido p
+    join rota_parada rp on rp.pedido_id = p.id
+    join entrega_rota er on er.id = rp.entrega_rota_id
+    where er.entregador_id in (select meu_entregador_id_feira())
+  ));
+
+-- produtos: feirante gerencia os do seu estabelecimento; leitura pública
+-- (necessária pro checkout do consumidor, mesmo antes de ele existir)
+create policy "qualquer um le produtos ativos" on produtos for select using (ativo = true);
+create policy "feirante gerencia produtos do seu estabelecimento" on produtos for all using (
+  estabelecimento_id in (select meu_estabelecimento_id()));
+
+-- usuarios: consumidor vê/edita o próprio
+create policy "usuario ve e edita seu proprio perfil" on usuarios for all using (
+  auth_user_id = auth.uid());
+create policy "autenticado cria seu proprio perfil de usuario" on usuarios for insert with check (
+  auth_user_id = auth.uid());
+
+-- feirante_participacao / feirante_excecoes: feirante gerencia a própria
+create policy "feirante gerencia sua participacao" on feirante_participacao for all using (
+  estabelecimento_id in (select meu_estabelecimento_id()));
+create policy "feirante gerencia suas excecoes" on feirante_excecoes for all using (
+  estabelecimento_id in (select meu_estabelecimento_id()));
+
+-- pedido_grupo: consumidor vê/cria o próprio; entregador vê o da rota dele
+create policy "consumidor ve seus pedidos grupo" on pedido_grupo for select using (
+  consumidor_id in (select meu_usuario_id()));
+create policy "consumidor cria seu pedido grupo" on pedido_grupo for insert with check (
+  consumidor_id in (select meu_usuario_id()));
+create policy "entregador ve pedido grupo da sua rota" on pedido_grupo for select using (
+  entregador_id in (select meu_entregador_id_feira()));
+
+-- pedido: feirante vê/atualiza os do seu estabelecimento (confirma pagamento,
+-- finaliza separação); consumidor vê os do próprio grupo; entregador vê os
+-- das paradas da própria rota
+create policy "feirante ve e atualiza seus pedidos" on pedido for all using (
+  estabelecimento_id in (select meu_estabelecimento_id()));
+create policy "consumidor ve pedidos do seu grupo" on pedido for select using (
+  pedido_grupo_id in (select id from pedido_grupo where consumidor_id in (select meu_usuario_id())));
+create policy "entregador ve pedidos da sua rota" on pedido for select using (
+  id in (
+    select rp.pedido_id from rota_parada rp
+    join entrega_rota er on er.id = rp.entrega_rota_id
+    where er.entregador_id in (select meu_entregador_id_feira())
+  ));
+
+-- pedido_item: segue a visibilidade do pedido pai
+create policy "quem ve o pedido ve os itens" on pedido_item for select using (
+  pedido_id in (
+    select id from pedido where
+      estabelecimento_id in (select meu_estabelecimento_id())
+      or pedido_grupo_id in (select id from pedido_grupo where consumidor_id in (select meu_usuario_id()))
+  ));
+create policy "consumidor cria itens do proprio pedido" on pedido_item for insert with check (
+  pedido_id in (
+    select p.id from pedido p join pedido_grupo pg on pg.id = p.pedido_grupo_id
+    where pg.consumidor_id in (select meu_usuario_id())
+  ));
+
+-- pedido_nota: feirante (gerou) e entregador (confere na coleta) veem
+create policy "feirante ve nota dos seus pedidos" on pedido_nota for select using (
+  pedido_id in (select id from pedido where estabelecimento_id in (select meu_estabelecimento_id())));
+create policy "entregador ve nota das suas coletas" on pedido_nota for select using (
+  pedido_id in (
+    select rp.pedido_id from rota_parada rp
+    join entrega_rota er on er.id = rp.entrega_rota_id
+    where er.entregador_id in (select meu_entregador_id_feira())
+  ));
+
+-- entrega_rota / entrega_rota_grupo / rota_parada: só o próprio entregador
+create policy "entregador ve e atualiza sua rota" on entrega_rota for all using (
+  entregador_id in (select meu_entregador_id_feira()));
+create policy "entregador ve grupos da sua rota" on entrega_rota_grupo for select using (
+  entrega_rota_id in (select id from entrega_rota where entregador_id in (select meu_entregador_id_feira())));
+create policy "entregador ve e atualiza paradas da sua rota" on rota_parada for all using (
+  entrega_rota_id in (select id from entrega_rota where entregador_id in (select meu_entregador_id_feira())));
+
+-- entrega_metrica / extrato: só o próprio entregador
+create policy "entregador ve suas proprias metricas" on entrega_metrica for select using (
+  entregador_id in (select meu_entregador_id_feira()));
+
+-- oferta_recusada / entregador_flag_revisao: sem SELECT pra ninguém além do
+-- service role — dados sensíveis de análise agregada / revisão humana, não
+-- expostos a app cliente nenhum (mesmo padrão de desenvolvedores_admin)
+
+-- notificacao: cada destinatário vê só a própria (campo destinatario_id
+-- aponta pra usuarios/estabelecimentos/entregadores dependendo do tipo —
+-- 3 condições, uma por tipo, nenhum ciclo)
+create policy "destinatario ve suas proprias notificacoes" on notificacao for select using (
+  (destinatario_tipo = 'consumidor' and destinatario_id in (select meu_usuario_id()))
+  or (destinatario_tipo = 'feirante' and destinatario_id in (select meu_estabelecimento_id()))
+  or (destinatario_tipo = 'entregador' and destinatario_id in (select meu_entregador_id_feira()))
+);
+
+-- avaliacao: quem avaliou e quem foi avaliado veem; só o autor cria a própria
+create policy "avaliador ve suas avaliacoes" on avaliacao for select using (
+  (avaliador_tipo = 'consumidor' and avaliador_id in (select meu_usuario_id()))
+  or (avaliador_tipo = 'feirante' and avaliador_id in (select meu_estabelecimento_id()))
+  or (avaliador_tipo = 'entregador' and avaliador_id in (select meu_entregador_id_feira()))
+);
+create policy "avaliado ve avaliacoes recebidas" on avaliacao for select using (
+  (avaliado_tipo = 'feirante' and avaliado_id in (select meu_estabelecimento_id()))
+  or (avaliado_tipo = 'entregador' and avaliado_id in (select meu_entregador_id_feira()))
+);
+create policy "consumidor cria avaliacao do seu pedido" on avaliacao for insert with check (
+  avaliador_tipo = 'consumidor' and avaliador_id in (select meu_usuario_id())
+  and pedido_grupo_id in (select id from pedido_grupo where consumidor_id in (select meu_usuario_id()))
+);

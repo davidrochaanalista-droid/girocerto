@@ -1016,14 +1016,131 @@ C:\Users\Usuário\Projetos\giro certo
     - Não commitado, não deployado (nem os 3 mockups existentes, nem este
       novo) — só a mudança de schema foi aplicada no banco hospedado
       (`db/schema.sql` e a migration re-sincronizados, como sempre).
+23. **Módulo feira (`feira-dispatch`) — planejamento extenso + schema
+    aplicado no banco hospedado; integração de código ainda pendente**
+    (21-22/08/2026). Usuário trouxe um módulo pronto (`C:\Users\Usuário\
+    Projetos\feira-dispatch\feira-dispatch\`, fora deste repo) pra integrar
+    — dispatch multi-parada de feira (carrinho multi-feirante, peso máximo,
+    Pix peer-to-peer direto pro feirante, voz automática). Pedido inicial
+    citava uma pasta `_feira-incoming/` que não existia — investigação
+    encontrou o caminho real antes de qualquer plano.
+    - **Achado central, antes de qualquer execução**: o módulo foi
+      construído contra um schema HIPOTÉTICO (`estabelecimentos`,
+      `usuarios`, `produtos`, `entregadores.latitude/longitude` — o próprio
+      README admite isso), não o schema real do GiroCerto. Não era um job
+      de "renumerar migrations e copiar arquivos sem conflito" —
+      confirmado por leitura completa das 9 migrations + `src/` antes de
+      propor qualquer coisa.
+    - **Decisões de arquitetura, em rodadas sucessivas de pergunta/resposta
+      com o usuário** (registrando só o que foi decidido, não o processo):
+      - Feira é um **domínio paralelo** a `tenants`/`pedidos`/`rotas_entrega`
+        (não um tipo de tenant) — o Pix peer-to-peer direto pro feirante é
+        estruturalmente diferente de tenant único, não só outro jeito de
+        modelar a mesma coisa. `entrega_rota`/`rota_parada` (rotas da
+        feira) ficam **duplicadas**, não reaproveitando `rotas_entrega` —
+        zero risco pro restaurante real em produção pesa mais que evitar
+        essa duplicação.
+      - `entregadores` continua a ÚNICA tabela 100% compartilhada entre os
+        dois domínios (mesma frota, mesma conta). `tenant_id` virou
+        nullable (entregador 100% feira, sem vínculo de restaurante). Novo
+        `aceita_feira boolean default false` — elegibilidade pra oferta de
+        feira, independente de `tenant_id` (a MESMA conta pode ter
+        `tenant_id` preenchido E `aceita_feira=true` ao mesmo tempo —
+        `tipo_perfil` na rota diferencia o contexto, não a conta).
+      - Tela única do entregador: `app-entregador.html` (vanilla JS
+        existente) **absorve** as ofertas de feira, sem seletor de modo —
+        `FeiraApp.jsx` (React) vira só referência de design pra portar,
+        não é embrulhado nem mantido como app separado. Consequência direta
+        (não uma pergunta nova): o wrapper Capacitor, quando existir,
+        embrulha `app-entregador.html`, não o React.
+      - `FeiraApp.jsx` (54KB) na real cobre **4 personas**, não 1:
+        `PainelEntregador`/`ExtratoEntregador` (entregador — isso que
+        entra em `app-entregador.html`), `PainelFeirante`/
+        `DashboardFeirante` (feirante — sem tela existente, produto novo) e
+        `CheckoutConsumidor` (consumidor — sem tela existente, produto
+        novo, GiroCerto nunca teve autoatendimento de pedido). Só a parte
+        do entregador entra nesta rodada; as outras 2 personas ficam
+        documentadas como pendência futura, sem data.
+    - **Schema aplicado no banco hospedado** (`db/schema.sql`, nova seção
+      "MÓDULO FEIRA", ~1380 linhas): 24 tabelas novas (`estabelecimentos`,
+      `usuarios`, `produtos` criadas do zero — o módulo assumia que já
+      existiam; `feira*`, `pedido*`, `dispatch_config`, `entrega_rota`,
+      `rota_parada`, `entrega_metrica`, `veiculo_*`,
+      `piso_regulatorio_config`, `oferta_recusada`,
+      `entregador_flag_revisao`, `notificacao*`, `avaliacao`), ~25 funções/
+      triggers consolidados no ESTADO FINAL (não replay das 9 migrations —
+      onde uma migration posterior redefinia uma função, só a versão final
+      entrou), e **RLS escrita do zero pras 24 tabelas** (o módulo original
+      não trazia nenhuma — zero `enable row level security`, zero
+      `create policy` nos 9 arquivos). Funções `SECURITY DEFINER`
+      (`meu_estabelecimento_id()`, `meu_usuario_id()`,
+      `meu_entregador_id_feira()`) seguindo o mesmo padrão de
+      `minhas_tenant_ids()`.
+    - **Dois ajustes obrigatórios sobre o que o módulo trouxe**: (1) toda
+      referência a `entregadores.latitude`/`.longitude` corrigida pra
+      `entregadores.lat`/`.lng` (nome real, **confirmado direto contra o
+      banco hospedado** antes de aplicar, não só contra `db/schema.sql`,
+      a pedido explícito do usuário: "só bateria o olho no nome real da
+      coluna... antes"); (2) `buscar_entregador_mais_proximo()` também
+      passou a checar `aceita_feira = true`, senão qualquer entregador
+      compartilhado (mesmo os só-restaurante) seria elegível pra oferta de
+      feira.
+    - **Achado de ordem, pego antes de aplicar**: a view `avaliacao_media`
+      (seção de views) referenciava a tabela `avaliacao`, que só viria
+      DEPOIS no arquivo original — teria quebrado com "relation avaliacao
+      does not exist". Corrigido movendo a criação da tabela pra antes das
+      views, antes de rodar contra o banco real.
+    - **Regressão real encontrada pela suíte completa, não por inspeção**:
+      o trigger `impedir_autoaprovacao_entregador()` (item 22, sessão
+      anterior) passou a bloquear `verificar_documentos_vencidos()` (job
+      `pg_cron` de reprovação automática por documento vencido, existente
+      desde 15/08) — o cron faz `UPDATE entregadores SET
+      status_verificacao=...` direto, sem sessão JWT nenhuma
+      (`auth.uid()` fica `null` nesse contexto), e o trigger não previa
+      esse caminho. `tests/onboarding.test.js` pegou isso na primeira
+      rodada da suíte completa (16 → 0 passou, erro fatal 42501). Corrigido
+      estendendo a condição de escape do trigger pra também liberar quando
+      `auth.uid() is null` (nenhuma requisição real de entregador via
+      PostgREST chega com `auth.uid()` nulo — só automação de backend).
+      Reaplicado no banco hospedado, suíte voltou a 100%.
+    - **Suíte completa rodada 2x** (protocolo padrão: `railway down -y` →
+      testes → `railway up -y -c`, confirmado offline/online nos dois
+      momentos) — 122/122 na versão final (105 + 17 do `despacho_motor`; 1
+      falha intermitente do próprio `despacho_motor` na 2ª rodada foi
+      apenas timing, confirmado reproduzindo o arquivo sozinho logo em
+      seguida, sem nenhuma mudança — não é regressão).
+    - **Não commitado ainda** — só o schema foi aplicado no banco
+      hospedado. `feira-dispatch/` (diretório novo com o código `src/`) e
+      a reescrita de `app-entregador.html` ainda não foram feitos — ver
+      pendências.
 
 ## Pendências reais no momento
-- [ ] **`db/schema.sql`/migration do item 22 ainda não commitados** (mudança
-      de schema já está aplicada no banco hospedado, testada, funcionando —
-      só falta o `git commit`, aguardando instrução explícita como sempre).
-      `mockups/painel-dev.html` também não commitado — decisão em aberto,
-      não perguntada ainda: mesmo rodando só local, vale versionar o
-      arquivo (backup/histórico) ou prefere manter fora do git também?
+- [x] ~~`db/schema.sql`/migration do item 22 não commitados~~ — commitado
+      (`c6e162d`) depois de confirmar que o repositório é PÚBLICO (checado
+      via API do GitHub sem credencial nenhuma: `"private": false`).
+      `mockups/painel-dev.html` ficou de fora do commit por decisão
+      explícita do usuário exatamente por causa disso — adicionado ao
+      `mockups/.gitignore`, roda só local.
+- [ ] **Módulo feira (item 23) — schema aplicado, RLS escrita, testado,
+      mas a integração NÃO está completa**: falta criar o diretório
+      `feira-dispatch/` (grupo A copiável direto + grupo B com o fix
+      lat/lng), e a maior peça, reescrever a parte do entregador de
+      `FeiraApp.jsx` (`PainelEntregador`, `ExtratoEntregador`,
+      `TelaAvaliacao` p/ entregador) em vanilla JS dentro de
+      `app-entregador.html`, escutando os dois canais de oferta (
+      restaurante + feira) sem seletor de modo. Nada disso foi feito
+      ainda — só o schema. Ver item 23 pro plano completo já aprovado.
+- [ ] **`PainelFeirante`/`DashboardFeirante` e `CheckoutConsumidor`** (as
+      outras 2 de 4 personas de `FeiraApp.jsx`) — fora de escopo por
+      decisão explícita do usuário nesta sessão. Não têm tela existente
+      pra integrar (GiroCerto nunca teve painel de feirante nem checkout
+      de consumidor) — são produtos novos do zero, não integração. Fica
+      pra depois, sem data.
+- [ ] **Capacitor (push nativo + tracking em background)** — decisão já
+      tomada (embrulha `app-entregador.html`, não `FeiraApp.jsx`, já que a
+      tela do entregador foi unificada lá), mas o wrapper em si não foi
+      criado — depende de `app-entregador.html` primeiro absorver as telas
+      de feira (pendência acima).
 - [ ] **Loja e entregador caem no mesmo `Site URL` de fallback após
       confirmar e-mail** (achado do item 21) — não é mais o bug crítico
       (localhost inacessível, já corrigido), mas um entregador confirmando
