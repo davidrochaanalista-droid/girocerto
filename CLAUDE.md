@@ -1334,6 +1334,81 @@ C:\Users\Usuário\Projetos\giro certo
       `dispatch-engine/package.json`) que não foram criados nesta
       conversa — provavelmente trabalho em paralelo do usuário. Não
       tocado, não commitado, só sinalizado pro usuário.
+24. **Bug real de consolidação de feira encontrado em teste no celular,
+    corrigido e commitado** (22/08/2026, sessão seguinte ao item 23) —
+    entregador reportou "só tem um pedido na tela" depois de 2 rotas
+    terem sido despachadas pro mesmo entregador; investigação encontrou
+    a causa raiz real, não suposição.
+    - **Achado raiz**: `aceitar_rota()` nunca marcava
+      `entregadores.status='em_rota'` — o entregador ficava "disponivel"
+      pro motor durante toda a rota. Como `buscarRotasCandidatas()` só
+      olhava rotas `'em_montagem'`, um pedido novo despachado depois do
+      aceite não achava candidata pra consolidar e caía em
+      `abrirRotaNova()` → `buscar_entregador_mais_proximo()` (que filtra
+      `status='disponivel'`) escolhia o MESMO entregador já ocupado,
+      abrindo uma 2ª rota solta. `app-entregador.html` só rastreava uma
+      rota ativa por vez (`rotaFeiraAtivaId` escalar) — a 1ª rota ficava
+      órfã da tela.
+    - **Regra de negócio confirmada com o usuário antes de corrigir**:
+      moto pode consolidar até 3 rotas/15kg, bicicleta normalmente só 1
+      (2 se o mesmo cliente pediu de 2 lojas próximas, ainda assim 1 só
+      `pedido_grupo`), sempre que as paradas estejam "no caminho" (coleta
+      E entrega) — exatamente o que `insertionEngine.js`/`vehicleRules.js`
+      já implementavam (peso/detour/raio por veículo), só faltava
+      continuar valendo depois do aceite.
+    - **Corrigido** (3 mudanças, mesmo protocolo de sempre —
+      `db/schema.sql` + migration re-sincronizada + aplicado no banco
+      hospedado antes do commit): `buscarRotasCandidatas()` passou a
+      considerar `'em_rota'` também, não só `'em_montagem'` (paradas já
+      `concluida` continuam fora da reotimização); `aceitar_rota()` agora
+      seta `entregadores.status='em_rota'` (guard `<> 'pausado'`, mesmo
+      padrão de `concluir_rota_ao_entregar` do restaurante);
+      `finalizar_rota_se_completa()` devolve `status='disponivel'` ao
+      fechar a rota (mesmo guard).
+    - **Achado de produto, levantado pelo próprio usuário durante o
+      reteste**: consolidar um pedido numa rota JÁ ACEITA acontecia
+      direto (sem o entregador poder recusar) — ele só descobria a
+      parada nova depois do fato. Corrigido com um fluxo de consentimento
+      novo: tabela `proposta_consolidacao` (peso/paradas só contam
+      depois do aceite — decisão explícita do usuário, uma proposta
+      pendente não reserva capacidade) + RPCs
+      `aceitar_proposta_consolidacao()`/`recusar_proposta_consolidacao()`
+      (`SECURITY DEFINER`, guard de posse via `meu_entregador_id_feira()`)
+      + card novo em `app-entregador.html` (`modalPropostaConsolidacao`).
+      Recusa aciona redespacho pro próximo entregador disponível no raio
+      (mesmo princípio de `redespachar_apos_recusa_feira()`, já aprovado
+      pelo usuário como comportamento correto). Rota ainda `'em_montagem'`
+      (não aceita) continua com o comportamento antigo — o entregador vê
+      o lote inteiro consolidado numa única oferta antes de aceitar, sem
+      mudança aí.
+    - **Achado de UI, pego ao vivo no celular durante o reteste**: o card
+      de proposta podia reaparecer JÁ RESPONDIDO — corrida real entre o
+      Realtime e o polling de segurança de 15s (o poll podia ler um
+      snapshot `'pendente'` que ainda não tinha o `UPDATE` da resposta
+      aplicado; como fechar o modal zerava o id local, o guard por id não
+      bastava). Corrigido com um `Set` client-side de propostas já
+      respondidas nesta sessão, marcado ANTES da chamada de rede — mais
+      robusto que depender só do modal estar aberto. Retestado ao vivo
+      (recusa não reapareceu mais).
+    - **Testado de ponta a ponta contra produção real** (Railway +
+      Supabase hospedado, celular de verdade, não simulado): consolidação
+      numa rota já aceita → aceite → peso/paradas atualizando certo;
+      consolidação → recusa → redespacho real pro 2º entregador de teste
+      (rota nova `'em_montagem'` aberta pra ele com as paradas certas);
+      recusa retestada depois do fix do card duplicado, sem reaparecer.
+      Suíte completa 122/122 (protocolo padrão: `railway down -y` → teste
+      → `railway up -y -c`, confirmado online antes e depois). Todo o
+      dado de teste (2 entregadores, feira/banca/consumidor, 6 pedidos,
+      propostas) limpo do banco ao final.
+    - Commitado (`37f06bc`, só os 4 arquivos do fix — `db/schema.sql`,
+      migration, `feira-dispatch/src/routeManager.js`,
+      `mockups/app-entregador.html` — os arquivos do Capacitor
+      continuaram de fora, mesma decisão do item 23) e dado push
+      (`24c6e22..37f06bc`). Deploy manual: `dispatch-engine/` já tinha
+      sido redeployado no Railway com o código novo antes do commit;
+      `mockups/` redeployado na Vercel via `vercel --prod` depois do
+      push (não é automático — confirmado servindo o código novo via
+      grep na resposta HTTP de produção).
 
 ## Pendências reais no momento
 - [x] ~~`db/schema.sql`/migration do item 22 não commitados~~ — commitado
@@ -1362,6 +1437,10 @@ C:\Users\Usuário\Projetos\giro certo
       uma lacuna nova, é a mesma). **Registrado explicitamente a pedido do
       usuário**, pra não virar surpresa quando alguém notar uma rota
       presa sem entender por quê: hoje isso é esperado, não bug.
+      **Mesmo gap vale pra `proposta_consolidacao`** (item 24, 22/08/2026):
+      se o entregador nunca responder o card de "parada nova", a proposta
+      fica `'pendente'` pra sempre — sem cron, não tem quem force o
+      timeout nem redespache sozinho.
 - [ ] **Nenhum cron do módulo feira está rodando** — `fecharRotasExpiradas`,
       `expirar_pedidos_pendentes`, `processarLote` (notificações) existem
       como funções/endpoints em `feira-dispatch/src/`, mas nada os
