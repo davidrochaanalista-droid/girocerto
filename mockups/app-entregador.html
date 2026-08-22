@@ -1122,6 +1122,9 @@ async function recusarOferta(){
 // entregador_id preenchido e status='em_montagem' — o INSERT em si é a
 // "oferta". Aceitar chama a RPC aceitar_rota() (status -> em_rota).
 // ------------------------------------------------------------
+const POLL_INTERVAL_FEIRA_MS = 15000; // mesmo intervalo já usado em painel-loja.html
+let ofertaFeiraPollingAtivo = false;
+
 function iniciarEscutaDeOfertasFeira(){
   if(ofertaFeiraCanalAtivo) return; // já escutando, não duplica o channel
   ofertaFeiraCanalAtivo = true;
@@ -1143,6 +1146,37 @@ function iniciarEscutaDeOfertasFeira(){
       filter: `entregador_id=eq.${entregadorId}`,
     }, (payload) => mostrarOfertaFeira(payload.new))
     .subscribe();
+
+  // Fallback de polling (achado real, debugado ao vivo, 22/08/2026): uma
+  // aba em segundo plano (tela do celular bloqueada entre entregas — cenário
+  // normal, não raro) deixa o WebSocket do Realtime degradar silenciosamente
+  // — o canal continua reportando o último status conhecido ("SUBSCRIBED")
+  // sem necessariamente estar entregando eventos novos, e só se recupera
+  // quando a aba volta ao primeiro plano. Reproduzido e confirmado: um
+  // UPDATE real disparado nessa janela nunca chegou no client, mesmo com os
+  // dois canais (com filtro e sem filtro) "SUBSCRIBED". Mesmo princípio já
+  // usado em painel-loja.html (`iniciarAtualizacoesAoVivo`) — o polling
+  // roda independente do Realtime estar conectado ou não, então uma oferta
+  // nunca fica perdida por mais de POLL_INTERVAL_FEIRA_MS.
+  if(!ofertaFeiraPollingAtivo){
+    ofertaFeiraPollingAtivo = true;
+    setInterval(async () => {
+      const { data: pendentes } = await supabaseClient
+        .from('entrega_rota')
+        .select('*')
+        .eq('entregador_id', entregadorId)
+        .eq('status', 'em_montagem')
+        .is('aceita_em', null)
+        .order('aberta_em', { ascending: false })
+        .limit(1);
+
+      if(pendentes && pendentes.length) mostrarOfertaFeira(pendentes[0]);
+
+      // rota já aceita também pode ter mudado (consolidação, conclusão)
+      // sem o canal ter avisado — mesmo princípio de segurança.
+      verificarRotaFeiraAtiva();
+    }, POLL_INTERVAL_FEIRA_MS);
+  }
 }
 
 async function mostrarOfertaFeira(rota){

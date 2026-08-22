@@ -1674,6 +1674,13 @@ alter publication supabase_realtime add table tentativas_despacho;
 -- de causa raiz dos itens acima — tabela fora da publication.
 alter publication supabase_realtime add table pedidos;
 alter publication supabase_realtime add table rotas_entrega;
+-- entrega_rota (módulo feira, sessão de 22/08/2026): 4ª ocorrência do MESMO
+-- padrão de causa raiz documentado acima — o canal de oferta de feira em
+-- app-entregador.html (INSERT/UPDATE em entrega_rota) não disparava nada,
+-- confirmado ao vivo (UPDATE aconteceu no banco, nada chegou no client).
+-- Ver "REGRA GERAL" em CLAUDE.md: checar a publication é o PRIMEIRO passo
+-- ao criar qualquer canal novo, antes de debugar filtro/handler/RLS.
+alter publication supabase_realtime add table entrega_rota;
 
 -- ==============================================================
 -- STORAGE (seção 39) — buckets privados pros documentos e fotos

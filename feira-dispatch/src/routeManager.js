@@ -42,19 +42,34 @@ function createRouteManager(supabase) {
     };
   }
 
-  /** Monta o objeto PedidoParaDispatch a partir de um pedido_grupo pronto_para_coleta. */
+  /** Monta o objeto PedidoParaDispatch a partir de um pedido_grupo pronto_para_coleta.
+   *
+   * FIX aplicado nesta cópia (integração GiroCerto, achado real ao rodar
+   * o despacho de verdade pela primeira vez, 22/08/2026): o módulo
+   * original tentava embutir `pedido_grupo_com_peso(peso_total)` via
+   * select aninhado do PostgREST — isso só funciona pra tabelas com FK
+   * real; `pedido_grupo_com_peso` é uma VIEW, sem relacionamento que o
+   * PostgREST consiga detectar sozinho (erro real: "Could not find a
+   * relationship between 'pedido_grupo' and 'pedido_grupo_com_peso'").
+   * Corrigido buscando a view numa query separada, mesmo padrão já usado
+   * logo abaixo pra `feira_ocorrencia`. */
   async function montarPedidoParaDispatch(pedidoGrupoId) {
     const { data: grupo, error: errGrupo } = await supabase
       .from('pedido_grupo')
       .select(
         `id, feira_ocorrencia_id, latitude_entrega, longitude_entrega,
-         pedido:pedido(id, estabelecimento_id, estabelecimentos(latitude, longitude)),
-         pedido_grupo_com_peso(peso_total)`
+         pedido:pedido(id, estabelecimento_id, estabelecimentos(latitude, longitude))`
       )
       .eq('id', pedidoGrupoId)
       .single();
 
     if (errGrupo) throw errGrupo;
+
+    const { data: pesoGrupo } = await supabase
+      .from('pedido_grupo_com_peso')
+      .select('peso_total')
+      .eq('pedido_grupo_id', pedidoGrupoId)
+      .maybeSingle();
 
     const { data: feiraOcorrencia } = await supabase
       .from('feira_ocorrencia')
@@ -88,7 +103,7 @@ function createRouteManager(supabase) {
     return {
       pedidoGrupoId: grupo.id,
       tipoPerfil: feiraOcorrencia ? 'feira' : 'restaurante',
-      pesoTotal: grupo.pedido_grupo_com_peso?.[0]?.peso_total ?? 0,
+      pesoTotal: pesoGrupo?.peso_total ?? 0,
       paradasColeta,
       paradaEntrega: {
         pedidoGrupoId: grupo.id,
@@ -167,11 +182,18 @@ function createRouteManager(supabase) {
     let entregadorId = entregadorIdForcado;
 
     if (!entregadorId) {
-      const { data: entregador, error: errEnt } = await supabase.rpc(
+      // FIX (achado real ao rodar o despacho de verdade, 22/08/2026):
+      // buscar_entregador_mais_proximo() é `returns table(...)` — o
+      // PostgREST devolve um ARRAY de linhas via RPC, não um objeto único
+      // (o módulo original tratava `entregador.id` como se já fosse o
+      // objeto, sempre `undefined`, o que inseria entregador_id=null e
+      // quebrava a constraint NOT NULL de entrega_rota).
+      const { data: entregadores, error: errEnt } = await supabase.rpc(
         'buscar_entregador_mais_proximo',
         { p_latitude: pedido.paradasColeta[0].latitude, p_longitude: pedido.paradasColeta[0].longitude }
       );
       if (errEnt) throw errEnt;
+      const entregador = entregadores?.[0];
       if (!entregador) return null; // nenhum entregador disponível
       entregadorId = entregador.id;
     }

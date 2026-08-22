@@ -117,23 +117,28 @@ C:\Users\Usuário\Projetos\giro certo
   depois que o INSERT já retornou), mas qualquer lógica que dependa do estado
   final de `raw_user_meta_data` depois do signup precisa reagir a essa 2ª escrita
   (trigger `AFTER UPDATE`), não só ao INSERT.
-- **REGRA GERAL — Realtime "ao vivo" em `painel-loja.html`/`app-entregador.html`
-  precisa de 3 coisas, não só de escrever o canal**: (1) a tabela estar na
-  publication `supabase_realtime` (`alter publication ... add table`, ver
-  `db/schema.sql`) — sem isso o canal nunca dispara evento nenhum,
-  independente de RLS estar certa; (2) a policy de SELECT já cobrir o que
-  precisa ser lido (Realtime filtra pelas mesmas policies); (3) o handler do
-  canal (e o polling de fallback) só chamar o `carregar*()` correspondente
-  quando a aba/view relevante estiver visível (`style.display !== 'none'`),
-  senão gasta banda/consulta escondido. **Esse exato gap (item 1) já se
-  repetiu 3 vezes** — `localizacoes_entregador`/`alertas_seguranca` (item 5),
-  `tentativas_despacho` (item 10), `pedidos`/`rotas_entrega` (item 17). Ao
-  adicionar QUALQUER `.channel()`/`postgres_changes` novo num mockup, checar
-  a publication ANTES de assumir que vai funcionar, não descobrir testando
-  ao vivo sem F5. Todo `carregar*()` que só roda uma vez no login (sem
-  Realtime nem polling) é candidato a esse mesmo bug — perguntar
-  explicitamente "isso precisa refletir mudança feita por fora da própria
-  aba?" antes de aceitar uma tela como pronta.
+- **CHECKLIST PERMANENTE — antes de criar QUALQUER canal `.channel()`/
+  `postgres_changes` novo, nesta ordem** (não é só mais um registro de bug,
+  é o primeiro passo obrigatório, sempre, antes de debugar filtro/handler/
+  RLS): **(1) a tabela está na publication `supabase_realtime`?**
+  (`select tablename from pg_publication_tables where pubname =
+  'supabase_realtime'` — ou `alter publication ... add table` em
+  `db/schema.sql`). Sem isso o canal nunca dispara evento nenhum,
+  independente de RLS/filtro/handler estarem certos — é sempre a primeira
+  coisa a checar, nunca a última. (2) a policy de SELECT já cobre o que
+  precisa ser lido (Realtime filtra pelas mesmas policies); (3) o handler
+  do canal (e o polling de fallback) só chama o `carregar*()`
+  correspondente quando a aba/view relevante estiver visível
+  (`style.display !== 'none'`), senão gasta banda/consulta escondido.
+  **Esse erro de publication (item 1) já se repetiu 4 VEZES neste
+  projeto** — `localizacoes_entregador`/`alertas_seguranca` (item 5),
+  `tentativas_despacho` (item 10), `pedidos`/`rotas_entrega` (item 17),
+  `entrega_rota` (módulo feira, item 23/continuação — confirmado ao vivo:
+  o `UPDATE` aconteceu no banco, nada chegou no client, porque a tabela
+  simplesmente não estava na publication). Todo `carregar*()` que só roda
+  uma vez no login (sem Realtime nem polling) é candidato a esse mesmo
+  bug — perguntar explicitamente "isso precisa refletir mudança feita por
+  fora da própria aba?" antes de aceitar uma tela como pronta.
 
 ## O que foi feito (em ordem)
 1. Inicialização do projeto — duas versões soltas de mockups/schema foram comparadas e
@@ -1232,6 +1237,103 @@ C:\Users\Usuário\Projetos\giro certo
     - **Suíte completa rodada mais uma vez** (mesmo protocolo) — 122/122,
       limpo desta vez (sem a falha intermitente do `despacho_motor` das
       rodadas anteriores).
+    - **Teste real de ponta a ponta, celular de verdade na mesma Wi-Fi**
+      (`python -m http.server --bind 0.0.0.0`, testado via IP local): feira
+      + feirante + consumidor de teste criados via INSERT direto (sem UI —
+      confirmado que não existe nenhuma, `PainelFeirante`/
+      `CheckoutConsumidor` seguem fora de escopo); entregador de teste
+      criado via `admin.createUser` + INSERT, com `aceita_feira=true`.
+      **2 bugs reais do módulo original achados só ao rodar o despacho de
+      verdade pela primeira vez** (não apareceriam em teste simulado):
+      `montarPedidoParaDispatch()` tentava embutir a VIEW
+      `pedido_grupo_com_peso` via select aninhado do PostgREST — só
+      funciona com FK real, não com view — corrigido com query separada;
+      `abrirRotaNova()` tratava o retorno de `buscar_entregador_mais_proximo()`
+      (`returns table(...)`) como objeto único — o PostgREST sempre devolve
+      ARRAY via RPC pra funções desse tipo — corrigido (`entregadores?.[0]`).
+      Corrigidos ambos em `feira-dispatch/src/routeManager.js`, retestado,
+      despacho funcionou (`entrega_rota` criada certa, depois um segundo
+      pedido consolidado na mesma rota, `peso_total` correto).
+    - **4º achado do mesmo padrão de causa raiz — `entrega_rota` nunca
+      tinha sido adicionada à publication `supabase_realtime`**: o canal
+      de oferta de feira simplesmente nunca disparava, confirmado ao vivo
+      (o `UPDATE` do segundo pedido aconteceu no banco, nada chegou no
+      celular). Descoberto seguindo o próprio checklist que este arquivo
+      já documentava — deveria ter sido checado ANTES de escrever o canal,
+      não depois de testar e falhar. Corrigido (`alter publication
+      supabase_realtime add table entrega_rota`, aplicado no banco
+      hospedado e em `db/schema.sql`) e a regra correspondente em
+      "Arquitetura conhecida" foi promovida de "registro de bug" pra
+      checklist permanente, a pedido explícito do usuário.
+    - **Confirmado e aceito, não é bug**: o modal de oferta de feira nunca
+      tocou som (buzina + voz) em nenhum caso, `INSERT` ou `UPDATE` — isso
+      nunca foi implementado no modal web, por decisão já registrada (só o
+      app nativo via Capacitor resolve autoplay de áudio com tela
+      bloqueada; navegador restringe autoplay sem gesto recente do
+      usuário). Não precisa de correção — fica exatamente como já estava
+      documentado, dependência do Capacitor.
+    - Dado de teste (2 pedidos, feira/estabelecimento/consumidor/entregador
+      de teste) ainda não foi limpo — ver pendências.
+    - **Sessão de debug ao vivo do despacho real — 2 bugs reais adicionais
+      encontrados só ao rodar de verdade** (não apareceriam em teste
+      simulado): `montarPedidoParaDispatch()` (`routeManager.js`) tentava
+      embutir a VIEW `pedido_grupo_com_peso` via select aninhado do
+      PostgREST — só funciona com FK real, não com view (erro real:
+      "Could not find a relationship..."); corrigido com query separada.
+      `abrirRotaNova()` tratava o retorno de `buscar_entregador_mais_proximo()`
+      (`returns table(...)`) como objeto único — o PostgREST sempre devolve
+      ARRAY via RPC pra esse tipo de função, o que inseria
+      `entregador_id=null` e quebrava a constraint NOT NULL de
+      `entrega_rota`; corrigido (`entregadores?.[0]`).
+    - **Achado real, root-cause de "modal de oferta não aparece" — debugado
+      metodicamente, não por tentativa e erro**: sequência de hipóteses
+      descartadas com evidência antes de achar a causa real —
+      REPLICA IDENTITY (descartado, idêntico às tabelas que já funcionam);
+      publication (achado real #1, corrigido — `entrega_rota` nunca tinha
+      sido adicionada à `supabase_realtime`, 4º caso desse padrão no
+      projeto); depois disso corrigido, o problema PERSISTIU, então:
+      instrumentação com log visível na tela (sem acesso remoto ao console
+      do celular) revelou um bug na PRÓPRIA instrumentação (canal de
+      diagnóstico sem guard de "já ativo" causando `CHANNEL_ERROR` em
+      loop); corrigido isso, testado via Node (prova que uma inscrição sem
+      filtro, bem gerenciada, funciona) — e só então, com o celular
+      confirmando heartbeat vivo (JS não suspenso) mas ainda sem receber
+      nada, reproduzi o cenário no PRÓPRIO desktop via automação de
+      navegador: **capturado ao vivo, com screenshot**, o modal
+      funcionando perfeitamente (evento recebido, paradas carregadas,
+      modal renderizado com dados reais) — e ~36s depois, com a aba em
+      `visibilityState=hidden`, os dois canais (com filtro e sem filtro)
+      caíram sozinhos pra `CHANNEL_ERROR`, recuperando automaticamente
+      assim que a aba voltou a `visible`. **Causa raiz real: WebSocket do
+      Realtime degrada silenciosamente com a aba em segundo plano
+      — o status "SUBSCRIBED" na tela pode estar "zumbi" (congelado de
+      antes da queda), sem nenhum erro visível até a aba voltar ao
+      primeiro plano.** Não é bug de código, é uma limitação real de
+      conexões WebSocket de longa duração em abas em background —
+      confirmada com reprodução direta, não suposição.
+    - **Corrigido: polling de segurança em `app-entregador.html`, mesmo
+      padrão já usado em `painel-loja.html`** (`POLL_INTERVAL_FEIRA_MS =
+      15000`) — a pedido explícito do usuário, tratado como correção
+      obrigatória, não decisão adiável ("motoboy vai bloquear tela entre
+      entregas o tempo todo, não é edge case raro"). Roda independente do
+      Realtime estar conectado: a cada 15s, busca oferta `em_montagem`
+      pendente + rechecha a rota ativa. **Testado de um jeito mais
+      rigoroso que só reproduzir background/foreground**: a oferta
+      pendente já existia no banco de ANTES do reload da página — o
+      Realtime não tem como reentregar um evento passado, só dispara em
+      mudança futura. Esperar ~18s (sem fazer mais nada) e o modal
+      aparecer sozinho prova o polling funcionando ISOLADO, sem nenhuma
+      ajuda do Realtime. Confirmado via automação de navegador + screenshot.
+    - Toda a instrumentação de debug temporária (log visível, heartbeat,
+      canal de diagnóstico sem filtro) foi removida — código final limpo,
+      só com os fixes reais.
+    - **Achado colateral, não investigado a fundo, fora do escopo desta
+      sessão**: descobertos arquivos de um wrapper Capacitor em progresso
+      (`dispatch-engine/capacitor.config.json`, `dispatch-engine/android/`,
+      `capacitor-www/`, dependências `@capacitor/*` em
+      `dispatch-engine/package.json`) que não foram criados nesta
+      conversa — provavelmente trabalho em paralelo do usuário. Não
+      tocado, não commitado, só sinalizado pro usuário.
 
 ## Pendências reais no momento
 - [x] ~~`db/schema.sql`/migration do item 22 não commitados~~ — commitado
