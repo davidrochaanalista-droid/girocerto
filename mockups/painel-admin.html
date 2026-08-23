@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GiroCerto Admin</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{
+    --slate-1:#5B4FE0; --slate-2:#332B85;
+    --ink:#1C1B2E; --gray:#6B6B7B; --gray-soft:#9C9CAD;
+    --bg:#F5F5F9; --card:#FFFFFF; --border:#E4E4EE;
+    --green-soft:#E5F3EB; --green-ink:#1F7A45;
+    --amber:#F5A623; --amber-ink:#A9720C; --amber-soft:#FDF1DC;
+    --red-soft:#FBEAEA; --red-ink:#B84343;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:#fff;color:var(--ink);font-family:'Inter',-apple-system,sans-serif;}
+  h1,h2,h3{font-family:'Sora',sans-serif;}
+
+  /* ---------- LOGIN GATE ---------- */
+  #loginGate{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);}
+  .login-card{background:#fff;border:1px solid var(--border);border-radius:18px;padding:36px 32px;width:360px;max-width:90vw;}
+  .login-card .badge{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--slate-1),var(--slate-2));display:flex;align-items:center;justify-content:center;margin-bottom:18px;color:#fff;font-family:'Sora',sans-serif;font-weight:800;font-size:14px;}
+  .login-card h2{margin:0 0 4px;font-size:20px;}
+  .login-card p{color:var(--gray);font-size:13.5px;margin:0 0 22px;}
+  .login-card input{width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;margin-bottom:12px;font-family:'Inter',sans-serif;}
+  .login-card input:focus{outline:none;border-color:var(--slate-1);}
+  .login-card button{width:100%;padding:13px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--slate-1),var(--slate-2));color:#fff;font-weight:700;font-size:14.5px;cursor:pointer;}
+  .login-msg{font-size:13px;color:var(--red-ink);margin-bottom:10px;min-height:16px;}
+
+  /* ---------- APP ---------- */
+  #app{display:none;}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 28px;border-bottom:1px solid var(--border);background:var(--ink);}
+  .brand-group{display:flex;align-items:center;gap:10px;}
+  .badge{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--slate-1),var(--slate-2));display:flex;align-items:center;justify-content:center;color:#fff;font-family:'Sora',sans-serif;font-weight:800;font-size:12px;}
+  .brand{font-family:'Sora',sans-serif;font-weight:700;font-size:17px;color:#fff;}
+  .brand span{color:#B7AEFF;}
+  .admin-tag{color:#B7AEFF;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;border:1px solid #4A4372;border-radius:6px;padding:3px 8px;}
+  .sair-btn{background:none;border:1px solid #4A4372;color:#C9C6E0;border-radius:8px;padding:7px 12px;font-size:12.5px;cursor:pointer;font-family:'Inter',sans-serif;}
+
+  .aviso-interno{background:var(--amber-soft);color:var(--amber-ink);font-size:12.5px;padding:8px 28px;text-align:center;}
+
+  .main{padding:30px 28px;max-width:1000px;margin:0 auto;}
+  .main h1{font-size:22px;margin:0 0 4px;}
+  .main .subtitle{color:var(--gray);font-size:13.5px;margin:0 0 22px;}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px;}
+  thead th{text-align:left;color:var(--gray);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em;padding:8px 10px;border-bottom:1.5px solid var(--border);}
+  tbody td{padding:11px 10px;border-bottom:1px solid var(--border);vertical-align:middle;}
+  tbody tr:hover{background:var(--bg);}
+  .empty{color:var(--gray-soft);font-size:13.5px;padding:30px 0;text-align:center;}
+
+  .action-btn{background:var(--slate-1);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;}
+  .action-btn.reprovar{background:#fff;color:var(--red-ink);border:1.5px solid var(--red-ink);}
+  .acoes{display:flex;gap:8px;}
+
+  .overlay{position:fixed;inset:0;background:rgba(28,27,46,.45);display:none;align-items:center;justify-content:center;z-index:50;}
+  .overlay.show{display:flex;}
+  .modal-card{background:#fff;border-radius:16px;padding:26px 26px;width:400px;max-width:90vw;}
+  .modal-card p{color:var(--gray);font-size:13.5px;line-height:1.5;}
+  .modal-card .entregador-nome{font-weight:700;color:var(--ink);}
+  .modal-card .field{margin-bottom:14px;}
+  .modal-card label{display:block;font-size:12.5px;font-weight:600;color:var(--gray);margin-bottom:5px;}
+  .modal-card select{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;font-family:'Inter',sans-serif;}
+  .nav2{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;}
+  .btn-primary{background:linear-gradient(135deg,var(--slate-1),var(--slate-2));color:#fff;border:none;border-radius:10px;padding:11px 18px;font-weight:700;font-size:14px;cursor:pointer;font-family:'Inter',sans-serif;}
+  .btn-ghost{background:var(--bg);color:var(--gray);border:none;border-radius:10px;padding:11px 18px;font-weight:700;font-size:14px;cursor:pointer;font-family:'Inter',sans-serif;}
+  .msg{padding:10px 13px;border-radius:9px;font-size:13px;margin-bottom:14px;display:none;}
+  .msg.error{background:var(--red-soft);color:var(--red-ink);display:block;}
+  .msg.success{background:var(--green-soft);color:var(--green-ink);display:block;}
+</style>
+</head>
+<body>
+
+<!-- ===================== LOGIN ===================== -->
+<div id="loginGate">
+  <div class="login-card">
+    <div class="badge">A</div>
+    <h2>GiroCerto Admin</h2>
+    <p>Painel administrativo da plataforma — acesso restrito à equipe GiroCerto. Não é o painel da loja.</p>
+    <div class="login-msg" id="loginMsg"></div>
+    <input type="email" id="loginEmail" placeholder="E-mail">
+    <input type="password" id="loginSenha" placeholder="Senha">
+    <button onclick="login()">Entrar</button>
+  </div>
+</div>
+
+<!-- ===================== APP ===================== -->
+<div id="app">
+  <div class="topbar">
+    <div class="brand-group">
+      <div class="badge">A</div>
+      <div class="brand">Giro<span>Certo</span></div>
+      <div class="admin-tag">Admin</div>
+    </div>
+    <button class="sair-btn" onclick="sair()">Sair</button>
+  </div>
+  <div class="aviso-interno">⚠ Painel administrativo da plataforma — acesso restrito à equipe GiroCerto, nunca à loja.</div>
+
+  <div class="main">
+    <h1>Aprovação de entregadores</h1>
+    <p class="subtitle">Cadastros pendentes (status "em avaliação") de todas as lojas.</p>
+    <div id="aprovacaoBox"><div class="empty">Carregando…</div></div>
+  </div>
+</div>
+
+<!-- ---------- MODAL: CONFIRMAR APROVAÇÃO ---------- -->
+<div class="overlay" id="modalAprovar">
+  <div class="modal-card">
+    <h2 style="margin-bottom:4px;">Aprovar cadastro?</h2>
+    <p>Isso libera <span class="entregador-nome" id="apEntregadorNome">—</span> pra usar o app normalmente.</p>
+    <div class="msg" id="apModalMsg"></div>
+    <div class="nav2">
+      <button class="btn-ghost" onclick="fecharModalAprovar()">Cancelar</button>
+      <button class="btn-primary" id="apConfirmBtn" onclick="confirmarAprovacao()">Aprovar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- MODAL: REPROVAR ---------- -->
+<div class="overlay" id="modalReprovar">
+  <div class="modal-card">
+    <h2 style="margin-bottom:4px;">Reprovar cadastro?</h2>
+    <p><span class="entregador-nome" id="rpEntregadorNome">—</span> vai ver esse motivo no app dele.</p>
+    <div class="msg" id="rpModalMsg"></div>
+    <div class="field">
+      <label>Motivo</label>
+      <select id="rpMotivo">
+        <option value="cnh_vencida">CNH vencida</option>
+        <option value="crlv_vencido">CRLV vencido</option>
+        <option value="documento_ilegivel">Documento ilegível</option>
+        <option value="informacao_divergente">Informação divergente</option>
+        <option value="outro">Outro</option>
+      </select>
+    </div>
+    <div class="nav2">
+      <button class="btn-ghost" onclick="fecharModalReprovar()">Cancelar</button>
+      <button class="btn-primary" id="rpConfirmBtn" onclick="confirmarReprovacao()">Reprovar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://ntmxkwzhumiqspxijuln.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_2f1de7VdoaxdWnGHHZenGQ_3ROsSDSi';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let entregadorParaAprovar = null;
+let entregadorParaReprovar = null;
+
+function escapeHtml(str){
+  return String(str ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+
+function formatarDataHora(iso){
+  if(!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
+}
+
+async function login(){
+  const email = document.getElementById('loginEmail').value;
+  const password = document.getElementById('loginSenha').value;
+  const msg = document.getElementById('loginMsg');
+  msg.textContent = '';
+
+  const { error: authError } = await supabaseClient.auth.signInWithPassword({ email, password });
+  if(authError){ msg.textContent = 'E-mail ou senha incorretos.'; return; }
+
+  // login válido não é o mesmo que autorizado — confirma no banco antes de
+  // mostrar qualquer coisa (eh_desenvolvedor_admin() é SECURITY DEFINER, só
+  // enxerga o próprio auth.uid(), não vaza nada de ninguém). Mesma allowlist
+  // (desenvolvedores_admin) já usada por painel-dev.html — dono de loja
+  // comum autentica normalmente aqui, mas fica bloqueado nesse passo.
+  const { data: souAdmin, error: rpcError } = await supabaseClient.rpc('eh_desenvolvedor_admin');
+  if(rpcError || !souAdmin){
+    msg.textContent = 'Essa conta não tem acesso a esta ferramenta.';
+    await supabaseClient.auth.signOut();
+    return;
+  }
+
+  document.getElementById('loginGate').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  carregarAprovacao();
+}
+
+async function sair(){
+  await supabaseClient.auth.signOut();
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('loginGate').style.display = 'flex';
+  document.getElementById('loginEmail').value = '';
+  document.getElementById('loginSenha').value = '';
+}
+
+async function carregarAprovacao(){
+  const box = document.getElementById('aprovacaoBox');
+  box.innerHTML = '<div class="empty">Carregando…</div>';
+
+  const { data, error } = await supabaseClient
+    .from('entregadores')
+    .select('id, nome, tipo_veiculo, verificacao_enviada_em, tenants(nome)')
+    .eq('status_verificacao', 'em_avaliacao')
+    .order('verificacao_enviada_em', { ascending: true });
+
+  if(error){ box.innerHTML = `<div class="empty">Erro ao carregar: ${escapeHtml(error.message)}</div>`; return; }
+  if(!data || data.length === 0){ box.innerHTML = '<div class="empty">Nenhum cadastro pendente no momento.</div>'; return; }
+
+  let html = '<table><thead><tr><th>Nome</th><th>Veículo</th><th>Loja</th><th>Enviado em</th><th></th></tr></thead><tbody>';
+  for(const e of data){
+    html += `<tr>
+      <td>${escapeHtml(e.nome)}</td>
+      <td>${e.tipo_veiculo === 'moto' ? 'Moto' : 'Bicicleta'}</td>
+      <td>${escapeHtml(e.tenants ? e.tenants.nome : '—')}</td>
+      <td>${formatarDataHora(e.verificacao_enviada_em)}</td>
+      <td>
+        <div class="acoes">
+          <button class="action-btn" data-id="${escapeHtml(e.id)}" data-nome="${escapeHtml(e.nome)}" onclick="abrirModalAprovar(this)">Aprovar</button>
+          <button class="action-btn reprovar" data-id="${escapeHtml(e.id)}" data-nome="${escapeHtml(e.nome)}" onclick="abrirModalReprovar(this)">Reprovar</button>
+        </div>
+      </td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  box.innerHTML = html;
+}
+
+function abrirModalAprovar(btn){
+  entregadorParaAprovar = btn.dataset.id;
+  document.getElementById('apEntregadorNome').textContent = btn.dataset.nome;
+  document.getElementById('apModalMsg').className = 'msg';
+  document.getElementById('apModalMsg').textContent = '';
+  document.getElementById('modalAprovar').classList.add('show');
+}
+
+function fecharModalAprovar(){
+  document.getElementById('modalAprovar').classList.remove('show');
+  entregadorParaAprovar = null;
+}
+
+async function confirmarAprovacao(){
+  if(!entregadorParaAprovar) return;
+  const msg = document.getElementById('apModalMsg');
+  const btn = document.getElementById('apConfirmBtn');
+  btn.disabled = true;
+
+  const { error } = await supabaseClient.rpc('aprovar_entregador_teste', { p_entregador_id: entregadorParaAprovar });
+
+  btn.disabled = false;
+  if(error){
+    msg.className = 'msg error';
+    msg.textContent = 'Erro ao aprovar: ' + error.message;
+    return;
+  }
+
+  fecharModalAprovar();
+  carregarAprovacao();
+}
+
+function abrirModalReprovar(btn){
+  entregadorParaReprovar = btn.dataset.id;
+  document.getElementById('rpEntregadorNome').textContent = btn.dataset.nome;
+  document.getElementById('rpMotivo').value = 'cnh_vencida';
+  document.getElementById('rpModalMsg').className = 'msg';
+  document.getElementById('rpModalMsg').textContent = '';
+  document.getElementById('modalReprovar').classList.add('show');
+}
+
+function fecharModalReprovar(){
+  document.getElementById('modalReprovar').classList.remove('show');
+  entregadorParaReprovar = null;
+}
+
+async function confirmarReprovacao(){
+  if(!entregadorParaReprovar) return;
+  const msg = document.getElementById('rpModalMsg');
+  const btn = document.getElementById('rpConfirmBtn');
+  const motivo = document.getElementById('rpMotivo').value;
+  btn.disabled = true;
+
+  const { error } = await supabaseClient.rpc('reprovar_entregador_teste', {
+    p_entregador_id: entregadorParaReprovar,
+    p_motivo: motivo,
+  });
+
+  btn.disabled = false;
+  if(error){
+    msg.className = 'msg error';
+    msg.textContent = 'Erro ao reprovar: ' + error.message;
+    return;
+  }
+
+  fecharModalReprovar();
+  carregarAprovacao();
+}
+
+// sessão já aberta neste navegador (F5) — reconfirma que ainda é admin antes
+// de mostrar qualquer coisa, mesmo critério do login()
+supabaseClient.auth.getSession().then(async ({ data: { session } }) => {
+  if(!session) return;
+  const { data: souAdmin } = await supabaseClient.rpc('eh_desenvolvedor_admin');
+  if(!souAdmin){ await supabaseClient.auth.signOut(); return; }
+  document.getElementById('loginGate').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  carregarAprovacao();
+});
+</script>
+</body>
+</html>

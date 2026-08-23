@@ -511,6 +511,8 @@ function escapeHtml(str){
 }
 
 let entregadorId = null;
+let statusEntregadorCanalAtivo = false;
+let pollStatusEntregadorTimer = null;
 let turnoAtualId = null;
 let turnoIniciadoEm = null;
 let tenantConfig = { horas_alerta_fadiga: 8, horas_descanso_obrigatorio: 8 };
@@ -679,10 +681,13 @@ async function enviarCadastro(){
       metadata.responsavel_nome = document.getElementById('c_responsavel').value || null;
     }
 
+    const redirectUrl = window.location.origin + '/app-entregador.html'
+      + (TENANT_ID ? '?loja=' + encodeURIComponent(TENANT_ID) : '');
+
     const { error: authError } = await supabaseClient.auth.signUp({
       email: document.getElementById('c_email').value,
       password: document.getElementById('c_senha').value,
-      options: { data: metadata },
+      options: { data: metadata, emailRedirectTo: redirectUrl },
     });
     if(authError) throw authError;
 
@@ -799,6 +804,37 @@ async function login(){
   await carregarEntregador();
 }
 
+// ------------------------------------------------------------
+// TELA "EM AVALIAÇÃO" — atualização sozinha quando a loja decide
+// (aprovação/reprovação, ver painel-loja.html). Sem isso o entregador
+// ficava preso vendo "documentos em avaliação" até deslogar/logar de novo
+// ou dar F5, mesmo já tendo sido aprovado. Mesmo padrão de
+// iniciarEscutaDeOfertas() (guard booleano, canal fica vivo pelo resto da
+// sessão, sem teardown) + polling de segurança de 30s (mesmo princípio do
+// polling de 15s do painel-loja.html) — o poll só recarrega enquanto
+// view-avaliacao estiver de fato a view ativa.
+// ------------------------------------------------------------
+function iniciarEscutaDeStatusPendente(){
+  if(statusEntregadorCanalAtivo) return;
+  statusEntregadorCanalAtivo = true;
+
+  supabaseClient
+    .channel('status-entregador')
+    .on('postgres_changes', {
+      event: 'UPDATE', schema: 'public', table: 'entregadores',
+      filter: `id=eq.${entregadorId}`,
+    }, () => carregarEntregador())
+    .subscribe();
+
+  if(!pollStatusEntregadorTimer){
+    pollStatusEntregadorTimer = setInterval(() => {
+      if(document.getElementById('view-avaliacao').classList.contains('active')){
+        carregarEntregador();
+      }
+    }, 30000);
+  }
+}
+
 async function carregarEntregador(){
   const { data: { user } } = await supabaseClient.auth.getUser();
   if(!user) return;
@@ -843,6 +879,7 @@ async function carregarEntregador(){
   }
   if(entregador.status_verificacao !== 'aprovado'){
     mostrar('view-avaliacao');
+    iniciarEscutaDeStatusPendente();
     return;
   }
 

@@ -1103,6 +1103,37 @@ end;
 $$;
 
 -- ------------------------------------------------------------
+-- Irmã de aprovar_entregador_teste() acima (sessão de 23/08/2026): mesmo
+-- padrão exato (SECURITY DEFINER, checa eh_desenvolvedor_admin(), RPC
+-- estreita em vez de policy de UPDATE genérica) — faltava o equivalente pra
+-- reprovar. Usada tanto por painel-dev.html (só aprova, não muda) quanto
+-- por painel-admin.html (aprova E reprova). aprovado_por fica NULL pelo
+-- mesmo motivo de aprovar_entregador_teste(): quem decide aqui é um admin
+-- da plataforma, não um usuarios_loja.
+-- ------------------------------------------------------------
+create or replace function reprovar_entregador_teste(p_entregador_id uuid, p_motivo text)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not eh_desenvolvedor_admin() then
+    raise exception 'acesso negado' using errcode = '42501';
+  end if;
+
+  -- p_motivo não é validado aqui contra a lista de valores permitidos — a
+  -- constraint check já existente na coluna motivo_reprovacao faz isso,
+  -- mesma fonte de verdade que o resto do schema já usa.
+  update entregadores
+  set status_verificacao = 'reprovado',
+      motivo_reprovacao = p_motivo
+  where id = p_entregador_id
+    and status_verificacao = 'em_avaliacao';
+end;
+$$;
+
+-- ------------------------------------------------------------
 -- Achado ultrareview (2ª rodada): a policy "entregador atualiza seu proprio
 -- cadastro" (FOR UPDATE, sem WITH CHECK) deixava o próprio entregador limpar
 -- bloqueado_ate via update direto — bypass total do bloqueio de descanso
@@ -1685,6 +1716,11 @@ alter publication supabase_realtime add table entrega_rota;
 -- checklist já aplicada de cara desta vez — sem isso, o card de "nova
 -- parada proposta" nunca chegaria no app do entregador.
 alter publication supabase_realtime add table proposta_consolidacao;
+-- entregadores (sessão de 23/08/2026, aprovação de entregador pela loja):
+-- checklist aplicada de cara de novo — sem isso, nem painel-loja.html
+-- saberia de um cadastro pendente novo em tempo real, nem app-entregador.html
+-- saberia que foi aprovado/reprovado sem precisar de F5.
+alter publication supabase_realtime add table entregadores;
 
 -- ==============================================================
 -- STORAGE (seção 39) — buckets privados pros documentos e fotos

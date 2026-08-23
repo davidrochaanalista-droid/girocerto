@@ -518,6 +518,7 @@ async function enviarCadastro(){
       email: document.getElementById('f_email').value,
       password: document.getElementById('f_senha').value,
       options: {
+        emailRedirectTo: window.location.origin + '/painel-loja.html',
         data: {
           nome: document.getElementById('f_loja_nome').value,
           proprietario_nome: document.getElementById('f_prop_nome').value,

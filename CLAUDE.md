@@ -3,17 +3,24 @@
 ## Visão geral
 Plataforma de logística de motoboy pra lojas locais (restaurantes, açaiterias,
 padarias etc.), com foco em reduzir o ciclo ocioso do entregador (espera na loja +
-volta vazia). Os 3 mockups HTML estáticos (`cadastro-loja.html`, `painel-loja.html`,
-`app-entregador.html`) falam DIRETO com Supabase via `@supabase/supabase-js`
-(conectados ao projeto hospedado real desde 15/08/2026) e continuam sem build
-step/SPA. **Hospedados publicamente na Vercel desde 18/08/2026** (ver item 19) —
-antes disso nunca tiveram hospedagem nenhuma, só rodavam localmente via
-`python -m http.server`:
+volta vazia). Os mockups HTML estáticos (`cadastro-loja.html`, `painel-loja.html`,
+`app-entregador.html`, `painel-admin.html`) falam DIRETO com Supabase via
+`@supabase/supabase-js` (conectados ao projeto hospedado real desde 15/08/2026) e
+continuam sem build step/SPA. **Hospedados publicamente na Vercel desde 18/08/2026**
+(ver item 19) — antes disso nunca tiveram hospedagem nenhuma, só rodavam localmente
+via `python -m http.server`:
 - Cadastro da loja: https://girocerto-mockups.vercel.app/cadastro-loja.html
 - Painel da loja: https://girocerto-mockups.vercel.app/painel-loja.html
 - App do entregador: https://girocerto-mockups.vercel.app/app-entregador.html
   (o entregador chega aqui via link com `?loja=<tenant_id>`, copiado do painel
   da loja — não existe link fixo público pra essa tela)
+- Painel admin (David + equipe, plataforma): https://girocerto-mockups.vercel.app/painel-admin.html
+  (login real + checagem `eh_desenvolvedor_admin()`, mesma allowlist do
+  `painel-dev.html` — quem não está na allowlist é deslogado na hora; ver item 25)
+
+`painel-dev.html` continua existindo, mas só local (`mockups/.gitignore`), nunca
+publicado — ferramenta interna do dev, não confundir com `painel-admin.html` (esse
+sim é o painel de produção da equipe).
 
 Desde 15/08/2026 **existe um backend Node/Express real**: `dispatch-engine/`, o
 motor de despacho (ver item 10 em "O que foi feito" e
@@ -1409,8 +1416,96 @@ C:\Users\Usuário\Projetos\giro certo
       `mockups/` redeployado na Vercel via `vercel --prod` depois do
       push (não é automático — confirmado servindo o código novo via
       grep na resposta HTTP de produção).
+25. **Aprovação de entregador pelo ADMIN da plataforma (não pela loja) — fecha
+    os itens 5 e 6 das pendências, corrigido depois de um mal-entendido real
+    sobre quem aprova** (23/08/2026).
+    - **Parte A (redirect)**: `emailRedirectTo` explícito nos dois `signUp()`
+      (`cadastro-loja.html` → `painel-loja.html`; `app-entregador.html` →
+      `app-entregador.html?loja=<tenant_id>`, preservando o tenant através da
+      confirmação) — antes disso os dois caíam no `Site URL` fixo do projeto
+      (item 21), então o entregador confirmando e-mail aterrissava no painel
+      da LOJA por engano. Testado com `signUp()` real (Mailinator): o link do
+      e-mail já sai com o `redirect_to` certo, confirmado clicando de
+      verdade.
+    - **Parte B (tela de espera atualiza sozinha)**: `view-avaliacao` em
+      `app-entregador.html` já existia — só faltava recarregar sozinha.
+      Canal Realtime (`entregadores`, filtro por `id`, novo na publication
+      `supabase_realtime`) + polling de segurança de 30s, mesmo princípio já
+      usado em `painel-loja.html`. Testado ao vivo: aprovação em outra
+      sessão faz a tela do entregador pular pra `view-turno` sem F5.
+    - **1ª tentativa, ERRADA, corrigida na mesma sessão**: implementei
+      aprovação pela LOJA (aba nova em `painel-loja.html`, RPCs
+      `aprovar_entregador_da_loja()`/`reprovar_entregador_da_loja()`
+      autorizadas por `usuarios_loja`/`tenant_id`) — testado, funcionava, mas
+      o modelo estava errado. **Quem aprova é o admin da plataforma (David +
+      equipe), nunca a loja.** Revertido por completo antes de qualquer
+      commit: `painel-loja.html` voltou byte a byte ao estado do commit
+      anterior (`git status` confirma zero diff nesse arquivo), as 2 RPCs
+      erradas foram apagadas do banco, e o trigger
+      `impedir_autoaprovacao_entregador()` voltou pra condição original
+      (tirando a brecha `new.tenant_id in (select minhas_tenant_ids())` que
+      tinha sido adicionada por engano).
+    - **Correção real**: `mockups/painel-admin.html` novo — painel de
+      produção pra David/equipe (login `signInWithPassword` +
+      `.rpc('eh_desenvolvedor_admin')`, mesma allowlist `desenvolvedores_admin`
+      que já protege `painel-dev.html`; quem não está na allowlist autentica
+      normal mas é deslogado na hora, mesma mensagem genérica). Reaproveita
+      `aprovar_entregador_teste()` já existente (sem mudar nada nela) e ganha
+      uma irmã nova, `reprovar_entregador_teste(p_entregador_id, p_motivo)`
+      — as duas com `aprovado_por` sempre `NULL` de propósito (admin não é
+      `usuarios_loja`). `painel-dev.html` não foi tocado. Diferente do
+      `painel-dev.html`, `painel-admin.html` **é publicado normalmente no
+      git e na Vercel** — decisão explícita do usuário (equipe precisa de
+      acesso remoto, não só do computador do David); segurança real vem do
+      login + `eh_desenvolvedor_admin()` + RLS, mesmo modelo já aceito pros
+      outros 3 mockups.
+    - **Achado de metodologia de teste, não é bug de produto**: `painel-loja.html`,
+      `app-entregador.html` e `painel-admin.html` são a MESMA origem
+      (`girocerto-mockups.vercel.app`), então dividem o mesmo `localStorage`
+      de sessão do Supabase Auth — logar como um papel em uma aba
+      SOBRESCREVE a sessão de outro papel em outra aba do mesmo navegador.
+      Pior ainda: só de VISITAR `painel-admin.html` (antes mesmo de
+      submeter login), o próprio bootstrap da página (`getSession()` +
+      `eh_desenvolvedor_admin()`) já desloga a sessão atual se ela não for
+      admin — então um teste com loja/entregador/admin abertos no MESMO
+      navegador pode se auto-derrubar sem nenhuma ação explícita de logout.
+      Só acontece em teste (mesma pessoa testando papéis diferentes no mesmo
+      navegador); na vida real são pessoas/dispositivos diferentes. Pra
+      testar troca de papel, ou usar abas isoladas de fato (não só abas
+      diferentes da mesma janela) ou validar a escrita via um client
+      Node separado (`signInWithPassword` num script, sem tocar
+      `localStorage` do navegador) e só observar o resultado no navegador.
+    - **Testado**: suíte completa 128/128 (protocolo padrão, Railway
+      pausado/restaurado) — `tests/onboarding.test.js` reescrito pra testar
+      o modelo certo (admin aprova qualquer tenant sem posse; loja comum
+      tentando chamar `aprovar_entregador_teste`/`reprovar_entregador_teste`
+      é bloqueada 42501; autoaprovação do entregador continua bloqueada).
+      Ponta a ponta no navegador: `signUp()` real de entregador + e-mail
+      real confirmado + upload de documentos + aprovação/reprovação reais
+      pela UI nova do admin, incluindo o caso negativo (dono de loja comum
+      tentando logar em `painel-admin.html`, rejeitado com a mensagem
+      certa).
+    - **Achado colateral, não relacionado, limpo nesta sessão**: 3
+      entregadores órfãos (`Perto 1`/`Perto 2`/`Longe`, tenant "Loja Motor
+      Real") de uma rodada de teste de 22/08/2026 (item 24, teste de
+      failover de recusa da feira) nunca tinham sido limpos — apareciam
+      como pendentes reais no `painel-admin.html` novo. Removidos (tenant +
+      3 auth users).
+    - Commitado e dado push.
 
 ## Pendências reais no momento
+- [ ] **PRÓXIMO PASSO GRANDE, registrado a pedido explícito do usuário
+      (23/08/2026), não iniciar sem alinhar o escopo junto com ele
+      primeiro**: `painel-admin.html` vai crescer de "só aprovação de
+      entregador" pra um painel operacional completo pra David/equipe, com
+      o máximo de visibilidade possível sobre a operação. Ainda sem escopo
+      fechado — exemplos que o usuário já citou como candidatos (não é
+      lista final): visão geral de entregas em andamento, entregadores
+      ativos/pendentes por loja, métricas de pedidos, logs de erro. Próxima
+      sessão que tocar nisso: abrir definindo junto com o usuário o que
+      entra antes de codar qualquer coisa (mesmo processo já estabelecido —
+      plano curto → aprovação → implementação → teste → commit só se
+      pedido).
 - [x] ~~`db/schema.sql`/migration do item 22 não commitados~~ — commitado
       (`c6e162d`) depois de confirmar que o repositório é PÚBLICO (checado
       via API do GitHub sem credencial nenhuma: `"private": false`).
@@ -1462,29 +1557,15 @@ C:\Users\Usuário\Projetos\giro certo
       tela do entregador foi unificada lá), mas o wrapper em si não foi
       criado — depende de `app-entregador.html` primeiro absorver as telas
       de feira (pendência acima).
-- [ ] **Loja e entregador caem no mesmo `Site URL` de fallback após
-      confirmar e-mail** (achado do item 21) — não é mais o bug crítico
-      (localhost inacessível, já corrigido), mas um entregador confirmando
-      o e-mail hoje aterrissa em `painel-loja.html` (painel da loja) em vez
-      de `app-entregador.html`. Corrigir exige passar
-      `options.emailRedirectTo` explícito em cada `signUp()` — em
-      `cadastro-loja.html` apontando pra `painel-loja.html` (já é o
-      comportamento atual, sem mudança), em `app-entregador.html` apontando
-      pra `app-entregador.html?loja=<tenant_id>` (precisa preservar o
-      tenant_id através do fluxo de confirmação). Não bloqueia o piloto
-      desta semana (usa só 1 entregador de teste aprovado via SQL, sem
-      passar pelo link real), mas bloqueia divulgar o link `?loja=` pra
-      motoboys reais com uma experiência limpa.
-- [ ] **BLOQUEIA fluxo de entregador real pela LOJA (não bloqueia mais o
-      dev)**: continua sem existir NENHUMA UI em `painel-loja.html` pra loja
-      aprovar um entregador que se cadastrou pelo link `?loja=` — a aba
-      "Entregadores" mostra literalmente o texto `"Lista de entregadores
-      cadastrados ainda não foi construída."`. `mockups/painel-dev.html`
-      (item 22) resolve isso só pro desenvolvedor (uso local, ferramenta
-      interna) — a hamburgueria continua sem nenhuma forma de aprovar
-      motoboy nenhum pela própria interface dela. Bloqueia divulgar o link
-      `?loja=` pra motoboys de verdade com a LOJA no controle do processo
-      (hoje só o dev consegue aprovar).
+- [x] ~~Loja e entregador caem no mesmo `Site URL` de fallback após confirmar
+      e-mail~~ — corrigido no item 25 (`emailRedirectTo` explícito nos 2
+      `signUp()`). Testado com `signUp()` real: o entregador cai certo em
+      `app-entregador.html?loja=<tenant_id>`.
+- [x] ~~BLOQUEIA fluxo de entregador real — sem UI pra aprovar~~ — resolvido
+      no item 25, mas não do jeito que essa pendência previa: não é a LOJA
+      quem aprova, é o ADMIN da plataforma, pelo `painel-admin.html` novo
+      (produção, publicado). `painel-loja.html` continua sem nenhuma UI de
+      aprovação — decisão de produto, não pendência.
 - [ ] **Auditoria de outros gaps latentes de Realtime/publication** (pedido
       explícito do usuário, não bloqueia o piloto desta semana) — o achado do
       item 17 (`pedidos`/`rotas_entrega` fora da publication, painel não

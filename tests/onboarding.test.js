@@ -134,6 +134,99 @@ async function run() {
       r.check('reprovação manual via service role com motivo_reprovacao funciona', !eReprova && check2.status_verificacao === 'reprovado' && check2.motivo_reprovacao === 'cnh_vencida', check2);
     }
 
+    console.log('\n=== Aprovação/reprovação por admin da plataforma (aprovar_entregador_teste / reprovar_entregador_teste) — sessão de 23/08/2026, corrigido depois de assumir por engano que era a loja quem aprova ===');
+    {
+      // tenant + dono comum (NÃO é admin) — usado só pra provar que loja
+      // continua sem conseguir aprovar/reprovar, mesmo sendo dono da própria loja
+      const tenantA = crypto.randomUUID();
+      await pg.query(`insert into tenants (id, nome) values ($1, 'Loja A - Aprovacao Admin')`, [tenantA]);
+      tenantIds.push(tenantA);
+      const donoA = await createAuthUser('donoA.aprovacaoadmin');
+      authUserIds.push(donoA.id);
+      await pg.query(
+        `insert into usuarios_loja (tenant_id, auth_user_id, nome, papel) values ($1,$2,'Dono A','dono')`,
+        [tenantA, donoA.id]
+      );
+      const sessDonoA = await signInAs(donoA.email);
+
+      // conta admin de teste — allowlist desenvolvedores_admin, mesma
+      // mecânica de painel-dev.html/painel-admin.html. FK auth_user_id ->
+      // auth.users(id) on delete cascade, então o cleanup padrão (deleta o
+      // auth user) já limpa essa linha sozinho, sem passo extra.
+      const admUser = await createAuthUser('admin.aprovacao');
+      authUserIds.push(admUser.id);
+      await pg.query(`insert into desenvolvedores_admin (auth_user_id) values ($1)`, [admUser.id]);
+      const sessAdmin = await signInAs(admUser.email);
+
+      // entregador 1 — vai ser aprovado. Tenant qualquer, sem relação de
+      // posse nenhuma com o admin (admin aprova de QUALQUER loja).
+      const entU1 = await createAuthUser('ent1.aprovacaoadmin');
+      authUserIds.push(entU1.id);
+      const { rows: ent1Rows } = await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, status_verificacao, verificacao_enviada_em)
+         values ($1,$2,'Entregador Pra Aprovar','moto','em_avaliacao', now()) returning id`,
+        [tenantA, entU1.id]
+      );
+      const ent1Id = ent1Rows[0].id;
+
+      const { error: eLojaTentaAprovar } = await sessDonoA.rpc('aprovar_entregador_teste', { p_entregador_id: ent1Id });
+      r.check('loja (dono da própria loja, mas não é admin) NÃO consegue aprovar (42501)', !!eLojaTentaAprovar && eLojaTentaAprovar.code === '42501', eLojaTentaAprovar);
+
+      const { rows: checkNaoMudou } = await pg.query(`select status_verificacao from entregadores where id = $1`, [ent1Id]);
+      r.check('tentativa da loja bloqueada não alterou status_verificacao', checkNaoMudou[0].status_verificacao === 'em_avaliacao', checkNaoMudou[0]);
+
+      const { error: eAdminAprova } = await sessAdmin.rpc('aprovar_entregador_teste', { p_entregador_id: ent1Id });
+      const { rows: check1 } = await pg.query(`select status_verificacao, aprovado_por, aprovado_em from entregadores where id = $1`, [ent1Id]);
+      r.check(
+        'admin da plataforma aprova entregador de QUALQUER tenant (sem relação de posse) — aprovado_por fica NULL de propósito (admin não é usuarios_loja)',
+        !eAdminAprova && check1[0].status_verificacao === 'aprovado' && check1[0].aprovado_por === null && check1[0].aprovado_em !== null,
+        { eAdminAprova, check1: check1[0] }
+      );
+
+      // entregador 2 — vai ser reprovado
+      const entU2 = await createAuthUser('ent2.aprovacaoadmin');
+      authUserIds.push(entU2.id);
+      const { rows: ent2Rows } = await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, status_verificacao, verificacao_enviada_em)
+         values ($1,$2,'Entregador Pra Reprovar','bicicleta','em_avaliacao', now()) returning id`,
+        [tenantA, entU2.id]
+      );
+      const ent2Id = ent2Rows[0].id;
+
+      const { error: eLojaTentaReprovar } = await sessDonoA.rpc('reprovar_entregador_teste', { p_entregador_id: ent2Id, p_motivo: 'documento_ilegivel' });
+      r.check('loja também NÃO consegue reprovar (42501)', !!eLojaTentaReprovar && eLojaTentaReprovar.code === '42501', eLojaTentaReprovar);
+
+      const { error: eAdminReprova } = await sessAdmin.rpc('reprovar_entregador_teste', { p_entregador_id: ent2Id, p_motivo: 'documento_ilegivel' });
+      const { rows: check2 } = await pg.query(`select status_verificacao, motivo_reprovacao, aprovado_por from entregadores where id = $1`, [ent2Id]);
+      r.check(
+        'admin reprova com motivo — motivo_reprovacao gravado certo, aprovado_por continua NULL',
+        !eAdminReprova && check2[0].status_verificacao === 'reprovado' && check2[0].motivo_reprovacao === 'documento_ilegivel' && check2[0].aprovado_por === null,
+        { eAdminReprova, check2: check2[0] }
+      );
+
+      // entregador 3 — tenta se autoaprovar (reconfirma que reverter a
+      // extensão do trigger pra loja não reabriu esse bypass)
+      const entU3 = await createAuthUser('ent3.autoaprovacaoadmin');
+      authUserIds.push(entU3.id);
+      const { rows: ent3Rows } = await pg.query(
+        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, status_verificacao, verificacao_enviada_em)
+         values ($1,$2,'Entregador Tenta Autoaprovar','moto','em_avaliacao', now()) returning id`,
+        [tenantA, entU3.id]
+      );
+      const ent3Id = ent3Rows[0].id;
+      const sessEnt3 = await signInAs(entU3.email);
+
+      const { error: eAutoaprova } = await sessEnt3.from('entregadores')
+        .update({ status_verificacao: 'aprovado', aprovado_em: new Date().toISOString() })
+        .eq('id', ent3Id);
+      const { rows: check3 } = await pg.query(`select status_verificacao from entregadores where id = $1`, [ent3Id]);
+      r.check(
+        'entregador continua sem conseguir se autoaprovar via update direto (trigger bloqueia)',
+        !!eAutoaprova && check3[0].status_verificacao === 'em_avaliacao',
+        { eAutoaprova, check3: check3[0] }
+      );
+    }
+
     console.log('\n=== Reprovação automática por documento vencido (verificar_documentos_vencidos) ===');
     {
       const tenantDoc = crypto.randomUUID();
