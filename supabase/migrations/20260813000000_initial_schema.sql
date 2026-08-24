@@ -134,6 +134,20 @@ create table if not exists tenants (
   -- (cadastro-loja.html) nunca expõe esse campo, fica false por padrão.
   is_teste boolean not null default false,
 
+  -- painel-admin.html (Visão Geral, sessão de 23/08/2026) — status
+  -- administrativo manual, decidido só pelo admin da plataforma, não pela
+  -- própria loja (protegido por trigger, ver proteger_habilitado_tenant()
+  -- mais abaixo — a policy de UPDATE existente da loja não tem WITH CHECK
+  -- nenhum, sem essa proteção a loja se autoreabilitaria/autossuspenderia
+  -- direto via PostgREST). Independente de atividade/painel aberto — só
+  -- decide se a loja PODE operar, não se está operando de fato agora.
+  habilitado boolean not null default true,
+  -- heartbeat: painel-loja.html grava aqui a cada ~30s enquanto a aba
+  -- estiver aberta (ver mostrarApp() em painel-loja.html). Usada só pra
+  -- derivar "painel aberto agora" no painel-admin — não precisa da mesma
+  -- proteção de habilitado, é a própria loja quem tem que escrever.
+  painel_ativo_em timestamptz,
+
   criado_em timestamptz not null default now()
 );
 
@@ -864,6 +878,62 @@ left join avaliacoes_loja al
 group by t.id, t.nome, t.oferece_banheiro, t.oferece_abrigo_chuva;
 
 -- ------------------------------------------------------------
+-- painel-admin.html (Visão Geral, sessão de 23/08/2026) — 2 views de apoio.
+-- Diferente de selo_entrega_justa acima (que roda como dono da view DE
+-- PROPÓSITO, pública, sem escopar por tenant): aqui é o oposto, quero que
+-- a view RESPEITE a RLS de quem chama (`security_invoker = true`), pra
+-- ficar automaticamente restrita a admin através das policies "dev admin
+-- ve todos ..." já existentes em entregadores/tenants/pedidos/
+-- localizacoes_entregador — sem duplicar a checagem eh_desenvolvedor_admin()
+-- aqui dentro. Cálculo de contadores acontece em JS no client (mesmo
+-- estilo de painel-dev.html), estas views só entregam a linha crua por
+-- entregador/tenant.
+--
+-- Thresholds (3min entregador / 90s loja) generosos o bastante pra
+-- tolerar o throttling de aba em segundo plano já documentado neste
+-- projeto (ver CLAUDE.md), sem deixar passar muito tempo de fato
+-- desconectado: localizacoes_entregador grava a cada ~12s com turno
+-- ativo, painel_ativo_em é gravado a cada ~30s por painel-loja.html.
+-- ------------------------------------------------------------
+create or replace view entregadores_presenca
+with (security_invoker = true) as
+select
+  e.id,
+  e.tenant_id,
+  e.nome,
+  e.status,
+  e.status_verificacao,
+  e.is_teste,
+  le.ultima_posicao_em,
+  coalesce(le.ultima_posicao_em > now() - interval '3 minutes', false) as online
+from entregadores e
+left join lateral (
+  select max(l.registrado_em) as ultima_posicao_em
+  from localizacoes_entregador l
+  where l.entregador_id = e.id
+) le on true;
+
+create or replace view tenants_operacao
+with (security_invoker = true) as
+select
+  t.id,
+  t.nome,
+  t.is_teste,
+  t.habilitado,
+  t.painel_ativo_em,
+  coalesce(t.painel_ativo_em > now() - interval '90 seconds', false) as painel_aberto,
+  p.ultimo_pedido_em,
+  p.pedidos_24h
+from tenants t
+left join lateral (
+  select
+    max(criado_em) as ultimo_pedido_em,
+    count(*) filter (where criado_em > now() - interval '24 hours') as pedidos_24h
+  from pedidos
+  where tenant_id = t.id
+) p on true;
+
+-- ------------------------------------------------------------
 -- DESENVOLVEDORES_ADMIN: allowlist pra painel-dev.html (ferramenta interna,
 -- sessão de 19/08/2026) — não a hamburgueria, não usuarios_loja, uma conta
 -- de acesso separada só pra aprovar cadastros de teste sem SQL manual.
@@ -1134,6 +1204,32 @@ end;
 $$;
 
 -- ------------------------------------------------------------
+-- painel-admin.html (Visão Geral, sessão de 23/08/2026): único jeito de
+-- ligar/desligar tenants.habilitado — sem essa RPC a coluna fica
+-- inatingível por qualquer UI (a trigger proteger_habilitado_tenant()
+-- bloqueia update direto de quem não é admin, e nem o admin tem policy de
+-- UPDATE em tenants pra usar via PostgREST direto). Mesmo formato de
+-- aprovar_entregador_teste(): SECURITY DEFINER, checa
+-- eh_desenvolvedor_admin(), só toca essa 1 coluna.
+-- ------------------------------------------------------------
+create or replace function definir_tenant_habilitado(p_tenant_id uuid, p_habilitado boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not eh_desenvolvedor_admin() then
+    raise exception 'acesso negado' using errcode = '42501';
+  end if;
+
+  update tenants
+  set habilitado = p_habilitado
+  where id = p_tenant_id;
+end;
+$$;
+
+-- ------------------------------------------------------------
 -- Achado ultrareview (2ª rodada): a policy "entregador atualiza seu proprio
 -- cadastro" (FOR UPDATE, sem WITH CHECK) deixava o próprio entregador limpar
 -- bloqueado_ate via update direto — bypass total do bloqueio de descanso
@@ -1255,6 +1351,42 @@ $$;
 create trigger trg_impedir_autoaprovacao_entregador
   before update on entregadores
   for each row execute function impedir_autoaprovacao_entregador();
+
+-- ------------------------------------------------------------
+-- painel-admin.html (Visão Geral, sessão de 23/08/2026): mesma técnica de
+-- impedir_autoaprovacao_entregador() acima — a policy "loja atualiza seu
+-- proprio tenant" é um UPDATE USING sem WITH CHECK nenhum, então sem essa
+-- trigger a própria loja poderia se autoreabilitar/autossuspender via
+-- PostgREST assim que a coluna habilitado existisse. Bloqueia com exceção
+-- (não silencia, mesmo raciocínio de impedir_autoaprovacao_entregador():
+-- essa mudança nunca deveria acontecer por essa via). Mesmo escape hatch
+-- de sempre: eh_desenvolvedor_admin() (a RPC definir_tenant_habilitado()
+-- roda com esse auth.uid(), SECURITY DEFINER não muda isso) ou auth.uid()
+-- is null (automação de backend, hoje nenhuma toca essa coluna, mas mantém
+-- o padrão pra não repetir o achado do job de reprovação automática).
+-- ------------------------------------------------------------
+create or replace function proteger_habilitado_tenant()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if eh_desenvolvedor_admin() or auth.uid() is null then
+    return new;
+  end if;
+
+  if new.habilitado is distinct from old.habilitado then
+    raise exception 'só o admin da plataforma pode habilitar/desabilitar uma loja' using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger trg_proteger_habilitado_tenant
+  before update on tenants
+  for each row execute function proteger_habilitado_tenant();
 
 alter table pedidos enable row level security;
 alter table rotas_entrega enable row level security;
@@ -1454,6 +1586,11 @@ create policy "dev admin ve todos tenants" on tenants for select using (
 create policy "dev admin ve todos pedidos" on pedidos for select using (
   eh_desenvolvedor_admin());
 create policy "dev admin ve todas tentativas de despacho" on tentativas_despacho for select using (
+  eh_desenvolvedor_admin());
+-- painel-admin.html (Visão Geral, sessão de 23/08/2026): falta essa pra
+-- entregadores_presenca (mais abaixo) calcular online/offline — as outras
+-- 4 tabelas acima já cobriam painel-dev.html, essa é nova.
+create policy "dev admin ve todas localizacoes" on localizacoes_entregador for select using (
   eh_desenvolvedor_admin());
 
 -- ==============================================================

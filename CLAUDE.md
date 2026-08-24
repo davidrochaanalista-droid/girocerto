@@ -1557,20 +1557,61 @@ C:\Users\Usuário\Projetos\giro certo
       `supabase/migrations/20260813000000_initial_schema.sql` (só tem
       conteúdo da Visão Geral, sem o fix de despacho) e
       `tests/admin.test.js`/entrada `'admin'` em `tests/run-all.js`.
+27. **Visão Geral operacional em `painel-admin.html` — fecha o "PRÓXIMO PASSO
+    GRANDE" registrado no item 25** (24/08/2026).
+    - Schema (`tenants.habilitado`/`painel_ativo_em`, trigger
+      `proteger_habilitado_tenant()`, RPC `definir_tenant_habilitado()`,
+      policy nova de `localizacoes_entregador` pro admin, views
+      `entregadores_presenca`/`tenants_operacao` com `security_invoker=true`)
+      e a aba nova em `painel-admin.html` (contadores de entregador
+      aprovado/pendente, online/offline, disponível/ocupado/pausado; contadores
+      de loja ativa/inativa, painel aberto/fechado, recebendo pedido — tudo
+      filtrado por `is_teste=false`) já vinham de sessão anterior. Faltava só
+      o teste manual no navegador, que ficou pendente até o bug do item 26
+      ser corrigido primeiro (rodar a suíte antes de testar acusava as 3
+      falhas do despacho, não relacionadas).
+    - **Testado manualmente** (tenant/entregador `is_teste=true` descartáveis,
+      limpos ao final): aprovação de entregador pela UI funciona; view
+      `entregadores_presenca` deriva online/offline certo a partir de
+      `localizacoes_entregador`; heartbeat de `painel-loja.html` grava
+      `painel_ativo_em` a cada ~30s (confirmado periódico, não só no load);
+      `tenants_operacao.painel_aberto` deriva certo do heartbeat; RPC
+      `definir_tenant_habilitado()` funciona fim a fim (habilita/desabilita e
+      volta).
+    - **Bloqueio real durante o teste**: pra ver os contadores da Visão Geral
+      mudando de verdade na UI seria preciso um tenant `is_teste=false` (a
+      aba filtra teste por design) — criar esse dado foi bloqueado pelo
+      classificador de segurança do modo automático (parece, corretamente,
+      criação de dado de produção falso). Não contornado. Em vez disso, o
+      RPC/view foram validados via sessão isolada (script Node,
+      `signInWithPassword`, mesmo padrão já usado pra fugir da colisão de
+      `localStorage` abaixo) — cobre a lógica, mas não é 100% o clique real
+      do botão na tela com o contador mudando na hora.
+    - **Reproduzido ao vivo o "achado de metodologia" já documentado no item
+      25**: abrir `painel-admin.html` (admin) e `painel-loja.html` (dono) em
+      abas da MESMA origem sobrescreveu a sessão do admin no meio do teste
+      (`alternarHabilitado()` retornou "acesso negado" — não é bug, é a
+      colisão de `localStorage` entre papéis já conhecida). Confirmado via
+      client Node isolado, sem tocar no navegador.
+    - **Gap real vs. o plano original, não bloqueante**: o plano previa zerar
+      `painel_ativo_em` no logout (`sair()`) pra refletir "fechou" mais rápido
+      que os 90s de staleness — `painel-loja.html` **não tem nenhuma função
+      de logout hoje**, então isso nunca foi implementado. Sem isso, "painel
+      aberto" só volta a `false` depois de até 90s da aba fechar/perder rede
+      — comportamento aceitável (o próprio plano já tratava isso como
+      "melhor esforço"), mas registrado como pendência real, não silenciado.
+    - Commitado e dado push; deploy Vercel (`painel-admin.html` +
+      `painel-loja.html`) feito em seguida.
 
 ## Pendências reais no momento
-- [ ] **PRÓXIMO PASSO GRANDE, registrado a pedido explícito do usuário
-      (23/08/2026), não iniciar sem alinhar o escopo junto com ele
-      primeiro**: `painel-admin.html` vai crescer de "só aprovação de
-      entregador" pra um painel operacional completo pra David/equipe, com
-      o máximo de visibilidade possível sobre a operação. Ainda sem escopo
-      fechado — exemplos que o usuário já citou como candidatos (não é
-      lista final): visão geral de entregas em andamento, entregadores
-      ativos/pendentes por loja, métricas de pedidos, logs de erro. Próxima
-      sessão que tocar nisso: abrir definindo junto com o usuário o que
-      entra antes de codar qualquer coisa (mesmo processo já estabelecido —
-      plano curto → aprovação → implementação → teste → commit só se
-      pedido).
+- [x] ~~PRÓXIMO PASSO GRANDE — painel operacional completo em
+      `painel-admin.html`~~ — fechado no item 27 (v1: entregadores
+      aprovado/pendente/online/offline/disponível/ocupado/pausado, lojas
+      ativa/inativa/painel aberto/recebendo pedido). Fora de escopo
+      registrado (não implementado de propósito): enforcement de
+      `habilitado=false` em qualquer lugar (dispatch engine, painel-loja),
+      "recebendo pedido" comparado com histórico em vez de só 24h, e lista
+      detalhada de entregadores (só a de lojas entrou na v1).
 - [x] ~~`db/schema.sql`/migration do item 22 não commitados~~ — commitado
       (`c6e162d`) depois de confirmar que o repositório é PÚBLICO (checado
       via API do GitHub sem credencial nenhuma: `"private": false`).

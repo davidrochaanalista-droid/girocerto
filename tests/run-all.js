@@ -3,7 +3,7 @@
 // se não houver concorrência entre suítes disputando o mesmo banco).
 // despacho_motor precisa de `npm install` em dispatch-engine/ pra funcionar
 // (sobe o serviço real como subprocesso) — ver tests/README.md.
-const areas = ['onboarding', 'pedido', 'despacho', 'financeiro', 'seguranca', 'reputacao', 'lgpd', 'integracoes', 'despacho_motor'];
+const areas = ['onboarding', 'pedido', 'despacho', 'financeiro', 'seguranca', 'reputacao', 'lgpd', 'integracoes', 'admin', 'despacho_motor'];
 
 (async () => {
   const results = [];

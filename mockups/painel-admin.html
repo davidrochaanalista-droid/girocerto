@@ -44,9 +44,27 @@
 
   .aviso-interno{background:var(--amber-soft);color:var(--amber-ink);font-size:12.5px;padding:8px 28px;text-align:center;}
 
-  .main{padding:30px 28px;max-width:1000px;margin:0 auto;}
+  .layout{display:flex;min-height:calc(100vh - 90px);}
+  .sidebar{width:190px;background:var(--bg);border-right:1px solid var(--border);padding:20px 14px;flex-shrink:0;}
+  .nav-item{padding:11px 16px;border-radius:9px;font-size:14px;color:var(--gray);margin-bottom:6px;cursor:pointer;}
+  .nav-item.active{background:#EDEBFC;color:var(--slate-2);font-weight:700;}
+
+  .main{flex:1;padding:30px 28px;max-width:1100px;}
   .main h1{font-size:22px;margin:0 0 4px;}
   .main .subtitle{color:var(--gray);font-size:13.5px;margin:0 0 22px;}
+  .main h2.secao{font-size:16px;margin:28px 0 12px;}
+  .main h2.secao:first-of-type{margin-top:0;}
+
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:8px;}
+  .stat-card{background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px 18px;}
+  .stat-card .label{font-size:12px;color:var(--gray);margin-bottom:6px;}
+  .stat-card .value{font-size:22px;font-weight:700;font-family:'Sora',sans-serif;}
+  .stat-card .value.warn{color:var(--amber-ink);}
+
+  .pill{display:inline-block;padding:3px 10px;border-radius:11px;font-size:11px;font-weight:700;white-space:nowrap;}
+  .pill.ok{background:var(--green-soft);color:var(--green-ink);}
+  .pill.warn{background:var(--amber-soft);color:var(--amber-ink);}
+  .pill.off{background:#F1F1F5;color:var(--gray);}
 
   table{width:100%;border-collapse:collapse;font-size:13.5px;}
   thead th{text-align:left;color:var(--gray);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em;padding:8px 10px;border-bottom:1.5px solid var(--border);}
@@ -101,10 +119,59 @@
   </div>
   <div class="aviso-interno">⚠ Painel administrativo da plataforma — acesso restrito à equipe GiroCerto, nunca à loja.</div>
 
-  <div class="main">
-    <h1>Aprovação de entregadores</h1>
-    <p class="subtitle">Cadastros pendentes (status "em avaliação") de todas as lojas.</p>
-    <div id="aprovacaoBox"><div class="empty">Carregando…</div></div>
+  <div class="layout">
+    <div class="sidebar">
+      <div class="nav-item active" data-view="visao-geral" onclick="trocarView('visao-geral')">Visão Geral</div>
+      <div class="nav-item" data-view="aprovacao" onclick="trocarView('aprovacao')">Aprovação</div>
+    </div>
+
+    <!-- ---------- VIEW: VISÃO GERAL ---------- -->
+    <div class="main mainview" id="mv-visao-geral">
+      <h1>Visão Geral</h1>
+      <p class="subtitle">Só lojas/entregadores reais (is_teste=false) entram nas contagens abaixo.</p>
+
+      <h2 class="secao">Entregadores</h2>
+      <div class="stats">
+        <div class="stat-card">
+          <div class="label">Aprovados vs Pendentes</div>
+          <div class="value" id="vgEntAprovacao">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Online vs Offline (dos aprovados)</div>
+          <div class="value" id="vgEntOnline">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Disponível / Ocupado / Pausado (dos online)</div>
+          <div class="value" id="vgEntStatus">—</div>
+        </div>
+      </div>
+
+      <h2 class="secao">Lojas</h2>
+      <div class="stats">
+        <div class="stat-card">
+          <div class="label">Ativas vs Inativas</div>
+          <div class="value" id="vgLojaHabilitada">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Painel aberto agora vs fechado</div>
+          <div class="value" id="vgLojaPainel">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Recebendo pedido vs sem atividade (24h)</div>
+          <div class="value" id="vgLojaPedidos">—</div>
+        </div>
+      </div>
+
+      <h2 class="secao">Lojas que precisam de atenção</h2>
+      <div id="vgLojasAtencaoBox"><div class="empty">Carregando…</div></div>
+    </div>
+
+    <!-- ---------- VIEW: APROVAÇÃO ---------- -->
+    <div class="main mainview" id="mv-aprovacao" style="display:none;">
+      <h1>Aprovação de entregadores</h1>
+      <p class="subtitle">Cadastros pendentes (status "em avaliação") de todas as lojas.</p>
+      <div id="aprovacaoBox"><div class="empty">Carregando…</div></div>
+    </div>
   </div>
 </div>
 
@@ -162,6 +229,17 @@ function formatarDataHora(iso){
   return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
 }
 
+function haQuantoTempo(iso){
+  if(!iso) return null;
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diffMs / 60000);
+  if(min < 1) return 'agora mesmo';
+  if(min < 60) return `há ${min} min`;
+  const h = Math.floor(min / 60);
+  if(h < 24) return `há ${h}h${min % 60 ? ' ' + (min % 60) + 'min' : ''}`;
+  return `há ${Math.floor(h / 24)}d`;
+}
+
 async function login(){
   const email = document.getElementById('loginEmail').value;
   const password = document.getElementById('loginSenha').value;
@@ -185,7 +263,7 @@ async function login(){
 
   document.getElementById('loginGate').style.display = 'none';
   document.getElementById('app').style.display = 'block';
-  carregarAprovacao();
+  trocarView('visao-geral');
 }
 
 async function sair(){
@@ -194,6 +272,85 @@ async function sair(){
   document.getElementById('loginGate').style.display = 'flex';
   document.getElementById('loginEmail').value = '';
   document.getElementById('loginSenha').value = '';
+}
+
+function trocarView(view){
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.view === view));
+  document.querySelectorAll('.mainview').forEach(el => el.style.display = 'none');
+  document.getElementById('mv-' + view).style.display = 'block';
+  if(view === 'visao-geral') carregarVisaoGeral();
+  if(view === 'aprovacao') carregarAprovacao();
+}
+
+// ------------------------------------------------------------
+// VISÃO GERAL (sessão de 23/08/2026) — lê das views entregadores_presenca/
+// tenants_operacao (ver db/schema.sql), que já entregam online/painel_aberto/
+// pedidos_24h calculados; aqui só filtra is_teste e conta em JS, mesmo
+// estilo simples de carregarMotor()/carregarEntregadores() do painel-dev.html.
+// Sem Realtime/polling — recarrega ao entrar na view, ferramenta interna de
+// baixo tráfego, não painel operacional ao vivo tipo painel-loja.html.
+// ------------------------------------------------------------
+async function carregarVisaoGeral(){
+  const [entRes, lojaRes] = await Promise.all([
+    supabaseClient.from('entregadores_presenca').select('*').eq('is_teste', false),
+    supabaseClient.from('tenants_operacao').select('*').eq('is_teste', false),
+  ]);
+
+  if(entRes.error){ console.error('Não deu pra carregar entregadores_presenca:', entRes.error.message); }
+  if(lojaRes.error){ console.error('Não deu pra carregar tenants_operacao:', lojaRes.error.message); }
+
+  const entregadores = entRes.data || [];
+  const lojas = lojaRes.data || [];
+
+  const aprovados = entregadores.filter(e => e.status_verificacao === 'aprovado');
+  const pendentes = entregadores.filter(e => e.status_verificacao === 'em_avaliacao');
+  const online = aprovados.filter(e => e.online);
+  const offline = aprovados.filter(e => !e.online);
+  const disponivel = online.filter(e => e.status === 'disponivel');
+  const ocupado = online.filter(e => ['a_caminho_da_loja', 'em_rota', 'na_loja'].includes(e.status));
+  const pausado = online.filter(e => e.status === 'pausado');
+
+  document.getElementById('vgEntAprovacao').textContent = `${aprovados.length} vs ${pendentes.length}`;
+  document.getElementById('vgEntOnline').textContent = `${online.length} vs ${offline.length}`;
+  document.getElementById('vgEntStatus').textContent = `${disponivel.length} / ${ocupado.length} / ${pausado.length}`;
+
+  const ativas = lojas.filter(t => t.habilitado);
+  const inativas = lojas.filter(t => !t.habilitado);
+  const painelAberto = lojas.filter(t => t.painel_aberto);
+  const painelFechado = lojas.filter(t => !t.painel_aberto);
+  const comPedido = lojas.filter(t => (t.pedidos_24h || 0) > 0);
+  const semPedido = lojas.filter(t => (t.pedidos_24h || 0) === 0);
+
+  document.getElementById('vgLojaHabilitada').textContent = `${ativas.length} vs ${inativas.length}`;
+  document.getElementById('vgLojaPainel').textContent = `${painelAberto.length} vs ${painelFechado.length}`;
+  document.getElementById('vgLojaPedidos').textContent = `${comPedido.length} vs ${semPedido.length}`;
+
+  renderizarLojasAtencao(lojas.filter(t => !t.habilitado || !t.painel_aberto || (t.pedidos_24h || 0) === 0));
+}
+
+function renderizarLojasAtencao(lojas){
+  const box = document.getElementById('vgLojasAtencaoBox');
+  if(lojas.length === 0){ box.innerHTML = '<div class="empty">Nenhuma loja com sinal de atenção agora.</div>'; return; }
+
+  let html = '<table><thead><tr><th>Loja</th><th>Status</th><th>Painel</th><th>Pedidos</th><th></th></tr></thead><tbody>';
+  for(const t of lojas){
+    const ultimoPedido = haQuantoTempo(t.ultimo_pedido_em);
+    html += `<tr>
+      <td>${escapeHtml(t.nome)}</td>
+      <td><span class="pill ${t.habilitado ? 'ok' : 'warn'}">${t.habilitado ? 'Ativa' : 'Inativa'}</span></td>
+      <td><span class="pill ${t.painel_aberto ? 'ok' : 'off'}">${t.painel_aberto ? 'Aberto' : 'Fechado'}</span></td>
+      <td>${ultimoPedido ? 'Último pedido ' + escapeHtml(ultimoPedido) : 'Nenhum pedido registrado'}</td>
+      <td><button class="action-btn ${t.habilitado ? 'reprovar' : ''}" onclick="alternarHabilitado('${t.id}', ${!t.habilitado})">${t.habilitado ? 'Desabilitar' : 'Habilitar'}</button></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  box.innerHTML = html;
+}
+
+async function alternarHabilitado(tenantId, novoValor){
+  const { error } = await supabaseClient.rpc('definir_tenant_habilitado', { p_tenant_id: tenantId, p_habilitado: novoValor });
+  if(error){ console.error('Não deu pra mudar habilitado:', error.message); alert('Não deu pra mudar: ' + error.message); return; }
+  carregarVisaoGeral();
 }
 
 async function carregarAprovacao(){
@@ -305,7 +462,7 @@ supabaseClient.auth.getSession().then(async ({ data: { session } }) => {
   if(!souAdmin){ await supabaseClient.auth.signOut(); return; }
   document.getElementById('loginGate').style.display = 'none';
   document.getElementById('app').style.display = 'block';
-  carregarAprovacao();
+  trocarView('visao-geral');
 });
 </script>
 </body>

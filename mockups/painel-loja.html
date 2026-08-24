@@ -530,6 +530,27 @@ async function iniciarApp(){
   carregarPedidos();
   carregarDados();
   iniciarAtualizacoesAoVivo();
+  iniciarHeartbeatPainel();
+}
+
+// ------------------------------------------------------------
+// Heartbeat pro painel-admin.html (Visão Geral, sessão de 23/08/2026)
+// saber se essa loja está com o painel aberto agora. Grava
+// tenants.painel_ativo_em a cada 30s enquanto a aba estiver aberta — sem
+// isso não tem como o admin saber, não existia nenhum sinal de presença
+// pra loja até aqui. Não precisa de proteção de RLS extra: é a própria
+// loja quem tem que escrever nessa coluna, já cai na policy de UPDATE
+// existente ("loja atualiza seu proprio tenant").
+// ------------------------------------------------------------
+const HEARTBEAT_PAINEL_MS = 30000;
+
+function iniciarHeartbeatPainel(){
+  const enviarHeartbeat = () => {
+    supabaseClient.from('tenants').update({ painel_ativo_em: new Date().toISOString() }).eq('id', tenantId)
+      .then(({ error }) => { if(error) console.error('Não deu pra enviar o heartbeat do painel:', error.message); });
+  };
+  enviarHeartbeat();
+  setInterval(enviarHeartbeat, HEARTBEAT_PAINEL_MS);
 }
 
 function copiarLinkCadastroEntregador(){
