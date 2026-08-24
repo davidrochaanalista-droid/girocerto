@@ -2121,17 +2121,38 @@ create trigger trg_avaliar_alertas_seguranca_localizacao
 -- ver dispatch-engine/, hospedado no Railway) — essas duas triggers são só
 -- o "campainha": avisam o backend via LISTEN/NOTIFY (testado e confirmado
 -- confiável contra a conexão direta do Supabase hospedado, não o pooler
--- transacional — ver CLAUDE.md) que algo mudou e precisa de ação. Nenhuma
--- das duas é SECURITY DEFINER porque pg_notify() não exige privilégio
--- elevado nenhum — dispara com o privilégio de quem já fez o UPDATE.
+-- transacional — ver CLAUDE.md) que algo mudou e precisa de ação.
+--
+-- ACHADO REAL (24/08/2026): a suíte de testes roda contra esse mesmo banco
+-- hospedado (não existe banco de teste separado) — sem esse filtro, o
+-- motor de PRODUÇÃO real (Railway) recebia o NOTIFY de pedido de TESTE
+-- junto com o dispatch-engine que o próprio teste sobe como child process,
+-- e os dois competiam pelo mesmo pedido (2 ofertas simultâneas, failover
+-- incerto, checagem de duplicata capturando estado já mexido pela outra
+-- sessão). Por isso agora SÃO SECURITY DEFINER: precisam ler tenants (e,
+-- pra resposta de despacho, rotas_entrega) pra decidir se é tenant de
+-- teste, com garantia de leitura independente da RLS de quem fez o UPDATE
+-- (ex: o próprio entregador respondendo a tentativa, cuja RLS não
+-- necessariamente cobre a leitura de tenants de terceiros). Pedido/tentativa
+-- de tenant de teste nunca gera pg_notify — o motor de produção nunca vê
+-- pedido de teste. Os TESTES, que dependiam do NOTIFY real pra acordar o
+-- dispatch-engine que eles mesmos spawnam, passaram a chamar a função de
+-- despacho diretamente (ver dispatch-engine/index.js, processarPedidoPronto
+-- exportado, e tests/despacho_motor.test.js).
 -- ==============================================================
 
 create or replace function notificar_pedido_pronto()
 returns trigger
 language plpgsql
+security definer
+set search_path = public, pg_temp
 as $$
 begin
-  perform pg_notify('pedido_pronto', new.id::text);
+  if not exists (
+    select 1 from tenants where id = new.tenant_id and is_teste = true
+  ) then
+    perform pg_notify('pedido_pronto', new.id::text);
+  end if;
   return new;
 end;
 $$;
@@ -2145,10 +2166,18 @@ create trigger trg_notificar_pedido_pronto
 create or replace function notificar_resposta_despacho()
 returns trigger
 language plpgsql
+security definer
+set search_path = public, pg_temp
 as $$
 begin
   if new.resultado is not null and new.resultado is distinct from old.resultado then
-    perform pg_notify('tentativa_despacho_respondida', new.id::text);
+    if not exists (
+      select 1 from rotas_entrega r
+      join tenants t on t.id = r.tenant_id
+      where r.id = new.rota_id and t.is_teste = true
+    ) then
+      perform pg_notify('tentativa_despacho_respondida', new.id::text);
+    end if;
   end if;
   return new;
 end;

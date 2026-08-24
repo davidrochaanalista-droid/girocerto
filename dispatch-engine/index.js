@@ -444,10 +444,44 @@ async function main() {
 
   const app = express();
   app.get('/health', (req, res) => res.json({ status: 'ok', tentadosPorRota: tentadosPorRota.size, timersAtivos: timersPorRota.size }));
+
+  // achado 24/08/2026: notificar_pedido_pronto()/notificar_resposta_despacho()
+  // agora NÃO disparam pg_notify pra pedido/tentativa de tenant de teste (pra
+  // não fazer o motor de PRODUÇÃO reagir a dado de teste — ver CLAUDE.md). Sem
+  // NOTIFY, o próprio dispatch-engine que os testes sobem como subprocesso
+  // (despacho_motor.test.js) também não seria avisado — esses 2 endpoints dão
+  // aos testes um jeito de chamar a MESMA função que o listener chamaria, sem
+  // depender de pg_notify (que vazaria pra produção também, já que NOTIFY é
+  // broadcast pra qualquer sessão ouvindo o canal, não só quem disparou). Só
+  // existem com HABILITAR_ENDPOINTS_TESTE=true — nunca setado em produção.
+  if (process.env.HABILITAR_ENDPOINTS_TESTE === 'true') {
+    app.use(express.json());
+    app.post('/interno/despachar', async (req, res) => {
+      try {
+        await tentarDespachar(req.body.pedidoId);
+        res.json({ ok: true });
+      } catch (e) {
+        res.status(500).json({ ok: false, erro: e.message });
+      }
+    });
+    app.post('/interno/resposta-despacho', async (req, res) => {
+      try {
+        await tratarRespostaDespacho(req.body.tentativaId);
+        res.json({ ok: true });
+      } catch (e) {
+        res.status(500).json({ ok: false, erro: e.message });
+      }
+    });
+  }
+
   app.listen(PORT, () => console.log(`[http] healthcheck em http://localhost:${PORT}/health`));
 }
 
-main().catch((e) => {
-  console.error('[fatal]', e);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((e) => {
+    console.error('[fatal]', e);
+    process.exit(1);
+  });
+}
+
+module.exports = { tentarDespachar, tratarRespostaDespacho };

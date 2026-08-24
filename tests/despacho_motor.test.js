@@ -41,12 +41,40 @@ function subirDispatchEngine() {
       SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
       DATABASE_URL: env.DATABASE_URL,
       PORT: String(PORT),
+      HABILITAR_ENDPOINTS_TESTE: 'true',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout.on('data', (d) => process.stdout.write(`[dispatch-engine] ${d}`));
   child.stderr.on('data', (d) => process.stderr.write(`[dispatch-engine:err] ${d}`));
   return child;
+}
+
+// achado 24/08/2026: o tenant deste teste agora é is_teste=true, e a trigger
+// notificar_pedido_pronto()/notificar_resposta_despacho() não dispara
+// pg_notify pra tenant de teste (pra não fazer o motor de PRODUÇÃO no Railway
+// reagir a pedido de teste, disputando a mesma tentativa_despacho com o
+// dispatch-engine que ESTE teste sobe como subprocesso — era exatamente a
+// causa das falhas achadas em 24/08/2026). Sem o NOTIFY real, o subprocesso
+// não seria avisado sozinho — essas 2 funções chamam os endpoints internos
+// (só existem com HABILITAR_ENDPOINTS_TESTE=true) que chamam a MESMA função
+// que o listener chamaria.
+async function despacharDireto(pedidoId) {
+  const res = await fetch(`http://localhost:${PORT}/interno/despachar`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pedidoId }),
+  });
+  if (!res.ok) throw new Error(`despacharDireto(${pedidoId}): HTTP ${res.status}`);
+}
+
+async function responderDespachoDireto(tentativaId) {
+  const res = await fetch(`http://localhost:${PORT}/interno/resposta-despacho`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tentativaId }),
+  });
+  if (!res.ok) throw new Error(`responderDespachoDireto(${tentativaId}): HTTP ${res.status}`);
 }
 
 async function run() {
@@ -67,7 +95,7 @@ async function run() {
     console.log('\n=== SETUP: loja com localização + 2 entregadores dentro do raio + 1 fora ===');
     const tenantId = crypto.randomUUID();
     tenantIds.push(tenantId);
-    await pg.query(`insert into tenants (id, nome, lat, lng) values ($1,'Loja Motor Real',-23.5613,-46.6565)`, [tenantId]);
+    await pg.query(`insert into tenants (id, nome, lat, lng, is_teste) values ($1,'Loja Motor Real',-23.5613,-46.6565,true)`, [tenantId]);
 
     const u1 = await createAuthUser('motor.perto1');
     const u2 = await createAuthUser('motor.perto2');
@@ -104,7 +132,8 @@ async function run() {
     const { rows: pRows } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Motor Real, 1','em_preparo',40) returning id`, [tenantId]);
     const pedidoId = pRows[0].id;
     await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedidoId]);
-    await sleep(2500);
+    await despacharDireto(pedidoId);
+    await sleep(1500); // dá tempo do Realtime (websocket) e do push fire-and-forget chegarem
 
     const { rows: tent1 } = await pg.query(`select * from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedidoId]);
     r.check('oferta real criada pro entregador mais perto (não o de fora do raio)', tent1.length === 1 && tent1[0].entregador_id === entregador1Id, tent1);
@@ -129,7 +158,8 @@ async function run() {
 
     const { error: eAceite } = await sess1.from('tentativas_despacho').update({ resultado: 'aceito', respondido_em: new Date().toISOString() }).eq('id', tent1[0].id);
     r.check('aceite via RLS (mesma escrita que a UI faz) é aceito', !eAceite, eAceite);
-    await sleep(1500);
+    await responderDespachoDireto(tent1[0].id);
+    await sleep(500);
 
     const { rows: pedidoRota } = await pg.query(`select rota_id from pedidos where id = $1`, [pedidoId]);
     const rotaId = pedidoRota[0].rota_id;
@@ -154,10 +184,11 @@ async function run() {
     const pedido2Id = pRows2[0].id;
     await pg.query(`update entregadores set status='disponivel' where tenant_id = $1`, [tenantId]);
     await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedido2Id]);
-    await sleep(2000);
+    await despacharDireto(pedido2Id);
     const { rows: tent2a } = await pg.query(`select * from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedido2Id]);
     await sess1.from('tentativas_despacho').update({ resultado: 'recusado', respondido_em: new Date().toISOString() }).eq('id', tent2a[0].id);
-    await sleep(2000);
+    await responderDespachoDireto(tent2a[0].id);
+    await sleep(500);
     const { rows: tent2b } = await pg.query(`select * from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1) order by notificado_em`, [pedido2Id]);
     r.check('recusa real aciona failover pro outro candidato dentro do raio', tent2b.length === 2 && tent2b[1].entregador_id === entregador2Id, tent2b);
 
@@ -169,7 +200,7 @@ async function run() {
     const { rows: pRows3despacho } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Motor Real, 3-Dup','em_preparo',25) returning id`, [tenantId]);
     const pedido3despachoId = pRows3despacho[0].id;
     await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedido3despachoId]);
-    await sleep(2000);
+    await despacharDireto(pedido3despachoId);
     const { rows: tent3despacho } = await pg.query(`select * from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedido3despachoId]);
     r.check(
       'ACHADO CORRIGIDO: nova oferta NÃO vai pro entregador que já tem tentativa pendente em outra rota (só o entregador livre)',
@@ -199,7 +230,7 @@ async function run() {
     const { rows: pRowsPausa } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Motor Real, Pausa','em_preparo',18) returning id`, [tenantId]);
     const pedidoPausaId = pRowsPausa[0].id;
     await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedidoPausaId]);
-    await sleep(2000);
+    await despacharDireto(pedidoPausaId);
 
     const { rows: tentPausa } = await pg.query(`select * from tentativas_despacho where entregador_id = $1 and rota_id = (select rota_id from pedidos where id = $2)`, [entregador1Id, pedidoPausaId]);
     r.check('motor NÃO oferece tentativa_despacho pro entregador pausado (mesmo com pedido pronto no tenant)', tentPausa.length === 0, tentPausa);
