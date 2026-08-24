@@ -1546,9 +1546,10 @@ C:\Users\Usuário\Projetos\giro certo
       18/18), rodada com o Railway Online o tempo inteiro — não precisou
       pausar produção pra essa validação.
     - **Commitado só esse fix** (`db/schema.sql` só os 2 hunks das triggers,
-      `dispatch-engine/index.js`, `tests/despacho_motor.test.js`) —
-      **sem push** (decisão separada, deploy do `dispatch-engine` real fica
-      pra quando o usuário autorizar). As mudanças pendentes da Visão Geral
+      `dispatch-engine/index.js`, `tests/despacho_motor.test.js`) — na hora,
+      **sem push** ainda (deploy do `dispatch-engine` real ficou pra quando
+      o usuário autorizasse explicitamente). Push e deploy Railway feitos
+      logo em seguida, ver item 28. As mudanças pendentes da Visão Geral
       (mesmo arquivo `db/schema.sql`, hunks distintos: colunas
       `habilitado`/`painel_ativo_em`, views `entregadores_presenca`/
       `tenants_operacao`, RPC `definir_tenant_habilitado()`, trigger
@@ -1603,7 +1604,49 @@ C:\Users\Usuário\Projetos\giro certo
     - Commitado e dado push; deploy Vercel (`painel-admin.html` +
       `painel-loja.html`) feito em seguida.
 
+28. **Fechamento da sessão de 24/08/2026** — push + deploy Railway do fix do
+    item 26; unificação visual investigada, mas adiada por decisão do
+    usuário.
+    - O commit do item 26 (`20f5def`) tinha ficado só local. Dado `git push`
+      pra `origin/master` — e só aí ficou claro que **o Railway não tem
+      auto-deploy conectado ao GitHub aqui**: os deployments anteriores
+      (`railway status --json`) mostram `cliCaller: "claude_code"`,
+      `reason: "deploy"`, ou seja, sempre via CLI manual. Rodado
+      `railway up -c` dentro de `dispatch-engine/` — deploy novo confirmado
+      Online (`0c9d4f27`), container reiniciou limpo, listener reconectado
+      (`escutando pedido_pronto e tentativa_despacho_respondida`),
+      healthcheck ativo. **Fato de infra permanente, registrar**: depois de
+      qualquer push que toque `dispatch-engine/`, sempre rodar
+      `railway up -c` manualmente — o push sozinho não bota nada em
+      produção.
+    - Em seguida, retomada e fechada a Visão Geral (item 27: teste manual,
+      commit `f44e44a`, push, deploy Vercel — verificado ao vivo depois via
+      `curl` em `girocerto-mockups.vercel.app/painel-admin.html`, HTTP 200
+      servindo a Visão Geral).
+    - **Unificação visual das 5 telas** (motivada por um arquivo de
+      referência solto `FeiraApp.jsx` com a nova identidade: paleta
+      ink/paper/marigold/sage/leaf + Fraunces/Inter/Space Mono, logo "loop
+      que vira check") foi investigada nesta sessão: inventário completo
+      das 5 telas confirmou 2 paletas conflitantes coexistindo hoje (teal
+      em loja/entregador, roxo/slate em admin, nenhuma bate com a marca
+      nova) e que a mudança é estrutural, não só de cor (logo sai de dentro
+      da topbar colorida pra uma faixa clara acima dela). A sessão tinha
+      parado no meio de uma pergunta não respondida sobre cor de
+      alerta/erro (hoje vermelho `#B84343`, a paleta nova não tem
+      vermelho). **Decisão explícita do usuário: adiar pra próxima sessão**
+      — ele quer pensar com calma nessa cor antes de retomar. Nada foi
+      commitado nem aplicado nesta frente; ver pendência abaixo.
+
 ## Pendências reais no momento
+- [ ] **Unificação visual das 5 telas HTML na identidade oficial da marca**
+      (ver item 28) — investigação completa, nada aplicado. Ao retomar:
+      primeiro resolver a pergunta em aberto sobre cor de alerta/erro (não
+      existe vermelho na paleta nova, precisa decidir se vira exceção
+      explícita ou outra abordagem), depois perguntar ao usuário a ordem de
+      prioridade das 5 telas antes de pedir um plano tela-por-tela completo.
+      Se prosseguir, cuidado pra não deixar `capacitor-www/index.html`
+      (cópia divergente de `app-entregador.html`, 37 linhas de diferença,
+      não rastreada no git) desatualizada sem perceber.
 - [x] ~~PRÓXIMO PASSO GRANDE — painel operacional completo em
       `painel-admin.html`~~ — fechado no item 27 (v1: entregadores
       aprovado/pendente/online/offline/disponível/ocupado/pausado, lojas
