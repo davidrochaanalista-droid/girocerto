@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "534608136",
+    "project_id": "girocerto-dd600",
+    "storage_bucket": "girocerto-dd600.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:534608136:android:f719fc45fa8a221f5354bd",
+        "android_client_info": {
+          "package_name": "dev.girocerto.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA0NDIjx2iIcloEnPJqOCx7CoXIHuHY9A0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

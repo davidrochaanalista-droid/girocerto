@@ -1,0 +1,5 @@
+{
+  "appId": "dev.girocerto.app",
+  "appName": "GiroCerto",
+  "webDir": "../capacitor-www"
+}

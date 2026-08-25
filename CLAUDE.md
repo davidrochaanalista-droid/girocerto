@@ -1637,6 +1637,71 @@ C:\Users\Usuário\Projetos\giro certo
       — ele quer pensar com calma nessa cor antes de retomar. Nada foi
       commitado nem aplicado nesta frente; ver pendência abaixo.
 
+29. **Push nativo FCM pro entregador — plano completo investigado, item 2
+    aplicado, teste local em andamento** (24/08/2026, mesma sessão).
+    - Sincronização: `capacitor-www/index.html` estava desatualizada (cópia
+      manual de antes dos commits do dia) — atualizada com o conteúdo atual
+      de `app-entregador.html` e `npx cap sync` rodado. Confirmado que o
+      script `npm run sync-capacitor` (dentro de `dispatch-engine/`, já
+      existia desde 22/08) faz exatamente isso numa linha só — validado
+      rodando de verdade. Usar esse script daqui pra frente em vez de
+      copiar manual.
+    - Investigação completa do que já existia (bem mais adiantado do que a
+      pendência antiga registrava — checado por leitura direta de código,
+      não só descrição): projeto Firebase já existe (`girocerto-dd600`,
+      `google-services.json` real já commitado, plugin Gradle
+      `com.google.gms.google-services` já aplicado condicionalmente); canal
+      nativo `girocerto_buzina_entregador` já implementado em
+      `MainActivity.java` (só buzina, som vinculado a
+      `res/raw/buzina_bi_bi.mp3`, que já existe fisicamente — comentário no
+      arquivo dizendo "ainda não adicionado" ficou desatualizado); backend
+      (`dispatch-engine/index.js` e a cópia em
+      `feira-dispatch/src/notifications.js`) já chama `firebase-admin` de
+      VERDADE (`enviarPushBuzinaEntregador()`, ligada no fluxo real de
+      despacho, `dispatch-engine/index.js:238`) — não é mock, só falha
+      silenciosa por falta de credencial em produção. Esclarecido pro
+      usuário: "canal `push_voz`" citado por ele é o canal do CONSUMIDOR
+      (buzina+voz via `ttsGenerator.js`), não o do entregador — o
+      entregador usa uma função separada, fire-and-forget, fora da fila
+      `notificacao`, nunca passa pelo pipeline de mistura do consumidor.
+    - **3 gaps reais identificados** pra funcionar de ponta a ponta: (1)
+      `FIREBASE_SERVICE_ACCOUNT_JSON` existe no `.env` local (tanto na raiz
+      quanto em `dispatch-engine/.env`, confirmado formato real) mas
+      **não está setado nas variáveis de ambiente do Railway** (confirmado
+      via `railway variables --kv` no serviço `dispatch-engine`); (2)
+      `AndroidManifest.xml` não declarava
+      `android.permission.POST_NOTIFICATIONS` — obrigatório porque
+      `targetSdkVersion=36` (Android 13+), sem ela o
+      `PushNotifications.requestPermissions()` (já chamado em
+      `registrarPushEntregador()`) não funciona e nenhuma notificação
+      aparece; (3) nunca testado de ponta a ponta num dispositivo real.
+    - **Item 2 aplicado nesta sessão**: `<uses-permission
+      android:name="android.permission.POST_NOTIFICATIONS" />` adicionada
+      em `dispatch-engine/android/app/src/main/AndroidManifest.xml`.
+    - **Decisão do usuário**: testar localmente (emulador com imagem
+      "Google Play", **não** "Google APIs" — só a primeira tem GMS de
+      verdade) usando a credencial já presente no `.env` local, sem mexer
+      no Railway ainda. Railway (gap 1) só depois de confirmar que o push
+      chega de verdade no emulador.
+    - **Achado importante durante o guia (efeito colateral direto do item
+      26 desta mesma sessão)**: como a trigger `notificar_pedido_pronto()`
+      agora NÃO dispara `pg_notify` pra pedido de tenant `is_teste=true`
+      (de propósito, ver item 26), um pedido de teste virando `'pronto'`
+      não acorda mais NENHUM `dispatch-engine` sozinho — nem local nem
+      produção. Pra testar o push manualmente é preciso chamar o endpoint
+      interno direto: `POST http://localhost:3000/interno/despachar` com
+      `{"pedidoId": "..."}` (só existe com
+      `HABILITAR_ENDPOINTS_TESTE=true` no `.env`, mesmo endpoint que
+      `tests/despacho_motor.test.js` já usa via `despacharDireto()`).
+    - Script descartável criado pra facilitar isso:
+      `dispatch-engine/__pedido_teste.js` — cria 1 pedido de teste
+      `'pronto'` num tenant informado e já imprime o `curl` pronto do
+      endpoint acima. **Apagar depois de usar, não é parte do produto.**
+    - **Status no fim desta sessão**: usuário vai fazer manualmente a
+      criação do AVD, subida do backend local e instalação do app (passos
+      1-3 do guia), e retomar a conversa no passo 4 (registrar entregador
+      de teste) — teste de ponta a ponta ainda não confirmado.
+
 30. **Poll de fallback em `iniciarEscutaDeOfertas()` + repique real do push
     do entregador** (25/08/2026). Pedido explícito do usuário: cobrir oferta
     perdida quando o Realtime cai, e fazer `segundos_repique_notificacao`
@@ -1709,6 +1774,66 @@ C:\Users\Usuário\Projetos\giro certo
       continuam intactos e fora deste commit — sem relação com este pedido,
       e aquele item já registra que o teste de ponta a ponta não fechou.
 
+31. **Wrapper Capacitor: diagnóstico do estado real + resync/commit do que já
+    existia + Railway configurado** (25/08/2026, continuação do item 29).
+    - **Diagnóstico pedido pelo usuário antes de mexer em qualquer coisa**:
+      confirmado que `capacitor-www/index.html`, `capacitor.config.json` e
+      `dispatch-engine/android/` inteiro estavam prontos e coerentes entre
+      si (mesmo `appId`/package `dev.girocerto.app` em todos os lugares,
+      `google-services.json` batendo com o projeto Firebase
+      `girocerto-dd600`, canal de notificação da buzina certo em
+      `MainActivity.java`) — só nunca tinham sido commitados. **Achado
+      novo**: da pendência original ("push nativo **+ tracking em
+      background**"), só a metade do push tinha qualquer trabalho — zero
+      permissão de localização declarada, zero plugin de geolocalização
+      instalado, zero código de tracking. Também sem keystore de release em
+      lugar nenhum (build `release` sem `signingConfig`) e ícone do app
+      ainda é o placeholder padrão do Capacitor (confirmado abrindo o PNG),
+      não a identidade GiroCerto.
+    - **Resync**: `npm run sync-capacitor` rodado — `capacitor-www/index.html`
+      ficou byte-a-byte igual ao `app-entregador.html` atual (já incorpora o
+      poll de fallback do item 30). Idempotente, sem surpresa.
+    - **Commitado nesta sessão**: `capacitor-www/`, `dispatch-engine/android/`
+      (projeto Android completo — gradle, manifest, ícones placeholder,
+      `google-services.json`) e `dispatch-engine/capacitor.config.json`.
+    - **Decisões tomadas com o usuário antes de commitar**:
+      - `google-services.json` COMMITADO mesmo em repo público — decisão
+        explícita do usuário, alinhada com a documentação do Google (não é
+        credencial de autenticação, já vai embutido em qualquer APK
+        distribuído de qualquer forma).
+      - `.idea/` (cache de estado do Android Studio, específico da máquina)
+        excluído por inteiro do `dispatch-engine/android/.gitignore` — antes
+        só picotava arquivo por arquivo, deixando `misc.xml`/`vcs.xml`/etc
+        passarem.
+      - `dispatch-engine/__pedido_teste.js` deixado de fora (script
+        descartável, o próprio item 29 já dizia isso) — continua no working
+        tree, não commitado, não apagado (pode ainda estar em uso pelo
+        usuário pro teste manual do item 29).
+    - **`FIREBASE_SERVICE_ACCOUNT_JSON` setado no Railway de produção**
+      (gap 1 do item 29, estava só no `.env` local) — via
+      `railway variable set FIREBASE_SERVICE_ACCOUNT_JSON --stdin`, valor
+      lido do `.env` local e passado direto pro stdin do comando, nunca
+      apareceu em texto em nenhum lugar. Disparou redeploy automático,
+      confirmado `● Online` de novo depois, logs limpos (listener conectado,
+      sem crash). **Não confirma que o push funciona de verdade** — só que a
+      credencial está lá e o processo sobe sem erro; só um push real pra um
+      token real prova isso.
+    - **Achado à parte, sem relação com este trabalho**: o log de
+      reconciliação da subida (local e produção) mostra as mesmas ~7 rotas
+      "planejada" de sessões de teste anteriores (não desta sessão — os
+      tenants `Loja Motor*` criados e testados aqui foram limpos certinho
+      pelo `cleanup()`, confirmado por query direta). São sobras de outra
+      sessão, inofensivas (a reconciliação só exclui esses entregadores do
+      próximo failover, não trava nada) — só registrando pra não confundir
+      quem vir esse log depois achando que é algo novo.
+    - **Segue em aberto** (não mexido nesta sessão, fora do escopo pedido):
+      keystore de release + `signingConfig`, ícone com a identidade real da
+      marca (esbarra na unificação visual pausada — ver item 28/[[giro
+      certo unificação visual]]), plugin + permissão + código de tracking
+      em background (nunca começado), teste de push de ponta a ponta num
+      dispositivo/emulador real (retomar exatamente onde o item 29 parou:
+      passo 4, registrar entregador de teste).
+
 ## Pendências reais no momento
 - [ ] **Unificação visual das 5 telas HTML na identidade oficial da marca**
       (ver item 28) — investigação completa, nada aplicado. Ao retomar:
@@ -1762,22 +1887,38 @@ C:\Users\Usuário\Projetos\giro certo
       como funções/endpoints em `feira-dispatch/src/`, mas nada os
       dispara periodicamente ainda (precisaria de `node-cron` ou um
       processo tipo `dispatch-engine/` rodando no Railway).
-- [ ] **`PainelFeirante`/`DashboardFeirante` e `CheckoutConsumidor`** —
-      ainda fora de escopo, sem tela existente pra integrar (ver item 23).
-- [ ] **Wrapper Capacitor** (push nativo com som customizado + tracking em
-      background) — decidido que embrulha `app-entregador.html`, mas o
-      wrapper em si não foi criado.
-- [ ] **`PainelFeirante`/`DashboardFeirante` e `CheckoutConsumidor`** (as
-      outras 2 de 4 personas de `FeiraApp.jsx`) — fora de escopo por
-      decisão explícita do usuário nesta sessão. Não têm tela existente
-      pra integrar (GiroCerto nunca teve painel de feirante nem checkout
-      de consumidor) — são produtos novos do zero, não integração. Fica
-      pra depois, sem data.
-- [ ] **Capacitor (push nativo + tracking em background)** — decisão já
-      tomada (embrulha `app-entregador.html`, não `FeiraApp.jsx`, já que a
-      tela do entregador foi unificada lá), mas o wrapper em si não foi
-      criado — depende de `app-entregador.html` primeiro absorver as telas
-      de feira (pendência acima).
+- [ ] **`PainelFeirante`/`DashboardFeirante` e `CheckoutConsumidor`** (as 2
+      de 4 personas de `FeiraApp.jsx` fora de escopo) — sem tela existente
+      pra integrar (GiroCerto nunca teve painel de feirante nem checkout de
+      consumidor), são produtos novos do zero, não integração. Fica pra
+      depois, sem data. (Consolidado — era 2 bullets duplicados.)
+- [~] **Wrapper Capacitor (push nativo FCM, som customizado, entregador)** —
+      ver itens 29 e 31. `dispatch-engine/android/`, `capacitor-www/` e
+      `capacitor.config.json` já commitados (item 31), estrutura toda
+      coerente. Resumo do que falta agora:
+      - [x] ~~`AndroidManifest.xml` sem `POST_NOTIFICATIONS`~~ — corrigido
+        no item 29.
+      - [x] ~~`FIREBASE_SERVICE_ACCOUNT_JSON` não setado no Railway~~ —
+        setado no item 31, redeploy confirmado saudável. Só falta um push
+        real pra confirmar que funciona de ponta a ponta (item abaixo).
+      - [ ] Nunca testado de ponta a ponta num dispositivo/emulador real —
+        retomar exatamente onde o item 29 parou: passo 4, registrar
+        entregador de teste. Lembrete pro teste: pedido de tenant
+        `is_teste=true` NÃO dispara `pg_notify` mais (item 26) — usar
+        `POST /interno/despachar {"pedidoId":...}` com
+        `HABILITAR_ENDPOINTS_TESTE=true`, não esperar o fluxo automático.
+        Script pronto: `dispatch-engine/__pedido_teste.js` (descartável,
+        não commitado).
+      - [ ] **Tracking em background** (a outra metade original da
+        pendência, junto com o push) — nunca começado. Zero permissão de
+        localização, zero plugin de geolocalização instalado, zero código.
+      - [ ] Keystore de release + `signingConfig` — sem isso não dá pra
+        gerar um APK assinado/instalável de verdade fora do modo debug do
+        Android Studio (achado no item 31).
+      - [ ] Ícone do app ainda é o placeholder padrão do Capacitor, não a
+        identidade GiroCerto (achado no item 31) — esbarra na unificação
+        visual pausada (item 28), não resolver sem o usuário trazer aquele
+        assunto de volta primeiro.
 - [x] ~~Loja e entregador caem no mesmo `Site URL` de fallback após confirmar
       e-mail~~ — corrigido no item 25 (`emailRedirectTo` explícito nos 2
       `signUp()`). Testado com `signUp()` real: o entregador cai certo em

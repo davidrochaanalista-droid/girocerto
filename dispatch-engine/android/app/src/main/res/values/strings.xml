@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">GiroCerto</string>
+    <string name="title_activity_main">GiroCerto</string>
+    <string name="package_name">dev.girocerto.app</string>
+    <string name="custom_url_scheme">dev.girocerto.app</string>
+</resources>
