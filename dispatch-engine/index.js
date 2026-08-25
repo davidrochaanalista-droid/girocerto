@@ -73,7 +73,7 @@ function appFirebase() {
   return firebaseAdmin;
 }
 
-async function enviarPushBuzinaEntregador(pushToken, plataforma) {
+async function enviarPushBuzinaEntregador(pushToken, plataforma, tag) {
   if (plataforma !== 'android' || !pushToken) return;
   try {
     await appFirebase().messaging().send({
@@ -81,7 +81,15 @@ async function enviarPushBuzinaEntregador(pushToken, plataforma) {
       notification: { title: 'GiroCerto', body: 'Nova entrega disponível' },
       android: {
         priority: 'high',
-        notification: { channel_id: 'girocerto_buzina_entregador', sound: 'buzina_bi_bi' },
+        // achado real (25/08/2026, teste em aparelho físico): sem "tag",
+        // cada disparo do repique cria uma notificação NOVA em vez de
+        // substituir a anterior — o Android empilha e toca cada som de
+        // 20s em sequência, então mesmo depois do repique parar de
+        // verdade no backend, o aparelho continuava "tocando" por um bom
+        // tempo só terminando a fila. "tag" = id da tentativa faz cada
+        // repique da MESMA oferta substituir o anterior (mesmo
+        // comportamento de sempre do Android pra tag repetida), sem fila.
+        notification: { channel_id: 'girocerto_buzina_entregador_v2', sound: 'buzina_bi_bi', tag },
       },
     });
     console.log('[push] buzina enviada ao entregador');
@@ -131,10 +139,10 @@ function limparEstadoDaRota(rotaId) {
 // timeout vencer (ver agendarTimeout) — os únicos dois jeitos de uma
 // tentativa terminar, então não precisa de limite de repetições nem de
 // timer de segurança separado aqui.
-function agendarRepique(rotaId, pushToken, plataforma, segundosRepique) {
+function agendarRepique(rotaId, pushToken, plataforma, segundosRepique, tentativaId) {
   if (!segundosRepique || segundosRepique <= 0) return;
   const interval = setInterval(() => {
-    enviarPushBuzinaEntregador(pushToken, plataforma);
+    enviarPushBuzinaEntregador(pushToken, plataforma, tentativaId);
   }, segundosRepique * 1000);
   repiquesPorRota.set(rotaId, interval);
 }
@@ -279,8 +287,8 @@ async function tentarDespachar(pedidoId) {
     }
 
     console.log(`[despacho] pedido ${pedidoId} -> oferecido ao entregador ${candidato.id} (tentativa ${tentativa.id})`);
-    enviarPushBuzinaEntregador(candidato.push_token, candidato.push_plataforma); // fire-and-forget, ver comentário na função
-    agendarRepique(rotaId, candidato.push_token, candidato.push_plataforma, config.segundos_repique_notificacao);
+    enviarPushBuzinaEntregador(candidato.push_token, candidato.push_plataforma, tentativa.id); // fire-and-forget, ver comentário na função
+    agendarRepique(rotaId, candidato.push_token, candidato.push_plataforma, config.segundos_repique_notificacao, tentativa.id);
     agendarTimeout(tentativa.id, pedidoId, rotaId, config.segundos_timeout_despacho);
   } finally {
     rotasProcessando.delete(rotaId);
@@ -456,7 +464,7 @@ async function reconciliarNaSubida() {
         const restante = Math.max(1, Math.round((expiraEm - Date.now()) / 1000));
         agendarTimeout(t.id, pedido.id, t.rota_id, restante);
         if (t.entregadores) {
-          agendarRepique(t.rota_id, t.entregadores.push_token, t.entregadores.push_plataforma, config.segundos_repique_notificacao);
+          agendarRepique(t.rota_id, t.entregadores.push_token, t.entregadores.push_plataforma, config.segundos_repique_notificacao, t.id);
         }
       }
     }

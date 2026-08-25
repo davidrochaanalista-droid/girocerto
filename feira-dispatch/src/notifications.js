@@ -246,7 +246,7 @@ async function enviarPushBuzinaEntregador(pushToken, plataforma) {
     android: {
       priority: 'high',
       notification: {
-        channel_id: 'girocerto_buzina_entregador', // precisa existir no app, som customizado
+        channel_id: 'girocerto_buzina_entregador_v2', // precisa existir no app, som customizado (v2: 25/08/2026, trocado pra volume de alarme — ver MainActivity.java)
         sound: 'buzina_bi_bi', // res/raw/buzina_bi_bi.mp3 — sem extensão no payload FCM
       },
     },

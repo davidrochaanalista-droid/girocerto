@@ -1834,6 +1834,98 @@ C:\Users\Usuário\Projetos\giro certo
       dispositivo/emulador real (retomar exatamente onde o item 29 parou:
       passo 4, registrar entregador de teste).
 
+32. **Teste de push de ponta a ponta no aparelho físico (retomando o item 29)
+    + buzina corrigida de verdade: alta, 20s, sem empilhar** (25/08/2026,
+    mesma sessão do item 31). Pedido do usuário: "arrumar o toque pra não
+    tocar baixo, tem que tocar alto" — testado ao vivo no `RMX3941`
+    (Realme) já registrado como entregador de teste.
+    - **Causa raiz do "toca baixo"**: não era o canal nem o volume do
+      aparelho (que já estava no máximo) — era o **arquivo em si**, gravado
+      baixo (pico -6.2dB, média -17.7dB). Normalizado com `ffmpeg`
+      (instalado via winget, autorizado pelo usuário) — `loudnorm` +
+      `alimiter`, pico final -1.2dB — e esticado em loop pra **20s**
+      (pedido explícito: "deixar o toque disparando por 20 segundos,
+      padrão"), trocando `dispatch-engine/android/app/src/main/res/raw/
+      buzina_bi_bi.mp3`. Não precisa de `channel_id` novo pra isso — o
+      canal só guarda a URI do arquivo, o conteúdo é relido a cada
+      notificação (diferente do `AudioAttributes`, que é travado na
+      criação do canal).
+    - **Canal trocado pra `USAGE_ALARM`** (`girocerto_buzina_entregador_v2`,
+      `MainActivity.java`) — volume de alarme em vez de notificação, mesmo
+      padrão de Uber/iFood/Rappi pro aviso de corrida nova. Precisou de
+      `channel_id` novo (mudar `AudioAttributes` de um canal já criado não
+      tem efeito nos que já existem no aparelho) — atualizado nos 3 lugares
+      que precisam bater: `MainActivity.java`, `dispatch-engine/index.js`,
+      `feira-dispatch/src/notifications.js`.
+    - **Som em primeiro plano** (`mockups/app-entregador.html`): achado real
+      — o Android só toca o som do push do SISTEMA com o app em segundo
+      plano/fechado; em primeiro plano o card aparece (via Realtime) mas
+      fica mudo. Adicionado `<audio>` embutido (base64, ~42KB, o clipe
+      curto normalizado — não o de 20s, pra não inchar o HTML) em
+      `mostrarOferta()`, com `loop=true` até `fecharModalOferta()` (aceitar/
+      recusar/resolução por outro caminho) parar — pedido explícito do
+      usuário depois de ver que tocava só uma vez e passava despercebido.
+    - **Achado real, corrigido**: sem "tag" no payload FCM, cada repique
+      criava uma notificação NOVA em vez de substituir — o Android
+      empilhava e tocava cada som de 20s em fila, então mesmo depois do
+      repique parar de verdade no backend o aparelho continuava "tocando"
+      por um bom tempo só terminando a fila. Corrigido passando
+      `tentativa.id` como `tag` em `enviarPushBuzinaEntregador()`
+      (`dispatch-engine/index.js`) — repique da MESMA oferta agora
+      substitui a notificação anterior, sem fila. `agendarRepique()` e os 3
+      call sites (`tentarDespachar`, `reconciliarNaSubida`) atualizados pra
+      propagar o id.
+    - **Achado real, corrigido**: fechar o card no app não descartava a
+      notificação nativa já entregue — ficava "não lida" na bandeja, e a
+      ColorOS (comportamento observado, não documentado oficialmente)
+      parecia repetir o som de notificação de alta prioridade não
+      descartada depois de um tempo, sem nenhum push novo do backend.
+      `fecharModalOferta()` agora chama
+      `PushNotifications.removeAllDeliveredNotifications()` (plugin
+      Capacitor) ao aceitar/recusar/resolver, não só fecha o modal.
+    - **Achado real, ColorOS/Realme (config do aparelho, não código)**: a
+      tela bloqueando aciona o `OplusHansManager` (mecanismo próprio da
+      Oppo/Realme, "HANS") que **congela o processo do app ~5s depois da
+      tela apagar** — confirmado no log do sistema
+      (`freeze uid: ... scene: LcdOff`). O push nativo continua chegando
+      (entregue fora do processo do app), mas o JS (Realtime + poll de
+      15s) fica pausado até destravar — por isso o card não aparecia
+      depois de destravar em alguns testes. Resolvido pelo usuário
+      ajustando **Configurações > Bateria > Gerenciamento de apps >
+      GiroCerto > Sem restrições** no aparelho — não é algo que o código
+      resolve sozinho, fica registrado pra qualquer teste futuro nesse
+      aparelho (ou em qualquer ColorOS/Realme/Oppo).
+    - **Achado repetido durante os testes (mesma causa 3x, não é bug novo)**:
+      aceitar a oferta pelo app de verdade (não pelo endpoint de teste) num
+      tenant `is_teste=true` nunca avisa o `dispatch-engine` local — o
+      banco não dispara `pg_notify` pra esse tipo de tenant (item 26, de
+      propósito, pra não vazar pra produção). Resultado: o repique nunca
+      para sozinho nesse cenário específico de teste manual, só o timeout
+      (que também não limpa o repique, só ignora — o comentário do código
+      assume que o NOTIFY vai cuidar disso). **Pra testar manualmente no
+      app de verdade num tenant de teste**: depois de aceitar/recusar pela
+      UI, chamar também `POST /interno/resposta-despacho
+      {"tentativaId":...}` (com `HABILITAR_ENDPOINTS_TESTE=true`) pra
+      avisar o processo local — senão o repique fica preso até matar o
+      processo. Isso NÃO acontece em produção com um tenant real (o NOTIFY
+      chega normal e o repique para na hora).
+    - **Pendência registrada, não resolvida**: na transição exata de
+      destravar a tela enquanto uma oferta ainda está tocando, o som
+      nativo (ainda terminando) e o som via JS (que acabou de pegar a
+      oferta pelo poll/Realtime) podem se sobrepor por um instante — duas
+      fontes de áudio independentes, sem coordenação entre si. Corrigir
+      de verdade exigiria o JS saber se o som nativo ainda pode estar
+      tocando antes de decidir tocar o dele — não é ajuste trivial,
+      decisão explícita do usuário de deixar registrado e não resolver
+      agora.
+    - **Testado ao vivo, protocolo seguido**: várias rodadas de
+      `railway down -y` → `dispatch-engine` local (`HABILITAR_ENDPOINTS_TESTE=true`)
+      → teste real no `RMX3941` → `railway up -y -c`. `ffmpeg` instalado
+      via winget (autorizado). Keystore adb (`~/.android/adbkey`) precisou
+      reautorização manual no aparelho no meio da sessão (motivo
+      desconhecido — conexão USB caiu sozinha, reconectou depois de
+      reautorizar a depuração USB na tela do aparelho).
+
 ## Pendências reais no momento
 - [ ] **Unificação visual das 5 telas HTML na identidade oficial da marca**
       (ver item 28) — investigação completa, nada aplicado. Ao retomar:
@@ -1901,14 +1993,23 @@ C:\Users\Usuário\Projetos\giro certo
       - [x] ~~`FIREBASE_SERVICE_ACCOUNT_JSON` não setado no Railway~~ —
         setado no item 31, redeploy confirmado saudável. Só falta um push
         real pra confirmar que funciona de ponta a ponta (item abaixo).
-      - [ ] Nunca testado de ponta a ponta num dispositivo/emulador real —
-        retomar exatamente onde o item 29 parou: passo 4, registrar
-        entregador de teste. Lembrete pro teste: pedido de tenant
-        `is_teste=true` NÃO dispara `pg_notify` mais (item 26) — usar
-        `POST /interno/despachar {"pedidoId":...}` com
-        `HABILITAR_ENDPOINTS_TESTE=true`, não esperar o fluxo automático.
-        Script pronto: `dispatch-engine/__pedido_teste.js` (descartável,
-        não commitado).
+      - [x] ~~Nunca testado de ponta a ponta num dispositivo/emulador
+        real~~ — testado de verdade no item 32, no `RMX3941` (Realme) já
+        registrado. Buzina corrigida: normalizada (tocava baixo demais),
+        20s, `USAGE_ALARM`, sem empilhar notificação, limpa a notificação
+        ao resolver. Achado à parte: testar manualmente pelo app real (não
+        pelo endpoint de teste) num tenant `is_teste=true` NUNCA avisa o
+        `dispatch-engine` — o repique fica preso até chamar também
+        `POST /interno/resposta-despacho {"tentativaId":...}` (com
+        `HABILITAR_ENDPOINTS_TESTE=true`) depois de cada aceite/recusa
+        manual — não acontece em produção com tenant real. Script
+        `dispatch-engine/__pedido_teste.js` continua local, não commitado.
+      - [ ] **Sobreposição de som na transição de destravar a tela**
+        (achado no item 32, registrado, não corrigido por decisão do
+        usuário): se a oferta ainda estiver tocando o som nativo quando a
+        tela destrava, o som via JS (primeiro plano) pode começar por cima
+        antes do nativo terminar — duas fontes de áudio sem coordenação
+        entre si.
       - [ ] **Tracking em background** (a outra metade original da
         pendência, junto com o push) — nunca começado. Zero permissão de
         localização, zero plugin de geolocalização instalado, zero código.
@@ -1919,6 +2020,11 @@ C:\Users\Usuário\Projetos\giro certo
         identidade GiroCerto (achado no item 31) — esbarra na unificação
         visual pausada (item 28), não resolver sem o usuário trazer aquele
         assunto de volta primeiro.
+      - **Lembrete de config do aparelho** (achado no item 32, não é
+        código): em aparelhos ColorOS/Realme/Oppo, o app precisa estar
+        liberado em Configurações > Bateria > Gerenciamento de apps >
+        Sem restrições, senão a tela bloqueando congela o processo
+        (`OplusHansManager`) e o card para de aparecer até destravar.
 - [x] ~~Loja e entregador caem no mesmo `Site URL` de fallback após confirmar
       e-mail~~ — corrigido no item 25 (`emailRedirectTo` explícito nos 2
       `signUp()`). Testado com `signUp()` real: o entregador cai certo em
