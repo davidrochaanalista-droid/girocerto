@@ -2055,7 +2055,12 @@ C:\Users\Usuário\Projetos\giro certo
       reconciliação em QUALQUER rodada de teste futura, não só nesta.
       Limpo na hora (deletados o pedido, a rota fantasma e a tentativa
       órfã); nenhum pedido `pronto`/sem rota ficou pra trás no tenant de
-      teste ao final da sessão.
+      teste ao final da sessão. Efeito colateral no app real: a tela ficou
+      mostrando "Continuar" (pausado) por causa de um Pausar/Continuar
+      manual de teste anterior que não tinha sido desfeito — sem relação
+      com o disparo espúrio, só destravado tocando Continuar de volta
+      (confirmado: `entregadores.status` já estava `disponivel` no banco o
+      tempo todo, só a tela é que não tinha recarregado).
     - **Achado à parte, não regressão de hoje**: usuário notou que
       "Entregas hoje" e "Ganho no turno" continuam zerados depois de uma
       entrega confirmada de verdade. Investigado: `atualizarStatsTurno()`
@@ -2070,6 +2075,8 @@ C:\Users\Usuário\Projetos\giro certo
     - Suíte completa rodou 154/154 (antes do achado operacional da
       reconciliação, e novamente confirmado sem regressão depois da
       limpeza).
+    - `railway down -y` antes de todo o teste local, `railway up -c` depois
+      de tudo confirmado — voltou `● Online` em produção.
 
 ## Pendências reais no momento
 - [ ] **Motor de repasse não existe ainda** (achado no item 34, 25/08/2026)
