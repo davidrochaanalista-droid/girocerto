@@ -84,6 +84,7 @@ async function enviarPushBuzinaEntregador(pushToken, plataforma) {
         notification: { channel_id: 'girocerto_buzina_entregador', sound: 'buzina_bi_bi' },
       },
     });
+    console.log('[push] buzina enviada ao entregador');
   } catch (err) {
     console.error('[push] falha ao notificar entregador (não bloqueia o despacho):', err.message);
   }
@@ -103,6 +104,13 @@ function haversineKm(lat1, lng1, lat2, lng2) {
 const tentadosPorRota = new Map();
 // rota_id -> Timeout do setTimeout de timeout pendente
 const timersPorRota = new Map();
+// rota_id -> Interval do setInterval de repique (re-envio do push a cada
+// tenants.segundos_repique_notificacao, até aceitar/recusar/expirar)
+const repiquesPorRota = new Map();
+// rota_id -> presente enquanto uma execução de tentarDespachar está no
+// trecho "achar candidato -> criar tentativa -> agendar push/timers" pra
+// essa rota. Ver comentário em tentarDespachar sobre por que isso existe.
+const rotasProcessando = new Set();
 
 function limparEstadoDaRota(rotaId) {
   tentadosPorRota.delete(rotaId);
@@ -111,6 +119,24 @@ function limparEstadoDaRota(rotaId) {
     clearTimeout(timer);
     timersPorRota.delete(rotaId);
   }
+  const repique = repiquesPorRota.get(rotaId);
+  if (repique) {
+    clearInterval(repique);
+    repiquesPorRota.delete(rotaId);
+  }
+}
+
+// repete o mesmo push (mesmo "toque calmo") a cada segundosRepique, até a
+// tentativa resolver (aceito/recusado, ver tratarRespostaDespacho) ou o
+// timeout vencer (ver agendarTimeout) — os únicos dois jeitos de uma
+// tentativa terminar, então não precisa de limite de repetições nem de
+// timer de segurança separado aqui.
+function agendarRepique(rotaId, pushToken, plataforma, segundosRepique) {
+  if (!segundosRepique || segundosRepique <= 0) return;
+  const interval = setInterval(() => {
+    enviarPushBuzinaEntregador(pushToken, plataforma);
+  }, segundosRepique * 1000);
+  repiquesPorRota.set(rotaId, interval);
 }
 
 async function buscarConfigTenant(tenantId) {
@@ -211,32 +237,54 @@ async function tentarDespachar(pedidoId) {
     }
   }
 
-  const candidato = await buscarProximoCandidato(pedido.tenant_id, rotaId, config.lat, config.lng, config.raio_chamada_motoboy_km);
-  if (!candidato) {
-    console.log(
-      `[despacho] pedido ${pedidoId} (rota ${rotaId}): sem entregador disponível (todos já tentados/ocupados ou fora do raio de ${config.raio_chamada_motoboy_km}km). Precisa de intervenção manual da loja.`
-    );
-    limparEstadoDaRota(rotaId); // achado ultrareview: sem isso, rota esgotada vazava Map pra sempre
+  // achado ao vivo (25/08/2026, testando o repique): a proteção acima só
+  // cobre a CRIAÇÃO da rota — duas invocações concorrentes de
+  // tentarDespachar (NOTIFY duplicado ou corrida genuína, mesmo cenário já
+  // documentado acima) convergiam pro mesmo rotaId e cada uma seguia
+  // sozinha, criando sua PRÓPRIA tentativa/push/timers pra ele. Os Maps
+  // (timersPorRota, repiquesPorRota) só guardam o último registrado — o
+  // timer/interval da outra invocação fica órfão, nunca é limpo. Pra um
+  // setTimeout isso é inofensivo (dispara uma vez e não faz nada, porque
+  // resultado já não é mais null); pra um setInterval de repique é grave —
+  // fica repicando push pra sempre, sem jeito de parar a não ser reiniciar
+  // o processo (reproduzido ao vivo: 67 pushes num pedido de teste em
+  // ~15s). Lock simples por rotaId fecha essa janela.
+  if (rotasProcessando.has(rotaId)) {
+    console.log(`[despacho] pedido ${pedidoId} (rota ${rotaId}): já tem um tentarDespachar em andamento pra essa rota — ignorando invocação concorrente`);
     return;
   }
+  rotasProcessando.add(rotaId);
+  try {
+    const candidato = await buscarProximoCandidato(pedido.tenant_id, rotaId, config.lat, config.lng, config.raio_chamada_motoboy_km);
+    if (!candidato) {
+      console.log(
+        `[despacho] pedido ${pedidoId} (rota ${rotaId}): sem entregador disponível (todos já tentados/ocupados ou fora do raio de ${config.raio_chamada_motoboy_km}km). Precisa de intervenção manual da loja.`
+      );
+      limparEstadoDaRota(rotaId); // achado ultrareview: sem isso, rota esgotada vazava Map pra sempre
+      return;
+    }
 
-  const jaTentados = tentadosPorRota.get(rotaId) || new Set();
-  jaTentados.add(candidato.id);
-  tentadosPorRota.set(rotaId, jaTentados);
+    const jaTentados = tentadosPorRota.get(rotaId) || new Set();
+    jaTentados.add(candidato.id);
+    tentadosPorRota.set(rotaId, jaTentados);
 
-  const { data: tentativa, error: eTentativa } = await admin
-    .from('tentativas_despacho')
-    .insert({ rota_id: rotaId, entregador_id: candidato.id })
-    .select('id')
-    .single();
-  if (eTentativa) {
-    console.error('[despacho] falha ao criar tentativa_despacho', eTentativa.message);
-    return;
+    const { data: tentativa, error: eTentativa } = await admin
+      .from('tentativas_despacho')
+      .insert({ rota_id: rotaId, entregador_id: candidato.id })
+      .select('id')
+      .single();
+    if (eTentativa) {
+      console.error('[despacho] falha ao criar tentativa_despacho', eTentativa.message);
+      return;
+    }
+
+    console.log(`[despacho] pedido ${pedidoId} -> oferecido ao entregador ${candidato.id} (tentativa ${tentativa.id})`);
+    enviarPushBuzinaEntregador(candidato.push_token, candidato.push_plataforma); // fire-and-forget, ver comentário na função
+    agendarRepique(rotaId, candidato.push_token, candidato.push_plataforma, config.segundos_repique_notificacao);
+    agendarTimeout(tentativa.id, pedidoId, rotaId, config.segundos_timeout_despacho);
+  } finally {
+    rotasProcessando.delete(rotaId);
   }
-
-  console.log(`[despacho] pedido ${pedidoId} -> oferecido ao entregador ${candidato.id} (tentativa ${tentativa.id})`);
-  enviarPushBuzinaEntregador(candidato.push_token, candidato.push_plataforma); // fire-and-forget, ver comentário na função
-  agendarTimeout(tentativa.id, pedidoId, rotaId, config.segundos_timeout_despacho);
 }
 
 function agendarTimeout(tentativaId, pedidoId, rotaId, segundosTimeout) {
@@ -260,6 +308,11 @@ function agendarTimeout(tentativaId, pedidoId, rotaId, segundosTimeout) {
       if (expirada && expirada.length > 0) {
         console.log(`[despacho] tentativa ${tentativaId} expirou sem resposta — tentando próximo candidato`);
         timersPorRota.delete(rotaId);
+        const repique = repiquesPorRota.get(rotaId);
+        if (repique) {
+          clearInterval(repique);
+          repiquesPorRota.delete(rotaId);
+        }
         await tentarDespachar(pedidoId);
       }
       // 0 linhas afetadas: alguém respondeu de verdade bem nesse instante —
@@ -280,6 +333,11 @@ async function tratarRespostaDespacho(tentativaId) {
   if (timer) {
     clearTimeout(timer);
     timersPorRota.delete(tentativa.rota_id);
+  }
+  const repique = repiquesPorRota.get(tentativa.rota_id);
+  if (repique) {
+    clearInterval(repique);
+    repiquesPorRota.delete(tentativa.rota_id);
   }
 
   if (tentativa.resultado === 'recusado') {
@@ -363,7 +421,7 @@ async function reconciliarNaSubida() {
 
   const { data: tentativasAbertas } = await admin
     .from('tentativas_despacho')
-    .select('id, rota_id, notificado_em, rotas_entrega(tenant_id, pedidos(id))')
+    .select('id, rota_id, notificado_em, entregadores(push_token, push_plataforma), rotas_entrega(tenant_id, pedidos(id))')
     .is('resultado', null);
   for (const t of tentativasAbertas || []) {
     const tenantId = t.rotas_entrega && t.rotas_entrega.tenant_id;
@@ -384,11 +442,22 @@ async function reconciliarNaSubida() {
         if (pedido) await tentarDespachar(pedido.id);
       }
     } else {
-      // ainda dentro da janela — reagenda o timeout que se perdeu no restart
+      // ainda dentro da janela — reagenda o timeout E o repique que se
+      // perderam no restart (achado na revisão do repique, 25/08/2026: só
+      // o timeout era reagendado aqui, então uma tentativa que sobrevivia a
+      // um restart do processo parava de repicar push até expirar/resolver,
+      // mesmo ainda dentro da janela). A cadência do repique reinicia a
+      // partir de agora, não do instante exato em que pararia sem o
+      // restart — sem histórico de "quantos repiques já rodaram" em
+      // memória pra reconstruir isso com precisão, e não vale a pena
+      // persistir só por causa desse caso raro (Railway redeploy).
       const pedido = t.rotas_entrega.pedidos && t.rotas_entrega.pedidos[0];
       if (pedido) {
         const restante = Math.max(1, Math.round((expiraEm - Date.now()) / 1000));
         agendarTimeout(t.id, pedido.id, t.rota_id, restante);
+        if (t.entregadores) {
+          agendarRepique(t.rota_id, t.entregadores.push_token, t.entregadores.push_plataforma, config.segundos_repique_notificacao);
+        }
       }
     }
   }

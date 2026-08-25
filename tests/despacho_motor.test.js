@@ -45,9 +45,30 @@ function subirDispatchEngine() {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stdout.on('data', (d) => process.stdout.write(`[dispatch-engine] ${d}`));
-  child.stderr.on('data', (d) => process.stderr.write(`[dispatch-engine:err] ${d}`));
+  // acumula stdout E stderr (além de continuar espelhando no console, como
+  // já fazia) — dá pros testes de repique um jeito de contar quantas vezes
+  // enviarPushBuzinaEntregador() rodou, sem precisar mockar Firebase. Conta
+  // as duas linhas que a função já loga: sucesso vai pro stdout
+  // (console.log), falha vai pro stderr (console.error) — as duas provam
+  // que a função FOI CHAMADA, que é o que importa pra medir repique. Sem
+  // capturar o stderr também, um ambiente local sem credencial FCM válida
+  // (ou com token de teste inválido, como este arquivo usa) faz todo push
+  // cair no console.error e a contagem fica sempre zero — achado ao rodar
+  // de verdade nesta sessão.
+  child.logBuffer = '';
+  child.stdout.on('data', (d) => {
+    child.logBuffer += d.toString();
+    process.stdout.write(`[dispatch-engine] ${d}`);
+  });
+  child.stderr.on('data', (d) => {
+    child.logBuffer += d.toString();
+    process.stderr.write(`[dispatch-engine:err] ${d}`);
+  });
   return child;
+}
+
+function contarPushes(child) {
+  return (child.logBuffer.match(/\[push\] (buzina enviada ao entregador|falha ao notificar entregador)/g) || []).length;
 }
 
 // achado 24/08/2026: o tenant deste teste agora é is_teste=true, e a trigger
@@ -245,6 +266,117 @@ async function run() {
     await pg.query(`delete from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedidoPausaId]);
     await pg.query(`delete from pedidos where id = $1`, [pedidoPausaId]);
 
+    console.log('\n=== SETUP: tenant dedicado pra repique de push (timing agressivo, isolado do resto) ===');
+    const tenantRepiqueId = crypto.randomUUID();
+    tenantIds.push(tenantRepiqueId);
+    await pg.query(
+      `insert into tenants (id, nome, lat, lng, is_teste, segundos_repique_notificacao, segundos_timeout_despacho) values ($1,'Loja Motor Repique',-23.5613,-46.6565,true,1,8)`,
+      [tenantRepiqueId]
+    );
+    const uR1 = await createAuthUser('motor.repique1');
+    const uR2 = await createAuthUser('motor.repique2');
+    authUserIds.push(uR1.id, uR2.id);
+    const { rows: er1 } = await pg.query(
+      `insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng, push_token, push_plataforma) values ($1,$2,'Repique 1','disponivel',-23.5635,-46.6560,'token-teste-repique-1','android') returning id`,
+      [tenantRepiqueId, uR1.id]
+    );
+    const { rows: er2 } = await pg.query(
+      `insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng, push_token, push_plataforma) values ($1,$2,'Repique 2','disponivel',-23.5600,-46.6540,'token-teste-repique-2','android') returning id`,
+      [tenantRepiqueId, uR2.id]
+    );
+    const entregadorR1Id = er1[0].id;
+    const entregadorR2Id = er2[0].id;
+
+    console.log('\n=== Repique real: dispara mais de uma vez enquanto a oferta está pendente ===');
+    const { rows: pRowsRepique } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Repique, 1','em_preparo',30) returning id`, [tenantRepiqueId]);
+    const pedidoRepiqueId = pRowsRepique[0].id;
+    await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedidoRepiqueId]);
+    await despacharDireto(pedidoRepiqueId);
+    await sleep(500); // dá tempo do push inicial (fire-and-forget) ser logado antes de medir a linha de base
+    const pushesLogoApos = contarPushes(child);
+    await sleep(4000); // com segundos_repique_notificacao=1, dá pra ver uns 4 repiques nessa janela
+    const pushesDepoisDeEsperar = contarPushes(child);
+    r.check(
+      'repique real dispara mais de uma vez enquanto a tentativa continua pendente (não é só o push único inicial)',
+      pushesDepoisDeEsperar - pushesLogoApos >= 3,
+      { pushesLogoApos, pushesDepoisDeEsperar }
+    );
+
+    console.log('\n=== Repique cancela ao aceitar (não continua repicando depois de aceito) ===');
+    const { rows: tentRepique } = await pg.query(`select * from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1) and resultado is null`, [pedidoRepiqueId]);
+    r.check('oferta de repique foi pro entregador mais perto', tentRepique.length === 1 && tentRepique[0].entregador_id === entregadorR1Id, tentRepique);
+    const sessR1 = await signInAs(uR1.email);
+    await sessR1.from('tentativas_despacho').update({ resultado: 'aceito', respondido_em: new Date().toISOString() }).eq('id', tentRepique[0].id);
+    await responderDespachoDireto(tentRepique[0].id);
+    await sleep(500);
+    const pushesLogoAposAceite = contarPushes(child);
+    await sleep(3000); // 3x o intervalo de repique — se não tivesse cancelado, teria crescido de novo
+    const pushesAposAceiteEspera = contarPushes(child);
+    r.check(
+      'repique PARA de disparar assim que a oferta é aceita (contagem de push não cresce mais depois do aceite)',
+      pushesAposAceiteEspera === pushesLogoAposAceite,
+      { pushesLogoAposAceite, pushesAposAceiteEspera }
+    );
+
+    console.log('\n=== Repique cancela por timeout (não continua repicando depois de expirar) ===');
+    await pg.query(`update tenants set segundos_timeout_despacho = 2 where id = $1`, [tenantRepiqueId]);
+    const { rows: pRowsRepiqueTimeout } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Repique, 2','em_preparo',22) returning id`, [tenantRepiqueId]);
+    const pedidoRepiqueTimeoutId = pRowsRepiqueTimeout[0].id;
+    await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedidoRepiqueTimeoutId]);
+    await despacharDireto(pedidoRepiqueTimeoutId);
+    await sleep(3500); // > que os 2s do timeout, dá tempo do failover (sem candidato livre) limpar o estado
+    const pushesLogoAposTimeout = contarPushes(child);
+    await sleep(3000);
+    const pushesAposTimeoutEspera = contarPushes(child);
+    r.check(
+      'repique PARA de disparar depois que a tentativa expira por timeout (contagem de push não cresce mais)',
+      pushesAposTimeoutEspera === pushesLogoAposTimeout,
+      { pushesLogoAposTimeout, pushesAposTimeoutEspera }
+    );
+    const { rows: tentRepiqueTimeout } = await pg.query(`select resultado from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedidoRepiqueTimeoutId]);
+    r.check('tentativa de repique realmente expirou como sem_resposta (não ficou pendente pra sempre)', tentRepiqueTimeout.length === 1 && tentRepiqueTimeout[0].resultado === 'sem_resposta', tentRepiqueTimeout);
+    await pg.query(`update tenants set segundos_timeout_despacho = 8 where id = $1`, [tenantRepiqueId]);
+
+    console.log('\n=== Fallback de polling (client): a mesma query que app-entregador.html faz encontra a oferta pendente via RLS ===');
+    // Não dá pra reproduzir "tela bloqueada degradando o WebSocket" sem um
+    // dispositivo real — isso continua exigindo teste manual (mesma
+    // limitação já registrada pra outros mecanismos de Realtime no
+    // CLAUDE.md). O que dá pra garantir aqui é que a QUERY que
+    // iniciarEscutaDeOfertas() roda no polling (tentativas_despacho onde
+    // entregador_id = eu, resultado is null, mais recente primeiro) realmente
+    // retorna a oferta pendente pela sessão do próprio entregador (RLS) —
+    // é a parte que quebraria silenciosamente se a policy não cobrisse esse
+    // caminho de leitura.
+    const { rows: pRowsPolling } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Repique Polling, 1','em_preparo',28) returning id`, [tenantRepiqueId]);
+    const pedidoPollingId = pRowsPolling[0].id;
+    await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedidoPollingId]);
+    await despacharDireto(pedidoPollingId);
+    await sleep(500);
+    const sessR2 = await signInAs(uR2.email);
+    const { data: pendentesPoll, error: ePoll } = await sessR2
+      .from('tentativas_despacho')
+      .select('*')
+      .eq('entregador_id', entregadorR2Id)
+      .is('resultado', null)
+      .order('notificado_em', { ascending: false })
+      .limit(1);
+    r.check(
+      'query de polling do client (mesma de iniciarEscutaDeOfertas) encontra a oferta pendente via RLS do próprio entregador',
+      !ePoll && pendentesPoll && pendentesPoll.length === 1,
+      { ePoll, pendentesPoll }
+    );
+    await sessR2.from('tentativas_despacho').update({ resultado: 'recusado', respondido_em: new Date().toISOString() }).eq('id', pendentesPoll[0].id);
+    await responderDespachoDireto(pendentesPoll[0].id);
+    await sleep(500);
+
+    console.log('\n=== Reconciliação de startup: repique sobrevive a um restart no meio da janela (fix desta sessão) ===');
+    await pg.query(`update tenants set segundos_timeout_despacho = 30 where id = $1`, [tenantRepiqueId]);
+    const { rows: pRowsResiliente } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Repique Resiliente, 1','em_preparo',26) returning id`, [tenantRepiqueId]);
+    const pedidoResilienteId = pRowsResiliente[0].id;
+    await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedidoResilienteId]);
+    await despacharDireto(pedidoResilienteId);
+    await sleep(500); // deixa a tentativa/push inicial se estabelecerem antes de derrubar o processo
+
     console.log('\n=== Reconciliação de startup: derruba e sobe de novo com pedido órfão ===');
     child.kill();
     await sleep(500);
@@ -258,6 +390,18 @@ async function run() {
     await sleep(2000);
     const { rows: pedido3Check } = await pg.query(`select rota_id from pedidos where id = $1`, [pedido3Id]);
     r.check('reconciliação de startup despacha pedido que ficou órfão com o serviço fora do ar', pedido3Check[0].rota_id !== null, pedido3Check[0]);
+
+    const { rows: tentResilienteAntes } = await pg.query(`select resultado from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedidoResilienteId]);
+    r.check('tentativa que sobreviveu ao restart ainda está pendente (não expirou nem foi perdida)', tentResilienteAntes.length === 1 && tentResilienteAntes[0].resultado === null, tentResilienteAntes);
+
+    const pushesResilienteT1 = contarPushes(child);
+    await sleep(2500); // com repique de 1s, dá tempo de ver o repique disparar de novo NO PROCESSO REINICIADO
+    const pushesResilienteT2 = contarPushes(child);
+    r.check(
+      'FIX desta sessão: reconciliarNaSubida() reagenda o REPIQUE (não só o timeout) — push continua repicando na tentativa que sobreviveu ao restart',
+      pushesResilienteT2 > pushesResilienteT1,
+      { pushesResilienteT1, pushesResilienteT2 }
+    );
 
     return r.summary();
   } finally {

@@ -1138,6 +1138,8 @@ async function confirmarRetirada(){
 // ------------------------------------------------------------
 let ofertaCanalAtivo = false;
 let tentativaOfertaAtualId = null;
+let ofertaPollingAtivo = false;
+const POLL_INTERVAL_OFERTA_MS = 15000; // mesmo valor e mesmo motivo do polling da feira (ver iniciarEscutaDeOfertasFeira)
 
 function iniciarEscutaDeOfertas(){
   if(ofertaCanalAtivo) return; // já escutando, não duplica o channel
@@ -1161,6 +1163,26 @@ function iniciarEscutaDeOfertas(){
       }
     })
     .subscribe();
+
+  // Fallback de polling — mesmo achado e mesma correção já aplicada em
+  // iniciarEscutaDeOfertasFeira() (achado real, 22/08/2026): tela bloqueada
+  // degrada o WebSocket do Realtime silenciosamente, o canal continua
+  // "SUBSCRIBED" mas para de entregar eventos novos até o app voltar ao
+  // primeiro plano. Roda independente do Realtime estar conectado ou não,
+  // então uma oferta nunca fica perdida por mais de POLL_INTERVAL_OFERTA_MS.
+  if(!ofertaPollingAtivo){
+    ofertaPollingAtivo = true;
+    setInterval(async () => {
+      const { data: pendentes } = await supabaseClient
+        .from('tentativas_despacho')
+        .select('*')
+        .eq('entregador_id', entregadorId)
+        .is('resultado', null)
+        .order('notificado_em', { ascending: false })
+        .limit(1);
+      if(pendentes && pendentes.length) mostrarOferta(pendentes[0]);
+    }, POLL_INTERVAL_OFERTA_MS);
+  }
 }
 
 async function mostrarOferta(tentativa){

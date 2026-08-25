@@ -1637,6 +1637,78 @@ C:\Users\Usuário\Projetos\giro certo
       — ele quer pensar com calma nessa cor antes de retomar. Nada foi
       commitado nem aplicado nesta frente; ver pendência abaixo.
 
+30. **Poll de fallback em `iniciarEscutaDeOfertas()` + repique real do push
+    do entregador** (25/08/2026). Pedido explícito do usuário: cobrir oferta
+    perdida quando o Realtime cai, e fazer `segundos_repique_notificacao`
+    (campo do schema, default 8s, já existia mas não era usado) repetir de
+    verdade o push em vez de mandar uma única vez.
+    - **Achado ao sentar pra planejar**: as duas coisas já estavam
+      implementadas no working tree, não commitadas — não ficou claro se de
+      uma sessão anterior que não fechou o ciclo. Em vez de reimplementar,
+      revisei o que já existia antes de tocar em qualquer coisa.
+    - **Poll de fallback** (`mockups/app-entregador.html`,
+      `iniciarEscutaDeOfertas()`): 15s, não 30s — segue o padrão já
+      validado de `iniciarEscutaDeOfertasFeira()` (oferta é sensível a
+      tempo, tem que caber com folga dentro do `segundos_timeout_despacho`),
+      não o padrão de 30s de `iniciarEscutaDeStatusPendente()` (tela de
+      espera de baixa urgência). Só leitura, não escreve nada — sem risco de
+      concorrer com o Realtime.
+    - **Repique real** (`dispatch-engine/index.js`): `agendarRepique()` cria
+      um `setInterval` por `rota_id` usando `config.segundos_repique_notificacao`
+      (já vinha de `buscarConfigTenant`). Cancela nos 3 únicos jeitos de uma
+      tentativa terminar: aceite/recusa (`tratarRespostaDespacho`), timeout
+      (`agendarTimeout`), rota esgotada (`limparEstadoDaRota`) — sem limite
+      de repetições, não precisa.
+    - **Achado real ao testar o repique ao vivo**: duas invocações
+      concorrentes de `tentarDespachar` pra mesma rota (NOTIFY duplicado)
+      cada uma criava seu próprio `setInterval`, e o `Map` só guarda o
+      último — o interval órfão nunca era limpo. Reproduzido: **67 pushes
+      num pedido de teste em ~15s**. Corrigido com lock por `rota_id`
+      (`rotasProcessando`, um `Set`) serializando a seção crítica de
+      `tentarDespachar`.
+    - **Achado meu na revisão de código** (antes de eu tocar em qualquer
+      coisa, a pedido do usuário): `reconciliarNaSubida()` reagendava o
+      timeout de tentativas que sobrevivem a um restart do processo, mas
+      **não** o repique — uma tentativa nessas condições parava de repicar
+      até expirar/resolver. Corrigido: o mesmo branch agora também chama
+      `agendarRepique()` (select da reconciliação passou a trazer
+      `entregadores(push_token, push_plataforma)`). A cadência reinicia a
+      partir do restart, não do ponto exato onde pararia — aceitável, é o
+      mesmo nível de precisão que o resto do arquivo já assume pra esse
+      cenário raro (Railway redeploy).
+    - **Testes adicionados** em `tests/despacho_motor.test.js`: tenant
+      dedicado com timing agressivo (`segundos_repique_notificacao=1`),
+      cobrindo repique disparando várias vezes, cancelamento por aceite,
+      cancelamento por timeout, a query exata do polling client via RLS do
+      próprio entregador, e o fix de reconciliação (repique resume depois
+      de matar e subir o processo de novo).
+    - **Achado no meu próprio teste, ao rodar de verdade**: a contagem de
+      pushes só capturava `stdout` do subprocesso — como o token de teste é
+      inválido, todo push cai no `console.error` (stderr), e a contagem
+      ficava sempre zero (2 testes falsos-negativos na 1ª rodada). Corrigido
+      capturando os dois; suíte completa rodou **154/154** depois.
+    - **Protocolo seguido**: `railway down -y` → suíte local completa
+      (154/154, incluindo a 2ª rodada depois do fix do teste) → `railway up
+      -y -c`.
+    - **⚠️ Desvio de protocolo, registrado pra não repetir**: `railway up
+      -y -c` faz build a partir do diretório LOCAL atual, não do último
+      commit — como o working tree ainda tinha essas mudanças não
+      commitadas, o comando pra "subir de volta" a produção acabou
+      implantando código ainda não commitado, antes da sequência normal
+      (`commitar → push → railway up -c` manual). Produção ficou no ar o
+      tempo todo (down→up foi rápido) e o código implantado já tinha sido
+      revisado e testado — mas a ORDEM ficou invertida. Fechado logo em
+      seguida commitando exatamente o que já estava rodando, pra git e
+      Railway não ficarem dessincronizados. **Pra próxima vez**: se o
+      working tree tiver mudança não commitada relevante na hora de rodar
+      `railway up -y -c` de volta, avisar antes de rodar, não só depois.
+    - **Não commitado junto**: as mudanças do item 29 (Capacitor/FCM, sessão
+      anterior, teste ainda não confirmado) e os arquivos novos relacionados
+      a ele (`dispatch-engine/android/`, `capacitor-www/`,
+      `dispatch-engine/__pedido_teste.js`, `capacitor.config.json`)
+      continuam intactos e fora deste commit — sem relação com este pedido,
+      e aquele item já registra que o teste de ponta a ponta não fechou.
+
 ## Pendências reais no momento
 - [ ] **Unificação visual das 5 telas HTML na identidade oficial da marca**
       (ver item 28) — investigação completa, nada aplicado. Ao retomar:
