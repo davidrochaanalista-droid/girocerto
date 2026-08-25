@@ -24,10 +24,12 @@ public class MainActivity extends BridgeActivity {
    * qualquer tentativa de trocar o som pelo mesmo channel_id; mudar
    * exigiria um channel_id novo.
    *
-   * Arquivo esperado: res/raw/buzina_bi_bi.mp3 — ainda NÃO adicionado ao
-   * projeto (precisa ser gravado/exportado e colocado nessa pasta antes
-   * de qualquer teste real; sem o arquivo, o canal é criado mas toca o
-   * som padrão do sistema em vez da buzina).
+   * Arquivo: res/raw/buzina_bi_bi.mp3 (adicionado 24/08/2026). Atenção: o
+   * canal só lê o som na CRIAÇÃO — se o app já rodou no celular antes do
+   * arquivo existir, o canal ficou cacheado sem som (ou com o som padrão)
+   * e reinstalar o .mp3 sozinho não conserta; precisa desinstalar/
+   * reinstalar o app (ou apagar o canal em Ajustes > Notificações) pra
+   * forçar a recriação com o som certo.
    */
   private void criarCanalBuzinaEntregador() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
