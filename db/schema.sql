@@ -378,6 +378,7 @@ create table if not exists rotas_entrega (
 
   tempo_total_estimado_min integer,
   despachado_em timestamptz,   -- momento em que o motoboy foi efetivamente chamado
+  chegou_loja_em timestamptz,  -- motoboy chegou na loja (item 34, antes de retirar)
   iniciada_em timestamptz,     -- motoboy saiu da loja com os pedidos
   concluida_em timestamptz,
 
@@ -577,6 +578,7 @@ create table if not exists pedidos (
 
   criado_em timestamptz not null default now(),
   pronto_em timestamptz,
+  chegou_entrega_em timestamptz,  -- motoboy chegou no destino (item 34, antes de digitar o código)
   entregue_em timestamptz,
 
   -- protocolo de "não encontrei o cliente": true enquanto as tentativas de
@@ -1121,10 +1123,62 @@ $$;
 -- mesmo instante (ex: uma segunda oferta sendo processada). Uma função só,
 -- WHERE escopado pelo dono da rota via join com entregadores.
 -- ------------------------------------------------------------
+-- item 34 (25/08/2026): enfileira 1 notificação pro cliente do restaurante
+-- (telefone puxado do próprio pedido, nunca do chamador — evita spoofing).
+-- SECURITY DEFINER porque quem chama (confirmar_retirada_rota, abaixo) roda
+-- como o entregador comum, e notificacao_restaurante não tem policy de
+-- INSERT pra ninguém — mas se autoriza por conta própria (mesmo padrão de
+-- aprovar_entregador_teste()): exposta como RPC pública, então não pode
+-- confiar que quem chama já validou a posse antes.
+create or replace function enfileirar_notificacao_restaurante(
+  p_pedido_id uuid, p_evento text, p_payload jsonb default '{}'
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not exists (
+    select 1 from pedidos p
+    join rotas_entrega r on r.id = p.rota_id
+    join entregadores e on e.id = r.entregador_id
+    where p.id = p_pedido_id and e.auth_user_id = auth.uid()
+  ) then
+    raise exception 'acesso negado' using errcode = '42501';
+  end if;
+
+  insert into notificacao_restaurante (pedido_id, telefone, evento, payload)
+  select p_pedido_id, cliente_telefone, p_evento, p_payload
+  from pedidos
+  where id = p_pedido_id and cliente_telefone is not null and cliente_telefone <> '';
+end;
+$$;
+
+-- item 34 (25/08/2026): "cheguei na loja" — passo novo ANTES de confirmar
+-- retirada, pedido explícito do usuário testando o fluxo de ponta a ponta.
+-- Idempotente (só seta a primeira vez) e não muda rotas_entrega.status —
+-- é só um timestamp informativo pra UI saber qual botão mostrar.
+create or replace function confirmar_chegada_loja(p_rota_id uuid)
+returns void
+language plpgsql
+as $$
+begin
+  update rotas_entrega
+  set chegou_loja_em = now()
+  where id = p_rota_id
+    and status = 'a_caminho_da_loja'
+    and chegou_loja_em is null
+    and entregador_id in (select id from entregadores where auth_user_id = auth.uid());
+end;
+$$;
+
 create or replace function confirmar_retirada_rota(p_rota_id uuid)
 returns void
 language plpgsql
 as $$
+declare
+  v_pedido record;
 begin
   update rotas_entrega
   set status = 'em_entrega', iniciada_em = now()
@@ -1136,6 +1190,59 @@ begin
   set status = 'em_rota'
   where auth_user_id = auth.uid()
     and id in (select entregador_id from rotas_entrega where id = p_rota_id);
+
+  -- achado real (25/08/2026, teste de ponta a ponta via painel-loja.html):
+  -- pedidos.status tem 'a_caminho' definido no schema desde sempre ("motoboy
+  -- pegou e está entregando") e painel-loja.html já sabe exibir esse rótulo
+  -- — mas nada nunca escrevia esse valor. A loja via "Pronto" a entrega
+  -- inteira, sem diferenciar "esperando retirada" de "já saiu com o
+  -- motoboy". Mesma checagem de posse do UPDATE de rotas_entrega acima
+  -- (rota_id tem que pertencer a um entregador_id do próprio auth.uid()) —
+  -- sem isso, um entregador poderia chamar essa RPC com o p_rota_id de
+  -- OUTRO entregador e ainda assim mexer no pedidos.status alheio, mesmo
+  -- os dois UPDATEs acima corretamente não fazendo nada nesse caso.
+  --
+  -- select ... for update em vez de um UPDATE só, porque também precisa
+  -- disparar 1 notificação POR PEDIDO da rota (rota multi-parada existe,
+  -- ver "4 pedidos numa rota com ordem_na_rota 1..4" nos testes) — o
+  -- WHERE já garante posse (mesma sub-select de sempre).
+  for v_pedido in
+    update pedidos
+    set status = 'a_caminho'
+    where rota_id = p_rota_id
+      and status = 'pronto'
+      and rota_id in (
+        select id from rotas_entrega
+        where entregador_id in (select id from entregadores where auth_user_id = auth.uid())
+      )
+    returning id, codigo_entrega
+  loop
+    perform enfileirar_notificacao_restaurante(
+      v_pedido.id, 'saiu_para_entrega',
+      jsonb_build_object('codigo_entrega', v_pedido.codigo_entrega)
+    );
+  end loop;
+end;
+$$;
+
+-- item 34 (25/08/2026): "cheguei no local de entrega" — passo novo ANTES de
+-- digitar o código, mesmo princípio de confirmar_chegada_loja() acima, só
+-- que por PEDIDO (não por rota) — rota multi-parada, cada parada chega em
+-- momento diferente.
+create or replace function confirmar_chegada_entrega(p_pedido_id uuid)
+returns void
+language plpgsql
+as $$
+begin
+  update pedidos
+  set chegou_entrega_em = now()
+  where id = p_pedido_id
+    and status = 'a_caminho'
+    and chegou_entrega_em is null
+    and rota_id in (
+      select id from rotas_entrega
+      where entregador_id in (select id from entregadores where auth_user_id = auth.uid())
+    );
 end;
 $$;
 
@@ -1436,11 +1543,19 @@ create policy "entregador ve pedidos das suas rotas" on pedidos for select using
 -- não introduz recursão nova porque a função não consulta pedidos.
 create policy "entregador ve pedido de tentativa pendente" on pedidos for select using (
   rota_id in (select rotas_com_tentativa_para_mim()));
-create policy "entregador confirma entrega das suas rotas" on pedidos for update using (
+-- achado real (25/08/2026, teste de ponta a ponta): a policy original só
+-- previa o UPDATE de confirmarEntrega() (status='entregue') — quando
+-- confirmar_retirada_rota() passou a também setar pedidos.status='a_caminho'
+-- (item 33), essa policy bloqueou com "new row violates row-level security
+-- policy", porque a RPC roda como SECURITY INVOKER (o próprio entregador,
+-- sujeito a RLS normal). Ampliada pra cobrir as duas transições legítimas
+-- que o entregador faz no ciclo de vida do pedido, mesma regra de posse de
+-- sempre (rota_id tem que ser de uma rota do próprio auth.uid()).
+create policy "entregador atualiza status dos pedidos das suas rotas" on pedidos for update using (
   rota_id in (select id from rotas_entrega where entregador_id in
     (select id from entregadores where auth_user_id = auth.uid()))
 ) with check (
-  status = 'entregue'
+  status in ('a_caminho', 'entregue')
   and rota_id in (select id from rotas_entrega where entregador_id in
     (select id from entregadores where auth_user_id = auth.uid()))
 );
@@ -2802,6 +2917,31 @@ create table if not exists notificacao (
   enviado_em timestamptz
 );
 
+-- ---------------------------------------------------------------------
+-- NOTIFICAÇÃO DO RESTAURANTE (item 34, 25/08/2026) — fila SEPARADA da
+-- `notificacao` acima de propósito: aquela é do módulo feira, endereçada
+-- por destinatario_tipo/destinatario_id (um "consumidor" com registro
+-- próprio e UUID). O cliente do restaurante não tem registro nenhum — só
+-- `pedidos.cliente_nome`/`cliente_telefone` em texto livre — não dá pra
+-- forçar no mesmo formato sem inventar um destinatario_id falso. Mesmo
+-- worker externo pode consumir as duas filas, só que essa aqui já vem
+-- com o telefone pronto, sem precisar resolver destinatario_id->telefone.
+-- ---------------------------------------------------------------------
+create table if not exists notificacao_restaurante (
+  id uuid primary key default gen_random_uuid(),
+  pedido_id uuid not null references pedidos(id) on delete cascade,
+  telefone text not null,
+  evento text not null,
+  payload jsonb not null default '{}',
+  status text not null default 'pendente' check (status in ('pendente','enviado','falhou')),
+  criado_em timestamptz not null default now(),
+  enviado_em timestamptz
+);
+create index if not exists idx_notificacao_restaurante_pedido
+  on notificacao_restaurante (pedido_id);
+create index if not exists idx_notificacao_restaurante_pendente
+  on notificacao_restaurante (criado_em) where status = 'pendente';
+
 create table if not exists notificacao_proximidade_config (
   id int primary key default 1,
   distancia_aviso_km numeric not null default 0.4,
@@ -3809,6 +3949,7 @@ alter table piso_regulatorio_config enable row level security;
 alter table oferta_recusada enable row level security;
 alter table entregador_flag_revisao enable row level security;
 alter table notificacao enable row level security;
+alter table notificacao_restaurante enable row level security;
 alter table notificacao_proximidade_config enable row level security;
 alter table notificacao_audio enable row level security;
 alter table avaliacao enable row level security;
@@ -4024,6 +4165,14 @@ create policy "destinatario ve suas proprias notificacoes" on notificacao for se
   (destinatario_tipo = 'consumidor' and destinatario_id in (select meu_usuario_id()))
   or (destinatario_tipo = 'feirante' and destinatario_id in (select meu_estabelecimento_id()))
   or (destinatario_tipo = 'entregador' and destinatario_id in (select meu_entregador_id_feira()))
+);
+
+-- notificacao_restaurante: só a loja do pedido em questão (visibilidade/
+-- debug — quem escreve é sempre enfileirar_notificacao_restaurante(),
+-- SECURITY DEFINER, não RLS de INSERT pra ninguém).
+create policy "loja ve notificacoes dos seus pedidos" on notificacao_restaurante for select using (
+  pedido_id in (select id from pedidos where tenant_id in
+    (select tenant_id from usuarios_loja where auth_user_id = auth.uid()))
 );
 
 -- avaliacao: quem avaliou e quem foi avaliado veem; só o autor cria a própria

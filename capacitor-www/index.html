@@ -310,7 +310,7 @@
         <button class="btn-primary" onclick="abrirRotaFeira()" style="margin-bottom:12px;background:linear-gradient(135deg,#8B6F3F,#5C4A2A);">🧺 Ver rota da feira</button>
       </div>
 
-      <button class="link-btn" onclick="abrirExtratoFeira()" style="display:block;text-align:center;width:100%;margin-bottom:14px;">Ver extrato da feira</button>
+      <button class="link-btn" id="btnExtratoFeira" onclick="abrirExtratoFeira()" style="display:none;text-align:center;width:100%;margin-bottom:14px;">Ver extrato da feira</button>
 
       <button class="btn-primary" id="btnContinuar" onclick="clicarContinuar()" style="margin-bottom:10px;display:none;">Continuar</button>
       <button class="btn-outline" id="btnPausar" onclick="clicarPausar()" style="margin-bottom:10px;">Pausar</button>
@@ -328,6 +328,14 @@
     ainda está 'a_caminho_da_loja', o entregador precisa confirmar que pegou o
     pedido antes de sair — isso é o que popula rotas_entrega.iniciada_em, campo
     que já existia no schema mas nada escrevia (achado de sessão anterior). -->
+    <!-- item 34 (25/08/2026): passo novo antes da retirada — pedido
+    explícito do usuário testando o fluxo real de ponta a ponta. -->
+    <div id="chegadaLojaBox" style="display:none;background:var(--teal-soft,#E6F4F1);border-radius:14px;padding:16px;margin-bottom:18px;text-align:center;">
+      <div style="font-weight:700;margin-bottom:6px;">A caminho da loja?</div>
+      <div style="font-size:13px;color:var(--gray);margin-bottom:12px;">Confirme quando chegar pra liberar a retirada.</div>
+      <button class="btn-primary" onclick="confirmarChegadaLoja()">Cheguei na loja</button>
+    </div>
+
     <div id="retiradaBox" style="display:none;background:var(--teal-soft,#E6F4F1);border-radius:14px;padding:16px;margin-bottom:18px;text-align:center;">
       <div style="font-weight:700;margin-bottom:6px;">Retire o pedido na loja</div>
       <div style="font-size:13px;color:var(--gray);margin-bottom:12px;">Fale o código <b id="r_codigoRetirada">—</b> pro atendente confirmar que é você.</div>
@@ -343,6 +351,17 @@
     <p style="color:var(--gray);font-size:13px;">Parada <span id="e_indice">1</span></p>
     <h2 id="e_endereco" style="margin-bottom:16px;">—</h2>
 
+    <!-- item 34 (25/08/2026): passo novo "cheguei no local de entrega" ANTES
+    de digitar o código — mesmo princípio de chegadaLojaBox em view-rota,
+    mas por PEDIDO (rota multi-parada, cada parada chega em momento
+    diferente). Esconde entregaConteudo (código+foto+confirmar) até chegar. -->
+    <div id="chegadaEntregaBox" style="display:none;background:var(--teal-soft,#E6F4F1);border-radius:14px;padding:16px;margin-bottom:18px;text-align:center;">
+      <div style="font-weight:700;margin-bottom:6px;">A caminho do cliente?</div>
+      <div style="font-size:13px;color:var(--gray);margin-bottom:12px;">Confirme quando chegar pra liberar a confirmação de entrega.</div>
+      <button class="btn-primary" onclick="confirmarChegadaEntrega()">Cheguei no local de entrega</button>
+    </div>
+
+    <div id="entregaConteudo">
     <!-- ==============================================================
     PENDÊNCIA ISOLADA — INTEGRAÇÃO REAL DE PIX (confirmado, sessão de
     go-to-market 15/08/2026): este cartão é 100% decorativo. Nenhuma chamada
@@ -381,6 +400,7 @@
 
     <div class="msg" id="entregaMsg"></div>
     <button class="btn-primary" onclick="confirmarEntrega()">Confirmar entrega</button>
+    </div>
   </div>
 
   <!-- ===================== VIEW: ROTA DA FEIRA ===================== -->
@@ -947,6 +967,7 @@ async function checarTurnoAtivo(){
     atualizarStatsTurno();
     verificarRotaAtiva();
     verificarRotaFeiraAtiva();
+    verificarHistoricoFeira();
     iniciarRastreioPosicao(); // B1 — ativo enquanto turnos.status = 'ativo', pausa inclusa (ver nota na função)
     iniciarEscutaDeOfertas(); // motor de despacho (restaurante) — ativo enquanto o turno estiver ativo
     iniciarEscutaDeOfertasFeira(); // motor de despacho (feira) — mesmo turno, mesma tela, sem seletor de modo
@@ -1084,13 +1105,20 @@ function montarRota(rota){
   document.getElementById('r_resumo').textContent =
     pedidos.length + ' parada(s) · código de retirada ' + rota.codigo_retirada;
 
-  // motor de despacho: enquanto a rota ainda está 'a_caminho_da_loja', pede
-  // confirmação de retirada antes de tudo — isso é o que popula iniciada_em.
+  // item 34 (25/08/2026, pedido explícito do usuário testando de ponta a
+  // ponta): passo novo "cheguei na loja" ANTES da confirmação de retirada
+  // — antes o botão de retirada aparecia direto, sem essa etapa.
+  const chegadaLojaBox = document.getElementById('chegadaLojaBox');
   const retiradaBox = document.getElementById('retiradaBox');
-  if(rota.status === 'a_caminho_da_loja'){
+  if(rota.status === 'a_caminho_da_loja' && !rota.chegou_loja_em){
+    chegadaLojaBox.style.display = 'block';
+    retiradaBox.style.display = 'none';
+  } else if(rota.status === 'a_caminho_da_loja' && rota.chegou_loja_em){
+    chegadaLojaBox.style.display = 'none';
     document.getElementById('r_codigoRetirada').textContent = rota.codigo_retirada;
     retiradaBox.style.display = 'block';
   } else {
+    chegadaLojaBox.style.display = 'none';
     retiradaBox.style.display = 'none';
   }
 
@@ -1105,7 +1133,7 @@ function montarRota(rota){
       <div class="pay-pill ${p.pago_antecipado ? 'pix' : 'qrcode'}">
         ${p.pago_antecipado ? 'Pix · já pago' : 'Pix QR Code · a cobrar'}
       </div>
-      <button class="btn-primary" style="margin-top:12px;" data-pedido-id="${escapeHtml(p.id)}" data-endereco="${escapeHtml(p.endereco)}" data-valor="${p.valor_pedido}" data-indice="${i+1}">
+      <button class="btn-primary" style="margin-top:12px;" data-pedido-id="${escapeHtml(p.id)}" data-endereco="${escapeHtml(p.endereco)}" data-valor="${p.valor_pedido}" data-indice="${i+1}" data-chegou="${p.chegou_entrega_em ? '1' : ''}">
         ${p.status === 'entregue' ? 'Entregue ✓' : 'Ir pra essa parada'}
       </button>
     </div>
@@ -1113,9 +1141,17 @@ function montarRota(rota){
 
   paradasBox.querySelectorAll('button[data-pedido-id]').forEach(btn => {
     btn.addEventListener('click', () => {
-      abrirEntrega(btn.dataset.pedidoId, btn.dataset.endereco, Number(btn.dataset.valor), Number(btn.dataset.indice));
+      abrirEntrega(btn.dataset.pedidoId, btn.dataset.endereco, Number(btn.dataset.valor), Number(btn.dataset.indice), !!btn.dataset.chegou);
     });
   });
+}
+
+// item 34 (25/08/2026): "cheguei na loja" — passo novo antes da retirada.
+async function confirmarChegadaLoja(){
+  if(!rotaAtivaId) return;
+  const { error } = await supabaseClient.rpc('confirmar_chegada_loja', { p_rota_id: rotaAtivaId });
+  if(error){ alert('Não deu pra confirmar a chegada na loja: ' + error.message); return; }
+  await verificarRotaAtiva();
 }
 
 async function confirmarRetirada(){
@@ -1552,6 +1588,21 @@ async function recusarPropostaConsolidacao(){
   }
 }
 
+// achado real (25/08/2026): "Ver extrato da feira" aparecia pra QUALQUER
+// entregador, mesmo quem nunca fez uma corrida de feira na vida (mesma
+// conta atende os dois — não existe campo nenhum em tenants/entregadores
+// dizendo "esse aqui é feira" pra esconder de outro jeito). Só mostra o
+// botão se já existir pelo menos 1 linha no extrato — mesmo princípio já
+// usado em comRotaFeira (esconder até ter algo pra mostrar).
+async function verificarHistoricoFeira(){
+  const { data } = await supabaseClient
+    .from('extrato_entregador')
+    .select('entregador_id')
+    .eq('entregador_id', entregadorId)
+    .limit(1);
+  document.getElementById('btnExtratoFeira').style.display = (data && data.length) ? 'block' : 'none';
+}
+
 async function verificarRotaFeiraAtiva(){
   const { data: rotas } = await supabaseClient
     .from('entrega_rota')
@@ -1806,21 +1857,34 @@ async function abrirExtratoFeira(){
 // ------------------------------------------------------------
 // ENTREGA / PAGAMENTO
 // ------------------------------------------------------------
-function abrirEntrega(pedidoId, endereco, valor, indice){
+function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou){
   paradaAtualPedidoId = pedidoId;
   document.getElementById('e_endereco').textContent = endereco;
   document.getElementById('e_valor').textContent = formatarReal(Number(valor));
   document.getElementById('e_indice').textContent = indice;
   document.getElementById('e_codigoInput').value = '';
   document.getElementById('entregaMsg').className = 'msg';
+  // item 34 (25/08/2026): esconde código/foto/confirmar até "cheguei no
+  // local de entrega" ser confirmado — jaChegou vem do data-chegou do
+  // botão em montarRota(), refletindo pedidos.chegou_entrega_em.
+  document.getElementById('chegadaEntregaBox').style.display = jaChegou ? 'none' : 'block';
+  document.getElementById('entregaConteudo').style.display = jaChegou ? 'block' : 'none';
   mostrar('view-entrega');
+}
+
+async function confirmarChegadaEntrega(){
+  if(!paradaAtualPedidoId) return;
+  const { error } = await supabaseClient.rpc('confirmar_chegada_entrega', { p_pedido_id: paradaAtualPedidoId });
+  if(error){ alert('Não deu pra confirmar a chegada: ' + error.message); return; }
+  document.getElementById('chegadaEntregaBox').style.display = 'none';
+  document.getElementById('entregaConteudo').style.display = 'block';
 }
 
 async function confirmarEntrega(){
   const msg = document.getElementById('entregaMsg');
   msg.className = 'msg';
 
-  const { data: pedido, error: eBusca } = await supabaseClient.from('pedidos').select('codigo_entrega').eq('id', paradaAtualPedidoId).single();
+  const { data: pedido, error: eBusca } = await supabaseClient.from('pedidos').select('codigo_entrega, status').eq('id', paradaAtualPedidoId).single();
   // achado ultrareview: sem checar erro/null aqui, um pedido reatribuído ou
   // removido entre abrir a tela e confirmar (agora plausível com o motor de
   // despacho real mexendo em rota_id) quebrava com TypeError sem tratamento,
@@ -1828,6 +1892,16 @@ async function confirmarEntrega(){
   if(eBusca || !pedido){
     msg.textContent = 'Não achamos mais esse pedido — pode ter sido reatribuído. Volte e tente de novo.';
     msg.className = 'msg error';
+    return;
+  }
+  // achado real (25/08/2026, teste em aparelho físico): nada impedia
+  // reenviar confirmarEntrega() pra um pedido que já estava 'entregue' —
+  // um duplo toque, ou reabrir a tela depois de já ter confirmado, gravava
+  // um comprovantes_entrega NOVO em cima do mesmo pedido toda vez.
+  if(pedido.status === 'entregue'){
+    msg.textContent = 'Essa entrega já foi confirmada antes — nada a fazer aqui.';
+    msg.className = 'msg';
+    setTimeout(verificarRotaAtiva, 1000);
     return;
   }
   const codigoDigitado = document.getElementById('e_codigoInput').value.trim();
@@ -1854,7 +1928,14 @@ async function confirmarEntrega(){
 
   await supabaseClient.from('pedidos').update({ status: 'entregue', entregue_em: new Date().toISOString() }).eq('id', paradaAtualPedidoId);
 
-  mostrar('view-rota');
+  // achado real (25/08/2026, teste de ponta a ponta): voltava pra
+  // 'view-rota' (tela de DETALHE da rota) em vez de 'view-turno' (o
+  // painel principal — mesmo destino usado em todo o resto do app pra
+  // "acabei de concluir algo"). view-rota não se atualiza sozinha, então
+  // a parada já entregue continuava aparecendo com o botão "Ir pra essa
+  // parada" como se nada tivesse acontecido, mesmo o backend já tendo
+  // confirmado tudo — parecia que "não saiu da tela".
+  mostrar('view-turno');
   verificarRotaAtiva();
   atualizarStatsTurno();
 }

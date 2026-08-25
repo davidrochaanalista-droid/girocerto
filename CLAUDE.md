@@ -1971,7 +1971,118 @@ C:\Users\Usuário\Projetos\giro certo
     - Suíte completa rodou 154/154 antes de ir pro aparelho, depois dos
       dois fixes de código aplicados.
 
+34. **Fluxo granular de entrega (cheguei na loja / cheguei no cliente) +
+    notificação isolada pro restaurante** (25/08/2026, mesma sessão dos
+    itens 32-33). Pedido do usuário: refazer o passo a passo real e, dessa
+    vez, granularizar em 3 confirmações em vez de 2 — "cheguei na loja"
+    antes da retirada, "cheguei no local de entrega" antes do código, e a
+    retirada passou a também avisar o cliente que o pedido saiu.
+    - **`confirmar_chegada_loja(p_rota_id)`** (`db/schema.sql`) — nova RPC,
+      grava `rotas_entrega.chegou_loja_em`, idempotente (`where ... and
+      chegou_loja_em is null`), guardada por ownership
+      (`entregador_id in (select id from entregadores where auth_user_id =
+      auth.uid())`), mesmo padrão das RPCs de entregador já existentes.
+    - **`confirmar_chegada_entrega(p_pedido_id)`** (`db/schema.sql`) — nova
+      RPC irmã, grava `pedidos.chegou_entrega_em`, mesmo padrão de
+      idempotência/ownership, guardada também por `status = 'a_caminho'`.
+    - **Notificação isolada pro restaurante** — usuário escolheu
+      explicitamente ("criar uma fila separada só pro restaurante, mais
+      isolado, não mexe na fila da feira") em vez de reaproveitar a tabela
+      `notificacao` existente (usada pela feira). Nova tabela
+      `notificacao_restaurante` (pedido_id, telefone, evento, payload
+      jsonb, status pendente/enviado/falhou) + RLS (loja vê só notificações
+      dos próprios pedidos) + função `enfileirar_notificacao_restaurante()`
+      SECURITY DEFINER auto-autorizada (mesmo padrão de
+      `aprovar_entregador_teste()`: confere ownership dentro da própria
+      função antes de inserir, com `set search_path = public, pg_temp`).
+      Só enfileira se `cliente_telefone` não for nulo/vazio — pedidos sem
+      telefone (entrada manual antiga, sem campo preenchido) simplesmente
+      não geram notificação, sem erro. **Ainda não existe worker/consumidor
+      que efetivamente manda a mensagem via WhatsApp** — a fila só
+      acumula `status='pendente'`, mesmo estado do `notificacao` (fila da
+      feira) hoje. Fora de escopo até o usuário pedir.
+    - **`confirmar_retirada_rota()` (`db/schema.sql`)** — passou a rodar um
+      `for v_pedido in update ... returning id, codigo_entrega loop` (em
+      vez de um `update` solto) pra poder chamar
+      `enfileirar_notificacao_restaurante(v_pedido.id, 'saiu_para_entrega',
+      jsonb_build_object('codigo_entrega', v_pedido.codigo_entrega))` pra
+      cada pedido que a retirada resolve — cobre rotas multi-parada da
+      feira também, não só o caso de 1 pedido do restaurante.
+    - **`mockups/app-entregador.html`** — `montarRota()` agora mostra a
+      caixa "Cheguei na loja?" antes da caixa de retirada quando
+      `rota.chegou_loja_em` ainda é null (`confirmarChegadaLoja()`); cada
+      parada carrega `data-chegou` (de `pedido.chegou_entrega_em`) pro
+      `abrirEntrega()` decidir se mostra "Cheguei no local de entrega?" ou
+      já o conteúdo de código/foto/confirmar (`confirmarChegadaEntrega()`
+      alterna as duas caixas direto, sem re-render). Espelhado em
+      `capacitor-www/index.html` via `npm run sync-capacitor` + rebuild do
+      APK.
+    - **Testado de ponta a ponta no aparelho físico**: pedido novo criado
+      com telefone preenchido (achado ao vivo: o pedido de teste anterior
+      não tinha telefone, não daria pra testar a fila de notificação de
+      verdade) → despachado via `/interno/despachar` (tenant `is_teste`
+      não dispara `NOTIFY`) → aceito no app → **mesmo gap do item 32-33
+      reapareceu** (tentativa fica `aceito` no banco mas
+      `rotas_entrega.entregador_id`/`status` só avançam se algum processo
+      do motor de despacho chamar `/interno/resposta-despacho` — pra
+      tenant de teste isso nunca acontece sozinho) — resolvido chamando o
+      endpoint manualmente. Dashboard não atualizava sozinho depois disso
+      (`checarTurnoAtivo()` só roda no login/ações de turno, sem polling)
+      — contornado tocando Pausar→Continuar pra forçar a rechecagem
+      (comportamento esperado, não é bug: seria resolvido em produção pelo
+      `NOTIFY` real). Daí pra frente, os 3 passos (cheguei na loja →
+      confirmar retirada → cheguei no local de entrega → código + foto →
+      confirmar entrega) funcionaram um atrás do outro sem intervenção
+      manual, confirmados via consulta direta ao banco em cada etapa:
+      `chegou_loja_em` gravado, `notificacao_restaurante` criada com
+      `evento='saiu_para_entrega'` e `codigo_entrega` certo no payload,
+      `chegou_entrega_em` gravado, `pedidos.status='entregue'` e
+      `comprovantes_entrega` criado com `codigo_confirmado=true`. Navegação
+      final voltou pra `view-turno` corretamente (fix do item anterior
+      continua valendo).
+    - **Achado operacional, não é bug de código**: rodar a suíte de testes
+      completa (`node run-all.js`) contra o mesmo banco Supabase hospedado
+      usado pelos testes manuais fez um dos testes de reconciliação do
+      `despacho_motor` encontrar um pedido de teste esquecido (duplicata
+      "Cliente Fix Navegacao", `status='pronto'` e `rota_id` nulo, lixo de
+      um duplo-clique antigo na mesma sessão) e despachar ele de verdade
+      pro entregador físico real — apareceu oferta com som na tela em
+      produção-de-teste, sem eu ter chamado nada manualmente. Confirma na
+      prática por que o protocolo já estabelecido existe (nunca deixar
+      lixo de teste em `status='pronto'` sem rota) — o achado aqui é que
+      não é só a suíte compartilhar o banco com o app real, é que qualquer
+      pedido `pronto`/sem rota parado no tenant de teste é candidato a
+      reconciliação em QUALQUER rodada de teste futura, não só nesta.
+      Limpo na hora (deletados o pedido, a rota fantasma e a tentativa
+      órfã); nenhum pedido `pronto`/sem rota ficou pra trás no tenant de
+      teste ao final da sessão.
+    - **Achado à parte, não regressão de hoje**: usuário notou que
+      "Entregas hoje" e "Ganho no turno" continuam zerados depois de uma
+      entrega confirmada de verdade. Investigado: `atualizarStatsTurno()`
+      consulta a tabela `repasses` por `turno_id`, e não existe HOJE
+      nenhum caminho (RPC, trigger, worker) que insira uma linha em
+      `repasses` quando um pedido vira `entregue` — confirmado explícito
+      no teste `tests/financeiro.test.js`: "geração de repasse é 100%
+      backend/service role" e "não existe [motor de repasse] ainda".
+      Comportamento correto dado o estado atual do produto, não uma
+      regressão do fluxo granular — motor de repasse é feature própria,
+      maior, fora do escopo pedido nesta sessão.
+    - Suíte completa rodou 154/154 (antes do achado operacional da
+      reconciliação, e novamente confirmado sem regressão depois da
+      limpeza).
+
 ## Pendências reais no momento
+- [ ] **Motor de repasse não existe ainda** (achado no item 34, 25/08/2026)
+      — `atualizarStatsTurno()` em `app-entregador.html` mostra "Entregas
+      hoje"/"Ganho no turno" a partir da tabela `repasses`, mas nenhum
+      caminho do sistema insere linha ali quando um pedido vira `entregue`
+      — `repasses` só tem policy de SELECT client-side, geração é
+      100% backend/service role e esse backend não existe (confirmado em
+      `tests/financeiro.test.js`). Card fica zerado mesmo depois de uma
+      entrega real de ponta a ponta. Precisa de um worker/trigger que
+      calcule o valor do repasse (regra de negócio ainda não definida:
+      por entrega vs fim de turno, já vem de `tenants.frequencia_repasse`)
+      e insira em `repasses` quando `pedidos.status` vira `entregue`.
 - [ ] **Cobrança via Pix aparecendo em rota da sessão feira** (achado pelo
       usuário no item 33, 25/08/2026, não investigado) — segundo o
       usuário, na sessão feira o entregador só recebe as taxas de entrega,
