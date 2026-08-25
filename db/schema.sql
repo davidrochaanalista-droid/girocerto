@@ -65,10 +65,19 @@ create table if not exists tenants (
   valor_por_km_adicional numeric(10,2) not null default 2.00, -- cobrado só sobre o que exceder o km_minimo_incluso
 
   -- raios de despacho (seção 33) — dois conceitos diferentes:
-  -- 1) distância pra CHAMAR o motoboy até a loja (além disso não compensa pra ele)
+  -- 1) distância pra CHAMAR o motoboy até a loja
   -- 2) distância máxima confortável da ENTREGA em si, da loja até o cliente
   raio_chamada_motoboy_km numeric(4,1) not null default 1.5,
   raio_maximo_entrega_km numeric(4,1) not null default 6.0,
+
+  -- item 36 (25/08/2026): teto da busca EXPANDIDA — se ninguém disponível
+  -- dentro de raio_chamada_motoboy_km, o motor de despacho procura de novo
+  -- até este raio maior antes de desistir. Motoboy chamado de fora do
+  -- perímetro normal recebe km adicional pela distância excedente (mesma
+  -- tarifa por km de valor_por_km_adicional, ver gerar_repasse_ao_entregar())
+  -- — antes disso o comentário acima dizia "além disso não compensa pra
+  -- ele", que deixou de ser verdade com essa mudança.
+  raio_chamada_maximo_km numeric(4,1) not null default 3.0,
 
   -- LGPD (seção 37) — carimbo de quando o proprietário aceitou os termos
   -- de tratamento de dados; sem isso não tem como provar consentimento
@@ -381,6 +390,12 @@ create table if not exists rotas_entrega (
   chegou_loja_em timestamptz,  -- motoboy chegou na loja (item 34, antes de retirar)
   iniciada_em timestamptz,     -- motoboy saiu da loja com os pedidos
   concluida_em timestamptz,
+  -- item 36 (25/08/2026): distância até a loja no momento em que essa rota
+  -- foi oferecida e aceita (copiada de tentativas_despacho.distancia_km
+  -- quando a tentativa vira 'aceito', ver tratarRespostaDespacho() em
+  -- dispatch-engine/index.js) — usado por gerar_repasse_ao_entregar() pra
+  -- pagar km adicional quando o motoboy veio de fora do raio_chamada_motoboy_km normal.
+  distancia_chamada_km numeric(6,2),
 
   -- código de retirada (seção 24): loja e motoboy veem o mesmo número;
   -- ele fala esse código na loja pra confirmar que é quem deveria pegar
@@ -450,7 +465,13 @@ create table if not exists tentativas_despacho (
   notificado_em timestamptz not null default now(),
   resultado text
     check (resultado in ('aceito', 'recusado', 'sem_resposta')),
-  respondido_em timestamptz
+  respondido_em timestamptz,
+  -- item 36 (25/08/2026): distância do entregador até a loja no momento da
+  -- oferta (calculada em buscarProximoCandidato(), dispatch-engine/index.js)
+  -- — persistida aqui pra, se essa tentativa for aceita, virar
+  -- rotas_entrega.distancia_chamada_km e alimentar o km adicional do
+  -- repasse. Null quando o tenant ainda não tem lat/lng (sem geofiltro).
+  distancia_km numeric(6,2)
 );
 
 create index if not exists idx_tentativas_despacho_rota
@@ -694,6 +715,112 @@ create table if not exists repasses (
 
 create index if not exists idx_repasses_entregador_status
   on repasses (entregador_id, status);
+
+-- ------------------------------------------------------------
+-- MOTOR DE REPASSE (item 35, 25/08/2026, ampliado no item 36) — tarifa
+-- mínima + espera excedente + km adicional de CHAMADA (distância do
+-- motoboy até a loja, quando veio de fora do raio normal — ver
+-- raio_chamada_maximo_km em tenants). NÃO inclui km adicional da
+-- ENTREGA em si (loja -> cliente): pedidos de restaurante guardam o
+-- endereço de entrega só como texto livre (sem latitude/longitude própria,
+-- diferente de pedido_grupo da feira), não tem como medir essa distância
+-- hoje sem adicionar geocodificação do endereço do cliente — segue de fora.
+--
+-- tarifa_minima é "por rota" (ver comentário na coluna, em tenants), não
+-- por pedido — dividida igualmente entre os pedidos da mesma rota pra não
+-- pagar em dobro/triplo numa rota com mais de 1 parada. Espera na loja
+-- (chegou_loja_em -> iniciada_em, nível de ROTA, compartilhada por todas as
+-- paradas) e km de chamada (idem, nível de rota) seguem a mesma divisão;
+-- espera no cliente (chegou_entrega_em -> entregue_em, item 34) é só do
+-- próprio pedido, sem divisão. BEFORE UPDATE (não AFTER) porque também
+-- grava pedidos.tempo_espera_min na mesma linha, além de inserir em
+-- repasses.
+--
+-- SECURITY DEFINER: quem dispara é sempre o UPDATE direto de
+-- confirmarEntrega() (client, sem RPC), rodando como o próprio entregador
+-- comum — repasses não tem NENHUMA policy de INSERT client-side de
+-- propósito (geração é 100% backend). Sem checagem de posse própria aqui
+-- porque o UPDATE que dispara o trigger já passou pela RLS de pedidos
+-- (policy "entregador atualiza status dos pedidos das suas rotas") — só
+-- quem já é dono da rota chega a esse ponto.
+create or replace function gerar_repasse_ao_entregar()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_rota record;
+  v_tenant record;
+  v_qtd_pedidos integer;
+  v_espera_loja_min numeric;
+  v_espera_cliente_min numeric;
+  v_espera_total_min numeric;
+  v_excedente_min numeric;
+  v_km_chamada_excedente numeric;
+  v_valor numeric;
+  v_turno_id uuid;
+begin
+  if new.status <> 'entregue' or old.status is not distinct from 'entregue' then
+    return new;
+  end if;
+
+  select * into v_rota from rotas_entrega where id = new.rota_id;
+  if v_rota.entregador_id is null then
+    return new;
+  end if;
+
+  select * into v_tenant from tenants where id = new.tenant_id;
+
+  select count(*) into v_qtd_pedidos from pedidos where rota_id = new.rota_id;
+  v_qtd_pedidos := greatest(v_qtd_pedidos, 1);
+
+  v_espera_loja_min := 0;
+  if v_rota.chegou_loja_em is not null and v_rota.iniciada_em is not null then
+    v_espera_loja_min := extract(epoch from (v_rota.iniciada_em - v_rota.chegou_loja_em)) / 60.0 / v_qtd_pedidos;
+  end if;
+
+  v_espera_cliente_min := 0;
+  if new.chegou_entrega_em is not null and new.entregue_em is not null then
+    v_espera_cliente_min := extract(epoch from (new.entregue_em - new.chegou_entrega_em)) / 60.0;
+  end if;
+
+  v_espera_total_min := v_espera_loja_min + v_espera_cliente_min;
+  new.tempo_espera_min := round(v_espera_total_min);
+
+  v_excedente_min := greatest(0, v_espera_total_min - coalesce(v_tenant.tempo_espera_tolerado_min, 0));
+
+  -- item 36 (25/08/2026): km adicional quando o motoboy foi chamado de fora
+  -- do raio_chamada_motoboy_km normal (busca expandida em
+  -- buscarProximoCandidato(), dispatch-engine/index.js) — distância de
+  -- CHAMADA (motoboy até a loja), não a distância da entrega em si (essa
+  -- não é medida hoje, endereço do cliente não é geocodificado, ver
+  -- comentário no início desta função). Nível de rota, dividido igualmente
+  -- entre os pedidos, mesma lógica de tarifa_minima/espera na loja acima.
+  v_km_chamada_excedente := greatest(0,
+    coalesce(v_rota.distancia_chamada_km, 0) - coalesce(v_tenant.raio_chamada_motoboy_km, 0)
+  ) / v_qtd_pedidos;
+
+  v_valor := coalesce(v_tenant.tarifa_minima, 0) / v_qtd_pedidos
+    + v_excedente_min * coalesce(v_tenant.valor_por_minuto_espera_excedente, 0)
+    + v_km_chamada_excedente * coalesce(v_tenant.valor_por_km_adicional, 0);
+  v_valor := round(v_valor, 2);
+  new.valor_entrega := v_valor;
+
+  select id into v_turno_id from turnos
+  where entregador_id = v_rota.entregador_id and status = 'ativo'
+  order by iniciado_em desc limit 1;
+
+  insert into repasses (entregador_id, pedido_id, turno_id, valor, status)
+  values (v_rota.entregador_id, new.id, v_turno_id, v_valor, 'pendente');
+
+  return new;
+end;
+$$;
+
+create trigger trg_gerar_repasse_ao_entregar
+before update on pedidos
+for each row execute function gerar_repasse_ao_entregar();
 
 -- ------------------------------------------------------------
 -- AVALIACOES_LOJA: o motoboy avalia a loja ao finalizar o turno

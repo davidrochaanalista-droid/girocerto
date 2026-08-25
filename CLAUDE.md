@@ -2078,18 +2078,100 @@ C:\Users\Usuário\Projetos\giro certo
     - `railway down -y` antes de todo o teste local, `railway up -c` depois
       de tudo confirmado — voltou `● Online` em produção.
 
+35. **Motor de repasse — MVP tarifa mínima + espera excedente** (25/08/2026,
+    pedido explícito do usuário logo após o item 34: "quero implementar o
+    motor de repasse agora"). Fechava a pendência aberta no item 34
+    ("Entregas hoje"/"Ganho no turno" zerados mesmo após entrega real).
+    - Trigger `gerar_repasse_ao_entregar()` (`db/schema.sql`), `before
+      update on pedidos` — dispara quando `status` vira `entregue` (guard
+      `old.status is not distinct from 'entregue'` evita duplicata em
+      re-confirmação, mesma categoria do guard client-side do item 33).
+      `security definer` porque quem escreve `pedidos.status='entregue'` é
+      sempre o UPDATE direto do client em `confirmarEntrega()` (sem RPC,
+      rodando como o entregador comum) e `repasses` não tem NENHUMA policy
+      de INSERT client-side de propósito — geração é 100% backend. Sem
+      checagem de posse própria dentro do trigger porque o UPDATE que o
+      dispara já passou pela RLS de `pedidos` antes de chegar aqui.
+    - Fórmula: `tarifa_minima + (espera excedente × valor_por_minuto_espera_excedente)`.
+      Espera excedente = espera na loja (`chegou_loja_em → iniciada_em`,
+      nível de ROTA, item 34) + espera no cliente (`chegou_entrega_em →
+      entregue_em`, item 34, nível de PEDIDO) − `tempo_espera_tolerado_min`
+      do tenant, nunca negativo. `pedidos.tempo_espera_min` (coluna que já
+      existia, nunca escrita antes — confirmado em `tests/financeiro.test.js`)
+      passou a ser gravada com o total medido, na mesma trigger.
+    - **`tarifa_minima` é "por rota"**, não por pedido (comentário original
+      da coluna, em `tenants`) — dividida igualmente entre os pedidos da
+      MESMA rota (`select count(*) from pedidos where rota_id = ...`) pra
+      não pagar em dobro/triplo numa rota multi-parada. Espera na loja
+      (nível de rota) segue a mesma divisão; espera no cliente não divide
+      (é só do próprio pedido).
+    - **Fora de escopo, decisão explícita do usuário**: km adicional da
+      ENTREGA em si (loja → cliente) — pedidos de restaurante guardam o
+      endereço de entrega só como texto livre, sem latitude/longitude
+      própria (diferente de `pedido_grupo` da feira), não dá pra medir essa
+      distância sem geocodificar o endereço do cliente. Ficou de fora do
+      MVP (ver item 36 abaixo pra uma variante de km adicional que ENTROU
+      no escopo).
+    - Testado via inserção SQL direta simulando uma rota/pedido com
+      timestamps conhecidos (não pelo app real — é lógica 100% server-side,
+      mais rápido e mais preciso validar por SQL que reproduzir tudo num
+      aparelho físico de novo): espera de 15min (5 na loja + 10 no cliente)
+      contra tolerância de 10min → 5min excedente → valor
+      10,00 (tarifa) + 5×0,50 = **12,50**, bateu exato.
+    - Suíte completa 154/154 nesse ponto (sem teste dedicado ainda — o item
+      36 abaixo que soma os 4 testes novos, chegando a 158/158 no final).
+
+36. **Km adicional de CHAMADA (motoboy → loja) + busca de despacho
+    expandida** (25/08/2026, mesma sessão, pedido do usuário logo em
+    seguida ao item 35, usando 2 endereços reais — "Cartel Burguer, Av
+    Basiléia 97" e "Av Parada Pinto 1380" — geocodificados via Nominatim
+    pra validar o conceito antes de decidir o escopo). Achado ao investigar:
+    `dispatch-engine/index.js` `buscarProximoCandidato()` **desistia** se
+    ninguém estivesse dentro de `raio_chamada_motoboy_km` — "sem entregador
+    disponível... precisa de intervenção manual da loja" — o comentário
+    original da coluna dizia explicitamente "além disso não compensa pra
+    ele". Usuário pediu pra mudar esse comportamento: buscar fora do
+    perímetro normal, pagando km adicional pela distância extra.
+    - **`tenants.raio_chamada_maximo_km`** (novo, default 3.0) — teto da
+      busca expandida, decisão do usuário (opção "recomendado" nas duas
+      perguntas feitas: teto configurável por tenant, não busca ilimitada;
+      km adicional sobre a distância do MOTOBOY até a loja, não sobre a
+      distância da entrega em si).
+    - **`buscarProximoCandidato()`** (`dispatch-engine/index.js`) — 2
+      passadas: primeiro filtra por `raio_chamada_motoboy_km` (comportamento
+      de sempre); se ninguém, filtra de novo por `raio_chamada_maximo_km`
+      antes de desistir. `.distancia` do candidato retornado (já calculada
+      via `haversineKm`) é aproveitada, não recalculada depois.
+    - **`tentativas_despacho.distancia_km`** (novo) — grava a distância no
+      momento da OFERTA. **`rotas_entrega.distancia_chamada_km`** (novo) —
+      copiada de `distancia_km` em `tratarRespostaDespacho()` quando a
+      tentativa vira `aceito`, junto com o UPDATE que já atribuía
+      `entregador_id`/`status` (mesmo INSERT/UPDATE, sem passo extra).
+    - **`gerar_repasse_ao_entregar()` (item 35) estendida**: soma
+      `max(0, distancia_chamada_km − raio_chamada_motoboy_km) ×
+      valor_por_km_adicional`, dividido pela qtd de pedidos da rota (mesma
+      lógica de divisão da tarifa_minima/espera na loja, item 35 — km de
+      chamada também é nível de rota, não de pedido).
+    - **Testado via `tests/despacho_motor.test.js`** (não via SQL direta
+      como o item 35 — aqui o comportamento certo depende do
+      `dispatch-engine` de verdade escolhendo o candidato certo em 2
+      passadas, então precisa subir o processo real): 4 checks novos —
+      entregador a 2,5km (fora do raio normal de 1,5km, dentro do teto de
+      5km) recebe a oferta que antes seria recusada; `distancia_km`/
+      `distancia_chamada_km` batem com o valor calculado
+      independentemente (~2,502km); repasse fecha em R$ 12,00 (tarifa
+      10,00 + (2,502−1,5)×2,00 = 12,004, arredondado); entregador a ~11km
+      (além do teto de 5km) continua sem receber oferta nenhuma — motor
+      ainda desiste corretamente além do teto.
+    - Suíte completa **158/158** (154 + 4 novos), rodada com Railway
+      offline durante o teste local, online de novo depois
+      (`railway down -y` / `railway up -c`, protocolo de sempre).
+    - Geocodificação (Nominatim) usada só pra VALIDAR o conceito com
+      endereços reais antes de decidir o escopo — não entrou no fluxo do
+      produto (nem precisava: o cálculo de item 36 usa lat/lng de
+      `entregadores`/`tenants`, que já existiam).
+
 ## Pendências reais no momento
-- [ ] **Motor de repasse não existe ainda** (achado no item 34, 25/08/2026)
-      — `atualizarStatsTurno()` em `app-entregador.html` mostra "Entregas
-      hoje"/"Ganho no turno" a partir da tabela `repasses`, mas nenhum
-      caminho do sistema insere linha ali quando um pedido vira `entregue`
-      — `repasses` só tem policy de SELECT client-side, geração é
-      100% backend/service role e esse backend não existe (confirmado em
-      `tests/financeiro.test.js`). Card fica zerado mesmo depois de uma
-      entrega real de ponta a ponta. Precisa de um worker/trigger que
-      calcule o valor do repasse (regra de negócio ainda não definida:
-      por entrega vs fim de turno, já vem de `tenants.frequencia_repasse`)
-      e insira em `repasses` quando `pedidos.status` vira `entregue`.
 - [ ] **Cobrança via Pix aparecendo em rota da sessão feira** (achado pelo
       usuário no item 33, 25/08/2026, não investigado) — segundo o
       usuário, na sessão feira o entregador só recebe as taxas de entrega,

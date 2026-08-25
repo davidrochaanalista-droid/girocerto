@@ -177,7 +177,7 @@ function agendarRepique(rotaId, pushToken, plataforma, segundosRepique, tentativ
 async function buscarConfigTenant(tenantId) {
   const { data, error } = await admin
     .from('tenants')
-    .select('raio_chamada_motoboy_km, segundos_repique_notificacao, segundos_timeout_despacho, lat, lng')
+    .select('raio_chamada_motoboy_km, raio_chamada_maximo_km, segundos_repique_notificacao, segundos_timeout_despacho, lat, lng')
     .eq('id', tenantId)
     .single();
   if (error) throw new Error(`buscarConfigTenant(${tenantId}): ${error.message}`);
@@ -189,7 +189,14 @@ async function buscarConfigTenant(tenantId) {
 // continua com status='disponivel' até responder — podia ser ofertado duas
 // vezes ao mesmo tempo. Exclui quem tem qualquer tentativa pendente, não só
 // quem já foi tentado NESSA rota especificamente.
-async function buscarProximoCandidato(tenantId, rotaId, tenantLat, tenantLng, raioKm) {
+// item 36 (25/08/2026): busca expandida — se ninguém dentro do raio normal
+// (raioKm = raio_chamada_motoboy_km), tenta de novo até raioMaximoKm
+// (raio_chamada_maximo_km) antes de desistir. Quem vem de fora do raio
+// normal recebe km adicional (ver gerar_repasse_ao_entregar() em
+// db/schema.sql) — por isso o candidato retornado carrega .distancia
+// mesmo quando achado na primeira passada (mais barato reaproveitar o
+// valor já calculado do que o trigger recalcular sem essa informação).
+async function buscarProximoCandidato(tenantId, rotaId, tenantLat, tenantLng, raioKm, raioMaximoKm) {
   const jaTentados = tentadosPorRota.get(rotaId) || new Set();
 
   const [candidatosRes, ocupadosRes] = await Promise.all([
@@ -208,8 +215,17 @@ async function buscarProximoCandidato(tenantId, rotaId, tenantLat, tenantLng, ra
         ...e,
         distancia: e.lat != null && e.lng != null ? haversineKm(tenantLat, tenantLng, e.lat, e.lng) : Infinity,
       }))
-      .filter((e) => e.distancia <= raioKm)
       .sort((a, b) => a.distancia - b.distancia);
+
+    const dentroDoRaioNormal = elegiveis.filter((e) => e.distancia <= raioKm);
+    if (dentroDoRaioNormal.length > 0) return dentroDoRaioNormal[0];
+
+    const dentroDoRaioExpandido = elegiveis.filter((e) => e.distancia <= raioMaximoKm);
+    if (dentroDoRaioExpandido.length > 0) {
+      console.log(`[despacho] rota ${rotaId}: ninguém dentro de ${raioKm}km, chamando de fora do raio normal (${dentroDoRaioExpandido[0].distancia.toFixed(2)}km, dentro do teto de ${raioMaximoKm}km) — vai gerar km adicional`);
+      return dentroDoRaioExpandido[0];
+    }
+    return null;
   }
   // sem lat/lng do tenant: sem geofiltro (loja ainda não definiu localização
   // em painel-loja.html) — pega qualquer disponível, não bloqueia despacho.
@@ -290,10 +306,10 @@ async function tentarDespachar(pedidoId) {
   }
   rotasProcessando.add(rotaId);
   try {
-    const candidato = await buscarProximoCandidato(pedido.tenant_id, rotaId, config.lat, config.lng, config.raio_chamada_motoboy_km);
+    const candidato = await buscarProximoCandidato(pedido.tenant_id, rotaId, config.lat, config.lng, config.raio_chamada_motoboy_km, config.raio_chamada_maximo_km);
     if (!candidato) {
       console.log(
-        `[despacho] pedido ${pedidoId} (rota ${rotaId}): sem entregador disponível (todos já tentados/ocupados ou fora do raio de ${config.raio_chamada_motoboy_km}km). Precisa de intervenção manual da loja.`
+        `[despacho] pedido ${pedidoId} (rota ${rotaId}): sem entregador disponível (todos já tentados/ocupados ou fora do raio expandido de ${config.raio_chamada_maximo_km}km). Precisa de intervenção manual da loja.`
       );
       limparEstadoDaRota(rotaId); // achado ultrareview: sem isso, rota esgotada vazava Map pra sempre
       return;
@@ -305,7 +321,7 @@ async function tentarDespachar(pedidoId) {
 
     const { data: tentativa, error: eTentativa } = await admin
       .from('tentativas_despacho')
-      .insert({ rota_id: rotaId, entregador_id: candidato.id })
+      .insert({ rota_id: rotaId, entregador_id: candidato.id, distancia_km: Number.isFinite(candidato.distancia) ? candidato.distancia : null })
       .select('id')
       .single();
     if (eTentativa) {
@@ -391,7 +407,7 @@ async function tratarRespostaDespacho(tentativaId) {
     // linhas afetadas em vez de checar antes.
     const { data: atribuida, error: eAtribui } = await admin
       .from('rotas_entrega')
-      .update({ entregador_id: tentativa.entregador_id, status: 'a_caminho_da_loja' })
+      .update({ entregador_id: tentativa.entregador_id, status: 'a_caminho_da_loja', distancia_chamada_km: tentativa.distancia_km })
       .eq('id', tentativa.rota_id)
       .is('entregador_id', null)
       .select('id');

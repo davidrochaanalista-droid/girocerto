@@ -403,6 +403,100 @@ async function run() {
       { pushesResilienteT1, pushesResilienteT2 }
     );
 
+    console.log('\n=== Item 36 (25/08/2026): busca expandida além do raio normal + km adicional no repasse ===');
+    const tenantKmId = crypto.randomUUID();
+    tenantIds.push(tenantKmId);
+    await pg.query(
+      `insert into tenants (id, nome, lat, lng, is_teste, raio_chamada_motoboy_km, raio_chamada_maximo_km, tarifa_minima, valor_por_km_adicional, tempo_espera_tolerado_min, valor_por_minuto_espera_excedente)
+       values ($1,'Loja Km Adicional',-23.5613,-46.6565,true,1.5,5.0,10.00,2.00,999,0.50)`,
+      [tenantKmId]
+    );
+    const uKm1 = await createAuthUser('motor.expandido');
+    authUserIds.push(uKm1.id);
+    // ~2,5km do tenant (fora do raio normal de 1,5km, dentro do teto de 5km)
+    const { rows: eKm1 } = await pg.query(
+      `insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng, tipo_vinculo) values ($1,$2,'Expandido','disponivel',-23.5388,-46.6565,'freelance') returning id`,
+      [tenantKmId, uKm1.id]
+    );
+    const entregadorKmId = eKm1[0].id;
+    const sessKm1 = await signInAs(uKm1.email);
+    const turnoKmId = crypto.randomUUID();
+    await pg.query(`insert into turnos (id, entregador_id, status, iniciado_em) values ($1,$2,'ativo', now())`, [turnoKmId, entregadorKmId]);
+
+    const { rows: pedidoKmRows } = await pg.query(
+      `insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Km Adicional, 1','em_preparo',30) returning id`,
+      [tenantKmId]
+    );
+    const pedidoKmId = pedidoKmRows[0].id;
+    await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedidoKmId]);
+    await despacharDireto(pedidoKmId);
+    await sleep(1000);
+
+    const { rows: tentKm } = await pg.query(
+      `select id, entregador_id, distancia_km from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`,
+      [pedidoKmId]
+    );
+    r.check(
+      'item 36: ninguém dentro do raio normal (1,5km) — motor busca de novo e chama o entregador a ~2,5km (dentro do teto de 5km)',
+      tentKm.length === 1 && tentKm[0].entregador_id === entregadorKmId && Math.abs(Number(tentKm[0].distancia_km) - 2.502) < 0.05,
+      tentKm
+    );
+
+    await sessKm1.from('tentativas_despacho').update({ resultado: 'aceito', respondido_em: new Date().toISOString() }).eq('id', tentKm[0].id);
+    await responderDespachoDireto(tentKm[0].id);
+    await sleep(500);
+
+    const { rows: rotaKmCheck } = await pg.query(
+      `select id, distancia_chamada_km from rotas_entrega where id = (select rota_id from pedidos where id = $1)`,
+      [pedidoKmId]
+    );
+    const rotaKmId = rotaKmCheck[0].id;
+    r.check(
+      'item 36: distancia_chamada_km copiada da tentativa aceita pra rotas_entrega',
+      Math.abs(Number(rotaKmCheck[0].distancia_chamada_km) - 2.502) < 0.05,
+      rotaKmCheck[0]
+    );
+
+    await sessKm1.rpc('confirmar_chegada_loja', { p_rota_id: rotaKmId });
+    await sessKm1.rpc('confirmar_retirada_rota', { p_rota_id: rotaKmId });
+    await sessKm1.from('pedidos').update({ status: 'entregue', entregue_em: new Date().toISOString() }).eq('id', pedidoKmId);
+
+    const { rows: repasseKm } = await pg.query(`select valor from repasses where pedido_id = $1`, [pedidoKmId]);
+    // esperado: tarifa_minima (10) + km adicional ((2,502-1,5)*2,00=2,004) = 12,00 (1 pedido na rota, sem divisão)
+    r.check(
+      'item 36: repasse inclui km adicional pela distância de chamada além do raio normal (tarifa_minima + (distancia-raio_normal)*valor_por_km_adicional)',
+      repasseKm.length === 1 && Math.abs(Number(repasseKm[0].valor) - 12.0) < 0.05,
+      repasseKm
+    );
+
+    console.log('\n=== Item 36: entregador fora até do raio expandido — motor desiste (sem entregador disponível) ===');
+    const tenantForaId = crypto.randomUUID();
+    tenantIds.push(tenantForaId);
+    await pg.query(
+      `insert into tenants (id, nome, lat, lng, is_teste, raio_chamada_motoboy_km, raio_chamada_maximo_km) values ($1,'Loja Fora do Teto',-23.5613,-46.6565,true,1.5,5.0)`,
+      [tenantForaId]
+    );
+    const uForaLonge = await createAuthUser('motor.foradoteto');
+    authUserIds.push(uForaLonge.id);
+    // ~11km do tenant — além até do teto expandido de 5km
+    await pg.query(
+      `insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng) values ($1,$2,'MuitoLonge','disponivel',-23.4613,-46.6565)`,
+      [tenantForaId, uForaLonge.id]
+    );
+    const { rows: pedidoForaRows } = await pg.query(
+      `insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Fora do Teto, 1','em_preparo',30) returning id`,
+      [tenantForaId]
+    );
+    const pedidoForaId = pedidoForaRows[0].id;
+    await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedidoForaId]);
+    await despacharDireto(pedidoForaId);
+    await sleep(1000);
+    const { rows: tentFora } = await pg.query(
+      `select id from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`,
+      [pedidoForaId]
+    );
+    r.check('item 36: entregador além do raio expandido (~11km > teto de 5km) não recebe oferta', tentFora.length === 0, tentFora);
+
     return r.summary();
   } finally {
     if (child) child.kill();
