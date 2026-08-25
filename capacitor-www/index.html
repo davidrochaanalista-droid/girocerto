@@ -7,6 +7,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- item 38 (25/08/2026): mapa embutido na tela (Leaflet + OpenStreetMap,
+gratuito, sem chave de API) — pedido explícito do usuário: "o mapa tem
+que aparecer na tela igual ifood/99/uber", não só um deep link pra abrir
+outro app (ver urlNavegacao(), que continua existindo como opção
+complementar). -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   :root{
     --teal-1:#14B8A0; --teal-2:#0B5C50;
@@ -29,6 +36,16 @@
   .view{display:none;padding:22px 20px 100px;}
   .view.active{display:block;animation:fade .2s ease;}
   @keyframes fade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+
+  /* item 39 (25/08/2026): mapa em tela cheia, pedido explícito do usuário
+  com referência real (screenshot do 99) — igual 99/Uber, o mapa ocupa a
+  tela toda, com endereço/ação flutuando por cima num cartão inferior,
+  não dentro do fluxo normal de scroll da página. position:fixed escapa
+  do padding/scroll de .view de propósito. */
+  .mapa-tela-cheia{position:fixed;top:0;left:0;right:0;bottom:0;z-index:400;}
+  .mapa-btn-voltar{position:fixed;top:18px;left:18px;z-index:401;width:42px;height:42px;border-radius:50%;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;padding:0;font-size:20px;color:var(--ink);line-height:1;}
+  .mapa-sheet{position:fixed;left:0;right:0;bottom:0;z-index:401;background:#fff;border-radius:20px 20px 0 0;padding:20px 20px 26px;box-shadow:0 -6px 24px rgba(0,0,0,.18);max-width:440px;margin:0 auto;}
+  .clima-flutuante{position:fixed;top:18px;right:18px;z-index:401;background:#fff;border-radius:16px;padding:9px 14px;box-shadow:0 2px 10px rgba(0,0,0,.25);font-weight:700;font-size:14px;display:none;align-items:center;gap:6px;color:var(--ink);}
 
   .field{margin-bottom:14px;}
   .field label{display:block;font-size:12.5px;font-weight:600;color:var(--gray);margin-bottom:5px;}
@@ -320,6 +337,26 @@
 
   <!-- ===================== VIEW: ROTA (paradas) ===================== -->
   <div class="view" id="view-rota">
+    <!-- item 39 (25/08/2026): mapa em tela cheia (referência real que o
+    usuário mandou — screenshot do 99), fora do fluxo normal da página
+    (position:fixed). Só existe enquanto a fase for "a caminho da loja,
+    ainda não chegou" — rotaHeaderNormal (abaixo) cobre o resto do ciclo
+    dessa mesma view (retirada, lista de paradas), sem mapa. -->
+    <div id="mapaLojaBox" style="display:none;">
+      <div id="mapaLoja" class="mapa-tela-cheia"></div>
+      <button class="mapa-btn-voltar" onclick="mostrar('view-turno')">←</button>
+      <div class="clima-flutuante" id="climaLoja"></div>
+      <div class="mapa-sheet">
+        <div style="font-weight:700;margin-bottom:4px;">A caminho da loja?</div>
+        <p style="color:var(--gray);font-size:13px;margin:0 0 14px;">
+          <span id="r_enderecoLoja">—</span>
+          <span id="r_distanciaLoja" style="font-weight:700;color:var(--teal-2);"></span>
+        </p>
+        <button class="btn-primary" onclick="confirmarChegadaLoja()">Cheguei na loja</button>
+      </div>
+    </div>
+
+    <div id="rotaHeaderNormal">
     <button class="link-btn" onclick="mostrar('view-turno')" style="margin-bottom:14px;">← Voltar</button>
     <h2 style="margin-bottom:4px;">Rota ativa</h2>
     <p style="color:var(--gray);font-size:13px;margin:0 0 18px;" id="r_resumo">—</p>
@@ -328,14 +365,6 @@
     ainda está 'a_caminho_da_loja', o entregador precisa confirmar que pegou o
     pedido antes de sair — isso é o que popula rotas_entrega.iniciada_em, campo
     que já existia no schema mas nada escrevia (achado de sessão anterior). -->
-    <!-- item 34 (25/08/2026): passo novo antes da retirada — pedido
-    explícito do usuário testando o fluxo real de ponta a ponta. -->
-    <div id="chegadaLojaBox" style="display:none;background:var(--teal-soft,#E6F4F1);border-radius:14px;padding:16px;margin-bottom:18px;text-align:center;">
-      <div style="font-weight:700;margin-bottom:6px;">A caminho da loja?</div>
-      <div style="font-size:13px;color:var(--gray);margin-bottom:12px;">Confirme quando chegar pra liberar a retirada.</div>
-      <button class="btn-primary" onclick="confirmarChegadaLoja()">Cheguei na loja</button>
-    </div>
-
     <div id="retiradaBox" style="display:none;background:var(--teal-soft,#E6F4F1);border-radius:14px;padding:16px;margin-bottom:18px;text-align:center;">
       <div style="font-weight:700;margin-bottom:6px;">Retire o pedido na loja</div>
       <div style="font-size:13px;color:var(--gray);margin-bottom:12px;">Fale o código <b id="r_codigoRetirada">—</b> pro atendente confirmar que é você.</div>
@@ -343,10 +372,28 @@
     </div>
 
     <div id="paradasBox"></div>
+    </div>
   </div>
 
   <!-- ===================== VIEW: ENTREGA (pagamento) ===================== -->
   <div class="view" id="view-entrega">
+    <!-- item 39 (25/08/2026): mesmo padrão de tela cheia do mapaLojaBox —
+    só existe na fase "a caminho do cliente, ainda não chegou". -->
+    <div id="chegadaEntregaBox" style="display:none;">
+      <div id="mapaEntrega" class="mapa-tela-cheia"></div>
+      <button class="mapa-btn-voltar" onclick="mostrar('view-rota')">←</button>
+      <div class="clima-flutuante" id="climaEntrega"></div>
+      <div class="mapa-sheet">
+        <div style="font-weight:700;margin-bottom:4px;">A caminho do cliente?</div>
+        <p style="color:var(--gray);font-size:13px;margin:0 0 14px;">
+          <span id="e_enderecoEntregaFlutuante">—</span>
+          <span id="e_distanciaEntrega" style="font-weight:700;color:var(--teal-2);"></span>
+        </p>
+        <button class="btn-primary" onclick="confirmarChegadaEntrega()">Cheguei no local de entrega</button>
+      </div>
+    </div>
+
+    <div id="entregaHeaderNormal">
     <button class="link-btn" onclick="mostrar('view-rota')" style="margin-bottom:14px;">← Voltar pra rota</button>
     <p style="color:var(--gray);font-size:13px;">Parada <span id="e_indice">1</span></p>
     <h2 id="e_endereco" style="margin-bottom:16px;">—</h2>
@@ -354,13 +401,7 @@
     <!-- item 34 (25/08/2026): passo novo "cheguei no local de entrega" ANTES
     de digitar o código — mesmo princípio de chegadaLojaBox em view-rota,
     mas por PEDIDO (rota multi-parada, cada parada chega em momento
-    diferente). Esconde entregaConteudo (código+foto+confirmar) até chegar. -->
-    <div id="chegadaEntregaBox" style="display:none;background:var(--teal-soft,#E6F4F1);border-radius:14px;padding:16px;margin-bottom:18px;text-align:center;">
-      <div style="font-weight:700;margin-bottom:6px;">A caminho do cliente?</div>
-      <div style="font-size:13px;color:var(--gray);margin-bottom:12px;">Confirme quando chegar pra liberar a confirmação de entrega.</div>
-      <button class="btn-primary" onclick="confirmarChegadaEntrega()">Cheguei no local de entrega</button>
-    </div>
-
+    diferente). -->
     <div id="entregaConteudo">
     <!-- ==============================================================
     PENDÊNCIA ISOLADA — INTEGRAÇÃO REAL DE PIX (confirmado, sessão de
@@ -400,6 +441,7 @@
 
     <div class="msg" id="entregaMsg"></div>
     <button class="btn-primary" onclick="confirmarEntrega()">Confirmar entrega</button>
+    </div>
     </div>
   </div>
 
@@ -532,6 +574,9 @@ function escapeHtml(str){
 }
 
 let entregadorId = null;
+let appNavegacaoPreferido = 'waze';
+let enderecoLojaAtual = null;
+let minhaPosicaoAtual = null; // item 38 — última posição conhecida, pro mapa embutido
 let statusEntregadorCanalAtivo = false;
 let pollStatusEntregadorTimer = null;
 let turnoAtualId = null;
@@ -587,27 +632,60 @@ const INTERVALO_MIN_ENVIO_POSICAO_MS = 12000;
 // "motoboy parado" alerta durante rota em_entrega de verdade. Rastrear
 // também na pausa não tem custo de alerta indevido, e mantém histórico
 // de posição consistente.
-function iniciarRastreioPosicao(){
-  if(watchId !== null) return; // já rastreando, não duplica o watch
-  if(!navigator.geolocation){ console.warn('Geolocalização não suportada neste navegador.'); return; }
+// item 39 (25/08/2026): achado ao vivo — navigator.geolocation puro nunca
+// funcionava dentro do app nativo (WebView nega geolocalização sem prompt
+// se o app não pede a permissão de RUNTIME via API nativa — declarar no
+// AndroidManifest.xml sozinho não basta). @capacitor/geolocation é quem
+// dispara esse prompt de verdade; navigator.geolocation continua como
+// fallback pra quando isso roda como página normal (mockup/navegador,
+// onde o próprio Chrome já pede a permissão).
+function tratarPosicao(pos){
+  // item 38 (25/08/2026): posição pro MAPA embutido atualiza sempre (é só
+  // visual, local, sem custo de rede) — o throttle abaixo é só pro INSERT
+  // em localizacoes_entregador (histórico gravado, esse sim tem custo e
+  // não precisa da cadência mais rápida que o GPS dispara).
+  minhaPosicaoAtual = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  const agora = Date.now();
+  if(agora - ultimoEnvioPosicaoEm < INTERVALO_MIN_ENVIO_POSICAO_MS) return;
+  ultimoEnvioPosicaoEm = agora;
+  enviarPosicao(pos.coords.latitude, pos.coords.longitude);
+}
 
+async function iniciarRastreioPosicao(){
+  if(watchId !== null) return; // já rastreando, não duplica o watch
+
+  const GeolocationPlugin = window.Capacitor?.Plugins?.Geolocation;
+  if(GeolocationPlugin){
+    try{
+      const permissao = await GeolocationPlugin.requestPermissions();
+      if(permissao.location !== 'granted' && permissao.coarseLocation !== 'granted'){
+        console.warn('Permissão de localização negada pelo usuário.');
+        return;
+      }
+      watchId = await GeolocationPlugin.watchPosition(
+        { enableHighAccuracy: true, timeout: 15000 },
+        (pos, err) => { if(err){ console.warn('Erro de geolocalização:', err.message); return; } tratarPosicao(pos); }
+      );
+    } catch(err){
+      console.warn('Não deu pra iniciar geolocalização nativa:', err.message);
+    }
+    return;
+  }
+
+  if(!navigator.geolocation){ console.warn('Geolocalização não suportada neste navegador.'); return; }
   watchId = navigator.geolocation.watchPosition(
-    (pos) => {
-      const agora = Date.now();
-      if(agora - ultimoEnvioPosicaoEm < INTERVALO_MIN_ENVIO_POSICAO_MS) return;
-      ultimoEnvioPosicaoEm = agora;
-      enviarPosicao(pos.coords.latitude, pos.coords.longitude);
-    },
+    tratarPosicao,
     (err) => console.warn('Erro de geolocalização:', err.message),
     { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
   );
 }
 
 function pararRastreioPosicao(){
-  if(watchId !== null){
-    navigator.geolocation.clearWatch(watchId);
-    watchId = null;
-  }
+  if(watchId === null) return;
+  const GeolocationPlugin = window.Capacitor?.Plugins?.Geolocation;
+  if(GeolocationPlugin) GeolocationPlugin.clearWatch({ id: watchId });
+  else navigator.geolocation.clearWatch(watchId);
+  watchId = null;
 }
 
 async function enviarPosicao(lat, lng){
@@ -625,6 +703,17 @@ async function enviarPosicao(lat, lng){
 function mostrar(id){
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById(id).classList.add('active');
+  // item 38 (25/08/2026): achado ao vivo — atualizarMapa() agora só faz
+  // trabalho de verdade quando o container está na view ATIVA (ver
+  // containerEstaVisivel(), corrige o travamento causado por
+  // montarRota()/abrirEntrega() rodando o Leaflet repetidamente com a
+  // tela ainda escondida durante o poll de aguardarRotaAposAceite()).
+  // Consequência: a chamada original pode ter sido descartada antes da
+  // view existir — dispara de novo aqui, agora que ela É a ativa, usando
+  // o último endereço pedido pra cada container conhecido.
+  Object.keys(ultimoEnderecoPedido).forEach(containerId => {
+    if(containerEstaVisivel(containerId)) atualizarMapa(containerId, ultimoEnderecoPedido[containerId]);
+  });
 }
 
 // ------------------------------------------------------------
@@ -869,6 +958,7 @@ async function carregarEntregador(){
   if(error || !entregador){ mostrar('view-login'); return; }
 
   entregadorId = entregador.id;
+  appNavegacaoPreferido = entregador.app_navegacao_preferido || 'waze'; // item 37
   registrarPushEntregador(); // no-op fora do app nativo (Capacitor) — ver função
 
   // documentos ainda não enviados (fluxo de completar cadastro pós-login,
@@ -970,6 +1060,7 @@ async function checarTurnoAtivo(){
     verificarHistoricoFeira();
     iniciarRastreioPosicao(); // B1 — ativo enquanto turnos.status = 'ativo', pausa inclusa (ver nota na função)
     iniciarEscutaDeOfertas(); // motor de despacho (restaurante) — ativo enquanto o turno estiver ativo
+    iniciarEscutaDeAtribuicaoRota(); // achado ao vivo (25/08/2026): ver comentário na função
     iniciarEscutaDeOfertasFeira(); // motor de despacho (feira) — mesmo turno, mesma tela, sem seletor de modo
     iniciarEscutaDePropostasConsolidacao(); // parada nova numa rota de feira já aceita — aceite/recusa próprios
   } else {
@@ -1079,6 +1170,294 @@ async function finalizarTurnoDeVerdade(comBloqueio){
 // ------------------------------------------------------------
 // ROTA / PARADAS
 // ------------------------------------------------------------
+
+// item 37 (25/08/2026): GiroCerto não traça mapa próprio (decisão de
+// produto documentada em entregadores.app_navegacao_preferido) — deep link
+// pro Waze/Google Maps, que aceita endereço em texto puro (sem precisar
+// geocodificar nada aqui). window.open(..., '_system') em vez de '_blank':
+// dentro do WebView do Capacitor, '_system' dispara uma Intent do Android
+// de verdade (abre o app nativo se instalado), '_blank' só abriria uma
+// aba dentro do próprio WebView.
+function urlNavegacao(endereco){
+  const q = encodeURIComponent(endereco);
+  return appNavegacaoPreferido === 'google_maps'
+    ? `https://www.google.com/maps/dir/?api=1&destination=${q}`
+    : `https://waze.com/ul?q=${q}&navigate=yes`;
+}
+function abrirNavegacao(endereco){
+  if(!endereco) return;
+  window.open(urlNavegacao(endereco), '_system');
+}
+
+// item 38 (25/08/2026): mapa embutido na tela — pedido explícito do
+// usuário depois de ver o item 37 (deep link) funcionando: "o mapa tem
+// que aparecer na tela igual ifood/99/uber", não só abrir outro app.
+// Geocodifica via Nominatim/OpenStreetMap (mesmo serviço já usado em
+// painel-loja.html pra localização da loja, mesma política de uso
+// respeitosa — só dispara quando chamado, nunca em loop/polling/tecla).
+// Cache por endereço: montarRota()/abrirEntrega() rodam de novo a cada
+// verificarRotaAtiva(), não faz sentido regeocodificar o mesmo texto.
+const cacheGeocode = {};
+async function geocodificar(endereco){
+  if(!endereco) return null;
+  if(cacheGeocode[endereco] !== undefined) return cacheGeocode[endereco];
+  try{
+    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=' + encodeURIComponent(endereco);
+    const res = await fetch(url, { headers: { 'Accept-Language': 'pt-BR' } });
+    const resultados = await res.json();
+    const ponto = resultados && resultados[0] ? { lat: Number(resultados[0].lat), lng: Number(resultados[0].lon) } : null;
+    cacheGeocode[endereco] = ponto;
+    return ponto;
+  } catch(err){
+    console.warn('Não deu pra geocodificar o endereço pro mapa:', err.message);
+    return null;
+  }
+}
+
+// 1 instância de Leaflet por container (mapaLoja/mapaEntrega) — telas
+// diferentes, mapas diferentes. Leaflet não gosta de re-inicializar em
+// cima do mesmo elemento, por isso guarda a instância em vez de recriar
+// a cada chamada.
+const mapasLeaflet = {};
+const marcadoresLeaflet = {};
+const ultimosPontosMapa = {};
+function ajustarVisaoMapa(containerId){
+  const mapa = mapasLeaflet[containerId];
+  const pontos = ultimosPontosMapa[containerId];
+  if(!mapa || !pontos || pontos.length === 0) return;
+  if(pontos.length === 2) mapa.fitBounds(pontos, { padding: [30,30] });
+  else mapa.setView(pontos[0], 15);
+}
+// item 38 (25/08/2026): achado ao vivo — a tela travava (fps caindo pra
+// ~4) durante o poll de aguardarRotaAposAceite() (verificarRotaAtiva() a
+// cada 1.5s, até 40x), porque cada tick chamava montarRota() -> essa
+// função de novo, batendo fitBounds()/invalidateSize() no Leaflet
+// repetidamente MESMO com a tela de rota nem visível ainda (o entregador
+// só vê view-rota depois de tocar "Ver rota ativa"). Sem sentido gastar
+// esse trabalho com a view escondida — só atualiza o mapa se o
+// container estiver dentro da view ATIVA no momento; mostrar() já força
+// uma atualização fresca (via montarRota()/abrirEntrega() já terem
+// rodado antes) quando o usuário efetivamente navega pra lá.
+const linhasRotaLeaflet = {};
+// achado ao vivo (25/08/2026): a tela travava (chegou a 13s num frame só,
+// visto via `adb logcat` fps=0.07) depois do mapa virar tela cheia — a
+// causa mais provável não é o Leaflet em si, é CHAMADA CONCORRENTE:
+// mostrar() dispara atualizarMapa() de novo toda vez que qualquer view
+// fica ativa, e abrirEntrega()/montarRota() também chamam na sequência —
+// sem trava, duas chamadas ao mesmo container rodavam o fetch do OSRM
+// (rede, pode demorar) e mexiam no MESMO mapa/polyline em paralelo,
+// concorrendo pelo mesmo Leaflet. `ultimaChaveRota` pula o fetch inteiro
+// se origem+destino não mudaram desde a última vez (cache simples);
+// `tracandoRota` é uma trava por container — só 1 tracarRota() de cada
+// vez, a próxima chamada enquanto uma já está em andamento é descartada
+// (a que está rodando já vai deixar o mapa no estado certo).
+const ultimaChaveRota = {};
+const tracandoRota = {};
+async function tracarRota(containerId, mapa, origem, destino){
+  const chave = `${origem.lat.toFixed(4)},${origem.lng.toFixed(4)}->${destino.lat.toFixed(4)},${destino.lng.toFixed(4)}`;
+  if(ultimaChaveRota[containerId] === chave) return;
+  if(tracandoRota[containerId]) return;
+  tracandoRota[containerId] = true;
+  try{
+    const url = `https://router.project-osrm.org/route/v1/driving/${origem.lng},${origem.lat};${destino.lng},${destino.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const json = await res.json();
+    const rota = json && json.routes && json.routes[0];
+    if(!rota) return;
+
+    const coords = rota.geometry.coordinates.map(([lng,lat]) => [lat,lng]); // OSRM devolve [lng,lat], Leaflet quer [lat,lng]
+    if(linhasRotaLeaflet[containerId]) mapa.removeLayer(linhasRotaLeaflet[containerId]);
+    linhasRotaLeaflet[containerId] = L.polyline(coords, { color: '#14B8A0', weight: 5, opacity: 0.85 }).addTo(mapa);
+    mapa.fitBounds(linhasRotaLeaflet[containerId].getBounds(), { padding: [30,30] });
+    ultimaChaveRota[containerId] = chave;
+
+    const distanciaKm = (rota.distance / 1000).toFixed(1);
+    const elDistancia = document.getElementById(containerId === 'mapaLoja' ? 'r_distanciaLoja' : 'e_distanciaEntrega');
+    if(elDistancia) elDistancia.textContent = `${distanciaKm} km`;
+  } catch(err){
+    console.warn('Não deu pra traçar a rota (OSRM):', err.message);
+  } finally {
+    tracandoRota[containerId] = false;
+  }
+}
+function containerEstaVisivel(containerId){
+  const el = document.getElementById(containerId);
+  if(!el) return false;
+  const view = el.closest('.view');
+  if(!view || !view.classList.contains('active')) return false;
+  // position:fixed (mapaLoja/mapaEntrega) não herda display:none de um
+  // ancestral intermediário automaticamente pra fins de "está na tela"
+  // — precisa checar cada nível até a .view, não só ela.
+  let node = el.parentElement;
+  while(node && node !== view){
+    if(getComputedStyle(node).display === 'none') return false;
+    node = node.parentElement;
+  }
+  return true;
+}
+// item 39 (25/08/2026): trajeto ao vivo — pedido explícito do usuário
+// ("igual o trajeto da Uber e 99 tem no mapa"): o traçado deve encolher
+// conforme o entregador anda, não ficar fixo desde a primeira renderização.
+// 1 interval só (nunca mais de um mapa em tela cheia por vez neste app) —
+// a cada tick, se o container não estiver mais visível (saiu da tela,
+// avançou de fase), o próprio callback se autodesliga; não precisa
+// desligar manualmente em cada ponto de saída possível.
+let intervalTracadoMapa = null;
+function iniciarAtualizacaoPeriodicaMapa(containerId, endereco){
+  pararAtualizacaoPeriodicaMapa();
+  atualizarClima(containerId); // 1ª leitura na hora, sem esperar o 1º tick
+  intervalTracadoMapa = setInterval(() => {
+    if(containerEstaVisivel(containerId)){
+      atualizarMapa(containerId, endereco);
+      atualizarClima(containerId);
+    } else {
+      pararAtualizacaoPeriodicaMapa();
+    }
+  }, 8000);
+}
+function pararAtualizacaoPeriodicaMapa(){
+  if(intervalTracadoMapa){ clearInterval(intervalTracadoMapa); intervalTracadoMapa = null; }
+}
+
+// item 40 (25/08/2026): previsão do tempo flutuante — pedido explícito do
+// usuário ("acompanhar em tempo real o clima"). Open-Meteo: gratuito, sem
+// chave de API, aceita lat/lng direto — mesmo padrão de serviço "sem
+// custo de infra" já usado nesta sessão (Nominatim, OSRM, tiles OSM).
+// Atualiza junto do mesmo interval do trajeto (iniciarAtualizacaoPeriodicaMapa),
+// mas só busca de novo a cada 5min de verdade (clima não muda a cada 8s
+// como a posição) — o guard de tempo evita chamada desnecessária na API
+// a cada tick do interval do mapa.
+const climaElementoPorContainer = { mapaLoja: 'climaLoja', mapaEntrega: 'climaEntrega' };
+function iconeClima(codigo){
+  if(codigo === 0) return '☀️';
+  if(codigo <= 3) return '⛅';
+  if(codigo === 45 || codigo === 48) return '🌫️';
+  if(codigo >= 51 && codigo <= 67) return '🌧️';
+  if(codigo >= 71 && codigo <= 77) return '❄️';
+  if(codigo >= 80 && codigo <= 82) return '🌦️';
+  if(codigo >= 95) return '⛈️';
+  return '🌡️';
+}
+const INTERVALO_MIN_ATUALIZACAO_CLIMA_MS = 5 * 60 * 1000;
+async function atualizarClima(containerId){
+  const elId = climaElementoPorContainer[containerId];
+  const el = elId && document.getElementById(elId);
+  if(!el || !minhaPosicaoAtual) return;
+  const agora = Date.now();
+  const ultima = Number(el.dataset.atualizadoEm || 0);
+  if(ultima && agora - ultima < INTERVALO_MIN_ATUALIZACAO_CLIMA_MS) return;
+  try{
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${minhaPosicaoAtual.lat}&longitude=${minhaPosicaoAtual.lng}&current=temperature_2m,weather_code`;
+    const res = await fetch(url);
+    const json = await res.json();
+    const atual = json && json.current;
+    if(!atual) return;
+    el.textContent = `${iconeClima(atual.weather_code)} ${Math.round(atual.temperature_2m)}°C`;
+    el.style.display = 'flex';
+    el.dataset.atualizadoEm = String(agora);
+  } catch(err){
+    console.warn('Não deu pra buscar o clima:', err.message);
+  }
+}
+
+// último endereço pedido por container, pra mostrar() poder mandar
+// atualizarMapa() rodar de novo quando a view finalmente fica visível
+// (a chamada original pode ter sido descartada pelo guard acima).
+const ultimoEnderecoPedido = {};
+const atualizandoMapa = {};
+async function atualizarMapa(containerId, endereco){
+  ultimoEnderecoPedido[containerId] = endereco;
+  const box = document.getElementById(containerId);
+  if(!box || typeof L === 'undefined') return; // sem Leaflet (CDN não carregou, ex: sem internet) — não quebra o resto da tela
+  if(!containerEstaVisivel(containerId)) return;
+  // achado ao vivo (25/08/2026): mostrar()/abrirEntrega()/montarRota()
+  // podem chamar atualizarMapa() pro MESMO container quase ao mesmo
+  // tempo (ex: abrirEntrega() chama mostrar(), que já dispara de novo
+  // pelo ultimoEnderecoPedido, e na sequência chama de novo direto) —
+  // sem trava, isso rodava 2+ execuções concorrentes mexendo no mesmo
+  // Leaflet ao mesmo tempo. A que já está em andamento sempre reflete o
+  // endereço mais recente (lido de ultimoEnderecoPedido logo abaixo),
+  // então uma chamada nova enquanto outra roda não perde nada.
+  if(atualizandoMapa[containerId]) return;
+  atualizandoMapa[containerId] = true;
+  try{
+    await atualizarMapaInterno(containerId, ultimoEnderecoPedido[containerId]);
+  } finally {
+    atualizandoMapa[containerId] = false;
+  }
+}
+async function atualizarMapaInterno(containerId, endereco){
+  if(!mapasLeaflet[containerId]){
+    mapasLeaflet[containerId] = L.map(containerId, { zoomControl: false, attributionControl: true });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© colaboradores do OpenStreetMap',
+      maxZoom: 19,
+    }).addTo(mapasLeaflet[containerId]);
+    marcadoresLeaflet[containerId] = {};
+  }
+  const mapa = mapasLeaflet[containerId];
+  // Leaflet mede o container no momento do init — se a view ainda estava
+  // display:none (altura 0), o mapa nasce cortado. invalidateSize() depois
+  // de a tela ficar visível corrige o tamanho.
+  setTimeout(() => mapa.invalidateSize(), 50);
+
+  const destino = await geocodificar(endereco);
+  const pontos = [];
+
+  if(destino){
+    if(!marcadoresLeaflet[containerId].destino){
+      marcadoresLeaflet[containerId].destino = L.marker([destino.lat, destino.lng]).addTo(mapa);
+    } else {
+      marcadoresLeaflet[containerId].destino.setLatLng([destino.lat, destino.lng]);
+    }
+    pontos.push([destino.lat, destino.lng]);
+  }
+
+  if(minhaPosicaoAtual){
+    if(!marcadoresLeaflet[containerId].eu){
+      // item 39 (25/08/2026): marcador do entregador — pedido explícito
+      // do usuário ("uma moto como a logo do GiroCerto"): badge com o
+      // MESMO gradiente/raio da marca (ver .badge no <style>, cabeçalho
+      // do app) em vez de um ponto genérico, com 🛵 dentro.
+      const iconEu = L.divIcon({
+        className: '',
+        html: '<div style="width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#14B8A0,#0B5C50);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);border:2px solid white;font-size:18px;">🛵</div>',
+        iconSize: [34,34],
+        iconAnchor: [17,17],
+      });
+      marcadoresLeaflet[containerId].eu = L.marker([minhaPosicaoAtual.lat, minhaPosicaoAtual.lng], { icon: iconEu }).addTo(mapa);
+    } else {
+      marcadoresLeaflet[containerId].eu.setLatLng([minhaPosicaoAtual.lat, minhaPosicaoAtual.lng]);
+    }
+    pontos.push([minhaPosicaoAtual.lat, minhaPosicaoAtual.lng]);
+  }
+
+  ultimosPontosMapa[containerId] = pontos;
+  ajustarVisaoMapa(containerId);
+
+  // item 39 (25/08/2026): trajeto traçado (referência que o usuário
+  // mandou: tela de oferta do 99, linha da posição atual até o destino,
+  // não só um alfinete solto) — via OSRM, mesmo motor de roteirização já
+  // citado no schema pra esse fim (db/schema.sql, "traçado planejado do
+  // OSRM"). Servidor público de demonstração (router.project-osrm.org) —
+  // suficiente pra validar/testar agora, mas não é garantido pra volume
+  // de produção (sem SLA, uso é "fair use"); trocar por instância própria
+  // se o volume real justificar.
+  if(destino && minhaPosicaoAtual){
+    await tracarRota(containerId, mapa, minhaPosicaoAtual, destino);
+  }
+}
+
+// RPC dedicada (mesmo padrão de config_fadiga_do_meu_tenant(), ver
+// carregarEntregador()) — policy de select em tenants não cobre
+// entregadores, um join `tenants(...)` na query de rotas devolveria null.
+// Busca só 1x por sessão (endereço da loja não muda no meio de um turno).
+async function garantirEnderecoLoja(){
+  if(enderecoLojaAtual !== null) return;
+  const { data } = await supabaseClient.rpc('endereco_loja_do_meu_tenant');
+  enderecoLojaAtual = (data && data[0] && data[0].endereco_loja) || '';
+}
+
 async function verificarRotaAtiva(){
   const { data: rotas } = await supabaseClient
     .from('rotas_entrega')
@@ -1092,6 +1471,7 @@ async function verificarRotaAtiva(){
     rotaAtivaId = rotas[0].id; // B1 — a próxima posição enviada já sai vinculada a essa rota
     document.getElementById('semRota').style.display = 'none';
     document.getElementById('comRota').style.display = 'block';
+    await garantirEnderecoLoja();
     montarRota(rotas[0]);
   } else {
     rotaAtivaId = null;
@@ -1105,24 +1485,43 @@ function montarRota(rota){
   document.getElementById('r_resumo').textContent =
     pedidos.length + ' parada(s) · código de retirada ' + rota.codigo_retirada;
 
+  document.getElementById('r_enderecoLoja').textContent = enderecoLojaAtual || 'Endereço da loja não cadastrado';
+
   // item 34 (25/08/2026, pedido explícito do usuário testando de ponta a
   // ponta): passo novo "cheguei na loja" ANTES da confirmação de retirada
   // — antes o botão de retirada aparecia direto, sem essa etapa.
-  const chegadaLojaBox = document.getElementById('chegadaLojaBox');
+  // item 39 (25/08/2026): mapaLojaBox agora É a tela cheia (mapa +
+  // botão), rotaHeaderNormal é tudo mais (header/retirada/paradas) — os
+  // dois são mutuamente exclusivos, nunca visíveis ao mesmo tempo.
   const retiradaBox = document.getElementById('retiradaBox');
+  const mapaLojaBox = document.getElementById('mapaLojaBox');
+  const rotaHeaderNormal = document.getElementById('rotaHeaderNormal');
   if(rota.status === 'a_caminho_da_loja' && !rota.chegou_loja_em){
-    chegadaLojaBox.style.display = 'block';
-    retiradaBox.style.display = 'none';
+    mapaLojaBox.style.display = 'block';
+    rotaHeaderNormal.style.display = 'none';
+    atualizarMapa('mapaLoja', enderecoLojaAtual);
+    iniciarAtualizacaoPeriodicaMapa('mapaLoja', enderecoLojaAtual);
   } else if(rota.status === 'a_caminho_da_loja' && rota.chegou_loja_em){
-    chegadaLojaBox.style.display = 'none';
+    mapaLojaBox.style.display = 'none';
+    rotaHeaderNormal.style.display = 'block';
     document.getElementById('r_codigoRetirada').textContent = rota.codigo_retirada;
     retiradaBox.style.display = 'block';
   } else {
-    chegadaLojaBox.style.display = 'none';
+    mapaLojaBox.style.display = 'none';
+    rotaHeaderNormal.style.display = 'block';
     retiradaBox.style.display = 'none';
   }
 
+  // achado ao vivo (25/08/2026): o botão "Ir pra essa parada" aparecia
+  // mesmo ANTES da coleta ser confirmada — dava pra pular direto pra tela
+  // de entrega sem ter retirado o pedido na loja. Só mostra as paradas
+  // depois que rota.status vira 'em_entrega' (confirmar_retirada_rota()),
+  // que é quando a coleta de verdade aconteceu.
   const paradasBox = document.getElementById('paradasBox');
+  if(rota.status !== 'em_entrega'){
+    paradasBox.innerHTML = '';
+    return;
+  }
   paradasBox.innerHTML = pedidos.map((p,i) => `
     <div class="stop-card">
       <div class="stop-head">
@@ -1232,6 +1631,30 @@ function iniciarEscutaDeOfertas(){
   }
 }
 
+// achado ao vivo (25/08/2026): aguardarRotaAposAceite() (poll de até 60s
+// depois de aceitar) resolve o caso comum, mas não o tenant de teste —
+// lá a atribuição da rota só acontece quando ALGUÉM chama
+// /interno/resposta-despacho manualmente, o que pode demorar bem mais
+// que 60s (depende de reação humana, não do motor de despacho real).
+// Correção definitiva: escuta Realtime em rotas_entrega, sem timeout
+// nenhum — dispara verificarRotaAtiva() no INSTANTE em que uma rota é
+// atribuída a este entregador, não importa quanto tempo isso demore.
+// Ativa o turno inteiro (mesmo padrão de iniciarEscutaDeOfertas()), não
+// só depois de aceitar uma oferta — cobre também o caso de reconciliação
+// do motor de despacho atribuir a rota depois de um restart, por exemplo.
+let escutaAtribuicaoRotaAtiva = false;
+function iniciarEscutaDeAtribuicaoRota(){
+  if(escutaAtribuicaoRotaAtiva) return;
+  escutaAtribuicaoRotaAtiva = true;
+  supabaseClient
+    .channel('atribuicao-rota')
+    .on('postgres_changes', {
+      event: 'UPDATE', schema: 'public', table: 'rotas_entrega',
+      filter: `entregador_id=eq.${entregadorId}`,
+    }, () => verificarRotaAtiva())
+    .subscribe();
+}
+
 async function mostrarOferta(tentativa, tocarSom = true){
   if(tentativa.resultado) return; // já respondida (não deveria acontecer num INSERT, defensivo)
   // achado real (25/08/2026, teste em aparelho físico): com o app em
@@ -1296,9 +1719,32 @@ async function aceitarOferta(){
     .update({ resultado: 'aceito', respondido_em: new Date().toISOString() })
     .eq('id', id);
   if(error){ alert('Não deu pra aceitar a oferta: ' + error.message); return; }
-  // o dispatch-engine reage à mudança (LISTEN em tentativa_despacho_respondida)
-  // e monta rotas_entrega.entregador_id — dá um instante e recarrega.
-  setTimeout(verificarRotaAtiva, 1500);
+  // achado real (25/08/2026, teste ao vivo): o dispatch-engine reage à
+  // mudança (LISTEN em tentativa_despacho_respondida) e monta
+  // rotas_entrega.entregador_id, mas uma checagem ÚNICA 1.5s depois falhava
+  // sempre que o backend demorava mais que isso pra terminar (rede, carga,
+  // ou — no tenant de teste, sem NOTIFY nenhum — precisa de intervenção
+  // manual via endpoint interno) — a tela ficava presa em "Aguardando a
+  // próxima rota" com a rota já de fato atribuída no banco, sem tentar de
+  // novo sozinha. Poll curto em vez de checagem única, mesmo princípio do
+  // repique autocorrigível do motor de despacho (agendarRepique() em
+  // dispatch-engine/index.js).
+  aguardarRotaAposAceite();
+}
+
+// achado ao vivo (25/08/2026, testando a própria correção): 15s (10×1.5s)
+// não bastava quando o passo de finalizar a atribuição depende de
+// intervenção manual (tenant de teste, sem NOTIFY) — a demora de reação de
+// quem está testando facilmente passa de 15s, e o poll desistia antes da
+// rota existir. Em produção o motor real responde a um NOTIFY quase
+// instantâneo, então essa janela maior não tem custo prático — é só uma
+// rede de segurança generosa, igual ao espírito do repique autocorrigível.
+async function aguardarRotaAposAceite(tentativas = 40){
+  for(let i = 0; i < tentativas; i++){
+    await new Promise(res => setTimeout(res, 1500));
+    await verificarRotaAtiva();
+    if(rotaAtivaId) return;
+  }
 }
 
 async function recusarOferta(){
@@ -1860,16 +2306,28 @@ async function abrirExtratoFeira(){
 function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou){
   paradaAtualPedidoId = pedidoId;
   document.getElementById('e_endereco').textContent = endereco;
+  document.getElementById('e_enderecoEntregaFlutuante').textContent = endereco;
   document.getElementById('e_valor').textContent = formatarReal(Number(valor));
   document.getElementById('e_indice').textContent = indice;
   document.getElementById('e_codigoInput').value = '';
   document.getElementById('entregaMsg').className = 'msg';
   // item 34 (25/08/2026): esconde código/foto/confirmar até "cheguei no
   // local de entrega" ser confirmado — jaChegou vem do data-chegou do
-  // botão em montarRota(), refletindo pedidos.chegou_entrega_em.
+  // botão em montarRota(), refletindo pedidos.chegou_entrega_em. item 39:
+  // chegadaEntregaBox agora É a tela cheia do mapa; entregaHeaderNormal é
+  // tudo mais (código/foto/confirmar) — mutuamente exclusivos.
   document.getElementById('chegadaEntregaBox').style.display = jaChegou ? 'none' : 'block';
-  document.getElementById('entregaConteudo').style.display = jaChegou ? 'block' : 'none';
+  document.getElementById('entregaHeaderNormal').style.display = jaChegou ? 'block' : 'none';
+  // achado ao vivo (25/08/2026): chamar atualizarMapa() aqui DEPOIS de
+  // mostrar('view-entrega') corria com o próprio re-disparo que mostrar()
+  // já faz sozinha (via ultimoEnderecoPedido) — duas chamadas quase
+  // simultâneas pro mesmo container, uma podia processar o endereço
+  // ANTIGO (perdendo o novo, protegido pelo lock em atualizarMapa()).
+  // Só grava o endereço aqui; mostrar() dispara a atualização de verdade
+  // uma única vez, já com o valor certo.
+  ultimoEnderecoPedido['mapaEntrega'] = jaChegou ? null : endereco;
   mostrar('view-entrega');
+  if(!jaChegou) iniciarAtualizacaoPeriodicaMapa('mapaEntrega', endereco);
 }
 
 async function confirmarChegadaEntrega(){
@@ -1877,7 +2335,7 @@ async function confirmarChegadaEntrega(){
   const { error } = await supabaseClient.rpc('confirmar_chegada_entrega', { p_pedido_id: paradaAtualPedidoId });
   if(error){ alert('Não deu pra confirmar a chegada: ' + error.message); return; }
   document.getElementById('chegadaEntregaBox').style.display = 'none';
-  document.getElementById('entregaConteudo').style.display = 'block';
+  document.getElementById('entregaHeaderNormal').style.display = 'block';
 }
 
 async function confirmarEntrega(){
@@ -1904,8 +2362,21 @@ async function confirmarEntrega(){
     setTimeout(verificarRotaAtiva, 1000);
     return;
   }
+  // achado real (25/08/2026, teste ao vivo — usuário digitou o código
+  // errado de propósito pra conferir): codigo_confirmado sempre existiu só
+  // como campo de AUDITORIA em comprovantes_entrega, nunca travava a
+  // confirmação — dava pra finalizar a entrega com qualquer código, até
+  // errado. Passa a bloquear: é o único mecanismo que existe hoje pra
+  // confirmar que quem recebeu é realmente o cliente do pedido (não há
+  // nenhum fluxo alternativo de "cliente não atendeu" implementado nesta
+  // tela — isso é outra pendência, sem relação com esta).
   const codigoDigitado = document.getElementById('e_codigoInput').value.trim();
   const codigoCorreto = codigoDigitado === pedido.codigo_entrega;
+  if(!codigoCorreto){
+    msg.textContent = 'Código incorreto — confira com o cliente antes de confirmar.';
+    msg.className = 'msg error';
+    return;
+  }
 
   const foto = document.getElementById('e_foto').files[0];
   if(!foto){ msg.textContent = 'Tira a foto da entrega antes de confirmar.'; msg.className = 'msg error'; return; }
@@ -1920,13 +2391,41 @@ async function confirmarEntrega(){
     msg.textContent = 'Não deu pra subir a foto: ' + err.message; msg.className = 'msg error'; return;
   }
 
+  // achado real (25/08/2026, teste de ponta a ponta no aparelho físico):
+  // a checagem de status='entregue' lá em cima é só uma FOTO do banco no
+  // momento em que a tela abriu — um duplo toque no botão (ou dois
+  // disparos do mesmo clique, reproduzido ao vivo) inicia duas chamadas
+  // concorrentes de confirmarEntrega(); as duas passam pela checagem
+  // ANTES de qualquer uma escrever, cada uma sobe sua própria foto e
+  // grava seu próprio comprovantes_entrega — 2 comprovantes pro mesmo
+  // pedido. UPDATE condicional (`.eq('status','a_caminho')`) resolve:
+  // só quem realmente muda a linha (ganha a corrida) segue pra gravar o
+  // comprovante; Postgres serializa UPDATEs concorrentes na mesma linha,
+  // então a segunda chamada sempre enxerga o status já como 'entregue'
+  // e recua — mesmo princípio das claims atômicas já usadas em
+  // tratarRespostaDespacho() (dispatch-engine/index.js) e
+  // confirmar_retirada_rota() (db/schema.sql).
+  const { data: pedidoAtualizado, error: eUpdate } = await supabaseClient
+    .from('pedidos')
+    .update({ status: 'entregue', entregue_em: new Date().toISOString() })
+    .eq('id', paradaAtualPedidoId)
+    .eq('status', 'a_caminho')
+    .select('id');
+  if(eUpdate){
+    msg.textContent = 'Não deu pra confirmar a entrega: ' + eUpdate.message; msg.className = 'msg error'; return;
+  }
+  if(!pedidoAtualizado || pedidoAtualizado.length === 0){
+    msg.textContent = 'Essa entrega já foi confirmada antes (por outro toque) — nada a fazer aqui.';
+    msg.className = 'msg';
+    setTimeout(verificarRotaAtiva, 1000);
+    return;
+  }
+
   await supabaseClient.from('comprovantes_entrega').insert({
     pedido_id: paradaAtualPedidoId,
     foto_url: fotoUrl,
     codigo_confirmado: codigoCorreto,
   });
-
-  await supabaseClient.from('pedidos').update({ status: 'entregue', entregue_em: new Date().toISOString() }).eq('id', paradaAtualPedidoId);
 
   // achado real (25/08/2026, teste de ponta a ponta): voltava pra
   // 'view-rota' (tela de DETALHE da rota) em vez de 'view-turno' (o

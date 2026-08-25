@@ -43,4 +43,15 @@
          registrarPushEntregador(), app-entregador.html) não tem efeito real.
          targetSdkVersion=36 aqui, então é obrigatória, não opcional. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- item 39 (25/08/2026): achado ao vivo — iniciarRastreioPosicao() já
+         existia (app-entregador.html) usando navigator.geolocation puro, mas
+         SEM essas 2 permissões o WebView nega a geolocalização sempre, sem
+         nem mostrar prompt — minhaPosicaoAtual nunca era preenchida no app
+         nativo (só funcionava no navegador/mockup, onde o Chrome pede a
+         permissão por conta própria). Faltava tanto isso quanto o plugin
+         @capacitor/geolocation (ver carregarEntregador()/iniciarRastreioPosicao()),
+         que é quem de fato dispara o prompt nativo de runtime usando essas
+         permissões declarativas. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 </manifest>

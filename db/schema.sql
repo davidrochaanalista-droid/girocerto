@@ -1214,6 +1214,26 @@ as $$
   where e.auth_user_id = auth.uid();
 $$;
 
+-- item 37 (25/08/2026): mesmo padrão de config_fadiga_do_meu_tenant() acima
+-- (função estreita, SECURITY DEFINER, só os campos que o app precisa) —
+-- usuário notou que não tinha nenhum jeito de navegar até a loja no app.
+-- GiroCerto não traça mapa próprio (decisão de produto documentada na
+-- coluna entregadores.app_navegacao_preferido: navegação turn-by-turn fica
+-- por deep link pro Waze/Google Maps, que aceita endereço em texto puro,
+-- sem precisar geocodificar nada aqui).
+create or replace function endereco_loja_do_meu_tenant()
+returns table(endereco_loja text)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select t.endereco_loja
+  from tenants t
+  join entregadores e on e.tenant_id = t.id
+  where e.auth_user_id = auth.uid();
+$$;
+
 -- ------------------------------------------------------------
 -- Pausar/retomar turno preservando o status anterior (fix do achado do item
 -- 10 — ver comentário em entregadores.status_antes_pausa). Funções em vez de

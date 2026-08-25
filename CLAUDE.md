@@ -2171,6 +2171,145 @@ C:\Users\Usuário\Projetos\giro certo
       produto (nem precisava: o cálculo de item 36 usa lat/lng de
       `entregadores`/`tenants`, que já existiam).
 
+37. **Navegação externa (Waze/Google Maps) + `endereco_loja_do_meu_tenant()`**
+    (25/08/2026, pedido do usuário: "tem que ter algo que direcione o
+    entregador no mapa"). Decisão de produto já documentada em
+    `entregadores.app_navegacao_preferido` (deep link, não mapa próprio) —
+    nunca tinha sido implementada na tela. `urlNavegacao()`/`abrirNavegacao()`
+    (`app-entregador.html`) montam `https://waze.com/ul?q=...` ou
+    `https://www.google.com/maps/dir/?...` a partir de endereço em texto
+    puro (sem geocodificar nada) e abrem via `window.open(url,'_system')`
+    — `'_system'` é o que dispara uma Intent do Android de verdade (abre o
+    app nativo se instalado) dentro do WebView do Capacitor; `'_blank'` só
+    abriria dentro do próprio WebView. Nova RPC
+    `endereco_loja_do_meu_tenant()` (`db/schema.sql`), mesmo padrão de
+    `config_fadiga_do_meu_tenant()` — função estreita SECURITY DEFINER em
+    vez de policy nova em `tenants` (que exporia CPF/chave Pix do
+    proprietário pra qualquer entregador). **Testado ao vivo**: abriu o
+    Waze de verdade (fallback pra "instalar o Waze" já que o app não
+    estava no aparelho de teste) com o endereço certo da loja.
+
+38-40. **Mapa embutido em tela cheia + trajeto ao vivo + clima flutuante**
+    (25/08/2026, mesma sessão — o usuário viu o item 37 funcionando e
+    pediu mais: "o mapa tem que aparecer na tela igual ifood/99/uber",
+    depois mandou print de referência real do 99 mostrando trajeto
+    traçado + card inferior, depois pediu trajeto que encolhe ao vivo
+    "igual Uber e 99", depois um marcador de moto, depois clima
+    flutuante). Tudo em `app-entregador.html`, nenhuma mudança de schema
+    além do item 37 acima.
+    - **Leaflet + OpenStreetMap** (CDN unpkg, gratuito, sem chave de API)
+      — `atualizarMapa()`/`atualizarMapaInterno()` inicializam 1 instância
+      por container (`mapaLoja`/`mapaEntrega`), com cache de instância
+      (Leaflet não reinicializa bem em cima do mesmo elemento).
+    - **Tela cheia de verdade** (não só um box de 220px): `mapaLojaBox`/
+      `chegadaEntregaBox` viraram `position:fixed` cobrindo a tela toda
+      (`.mapa-tela-cheia`), com botão de voltar flutuante (círculo,
+      canto superior esquerdo) e um "bottom sheet" flutuante (endereço +
+      distância + botão de ação) — mutuamente exclusivos com o resto do
+      conteúdo normal da view (`rotaHeaderNormal`/`entregaHeaderNormal`),
+      nunca os dois visíveis ao mesmo tempo.
+    - **Trajeto traçado via OSRM** (`router.project-osrm.org`, servidor
+      público de demonstração — sem SLA/garantia de volume, trocar por
+      instância própria se o uso real justificar), não só um alfinete —
+      `tracarRota()` busca a rota real (driving) entre a posição do
+      entregador e o destino, desenha como polyline, mostra distância.
+    - **Trajeto AO VIVO**: `iniciarAtualizacaoPeriodicaMapa()` reroda o
+      traçado a cada 8s (posição do entregador vem de
+      `minhaPosicaoAtual`, atualizada a cada tick do GPS) enquanto a tela
+      estiver visível — se o entregador sair da tela, o próprio callback
+      do interval se autodesliga (não precisa desligar manualmente em
+      cada ponto de saída possível).
+    - **Marcador do entregador**: badge com o mesmo gradiente/raio da
+      marca (`.badge` do cabeçalho) + 🛵, não um ponto genérico — pedido
+      explícito ("uma moto como a logo do GiroCerto").
+    - **Clima flutuante** (Open-Meteo, `api.open-meteo.com`, gratuito,
+      sem chave) — `atualizarClima()`, card flutuante no canto superior
+      direito (ícone + °C), atualiza junto do mesmo interval do trajeto
+      mas só busca de novo a cada 5min de verdade (clima não muda a cada
+      8s como a posição).
+    - **`@capacitor/geolocation` instalado** (`dispatch-engine/package.json`)
+      + `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` no
+      `AndroidManifest.xml` — achado real: `iniciarRastreioPosicao()` já
+      existia usando `navigator.geolocation` puro, mas SEM essas 2
+      permissões o WebView nega a geolocalização sempre, sem nem mostrar
+      prompt — `minhaPosicaoAtual` nunca era preenchida no app nativo
+      (só funcionava no navegador/mockup, onde o Chrome pede a permissão
+      por conta própria). `iniciarRastreioPosicao()`/`pararRastreioPosicao()`
+      agora usam o plugin quando disponível (`window.Capacitor?.Plugins?.Geolocation`),
+      com fallback pro `navigator.geolocation` de sempre.
+    - **Achado ao vivo, travamento real** (fps caindo pra 0.07, um frame
+      levando 13,4s — visto via `adb logcat`): chamadas CONCORRENTES ao
+      mesmo mapa. `mostrar()` já dispara `atualizarMapa()` de novo pra
+      views que ficam ativas; `abrirEntrega()`/`montarRota()` também
+      chamavam na sequência — sem trava, duas execuções mexiam no MESMO
+      Leaflet ao mesmo tempo (inclusive 2 fetches concorrentes no OSRM).
+      Corrigido com: (1) trava por container em `atualizarMapa()`
+      (`atualizandoMapa{}`, só 1 execução de cada vez, a próxima descarta
+      e confia que a que está rodando já vai pegar o endereço mais
+      recente); (2) trava + cache por chave origem→destino em
+      `tracarRota()` (`tracandoRota{}`/`ultimaChaveRota{}`, pula o fetch
+      inteiro se nada mudou); (3) `containerEstaVisivel()` corrigida pra
+      checar TODOS os ancestrais até a `.view` (não só ela) — um
+      `position:fixed` não herda `display:none` de um pai intermediário
+      escondido automaticamente, então a versão antiga achava que o mapa
+      "tá visível" mesmo com a caixa que o contém escondida.
+    - **Achado ao vivo, informação duplicada**: usuário notou 2 formas de
+      chegar no mesmo lugar (mapa embutido + botão separado "Abrir no
+      mapa" do item 37) — botão removido das duas telas, o endereço
+      passou a aparecer como texto embaixo do mapa (antes só existia na
+      tela de entrega). Deep link do item 37 continua existindo no
+      código (`urlNavegacao()`/`abrirNavegacao()`), só não tem mais botão
+      ligado a ele nessas telas — sobra como função reutilizável.
+    - **Achado ao vivo, botão adiantado**: "Ir pra essa parada" aparecia
+      na lista de paradas mesmo ANTES da coleta ser confirmada, dava pra
+      pular direto pra tela de entrega sem ter retirado o pedido.
+      `montarRota()` corrigida: `paradasBox` só é populada quando
+      `rota.status === 'em_entrega'` (depois de `confirmar_retirada_rota()`).
+    - **Achado ao vivo, corrida de duplo toque**: `confirmarEntrega()`
+      lia `pedido.status` uma vez no início (SELECT) e só escrevia
+      'entregue' no fim — um duplo toque disparava 2 chamadas
+      concorrentes, as duas passavam pela checagem ANTES de qualquer uma
+      escrever, cada uma subia sua PRÓPRIA foto e criava seu próprio
+      `comprovantes_entrega` (reproduzido ao vivo: 2 comprovantes pro
+      mesmo pedido). Corrigido com UPDATE condicional atômico
+      (`.eq('status','a_caminho')` + checar linhas afetadas antes de
+      gravar o comprovante) — mesmo princípio das claims atômicas já
+      usadas em `tratarRespostaDespacho()`/`confirmar_retirada_rota()`.
+    - **Achado ao vivo, código não bloqueava**: `codigo_confirmado` em
+      `comprovantes_entrega` sempre foi só um campo de AUDITORIA, nunca
+      travou a confirmação — dava pra finalizar a entrega com qualquer
+      código, até errado (usuário testou de propósito). Corrigido:
+      código errado agora bloqueia com mensagem de erro, mesmo padrão do
+      guard "sem foto" que já existia. Não há fluxo alternativo de
+      "cliente não atendeu" implementado nesta tela — não tem risco de
+      travar ninguém que devia ter outro caminho.
+    - **Achado ao vivo, rota não aparecia sozinha (2 correções em
+      sequência)**: 1ª — `aceitarOferta()` fazia só 1 checagem
+      (`setTimeout(verificarRotaAtiva, 1500)`) depois de aceitar,
+      assumindo que o motor de despacho já teria processado a essa
+      altura; se demorasse mais (rede, carga, ou — no tenant de teste,
+      sem `NOTIFY` — precisa de intervenção manual via endpoint interno,
+      que pode demorar bem mais que qualquer timeout fixo, já que
+      depende de reação humana) a tela ficava presa em "Aguardando a
+      próxima rota" com a rota já de fato atribuída no banco.
+      `aguardarRotaAposAceite()`: poll de até 60s (40×1.5s) em vez de 1
+      checagem — ajudou, mas ainda tem timeout, e o teste ao vivo
+      mostrou casos passando de 60s (conversa no meio, múltiplos
+      redespachos). Correção definitiva: `iniciarEscutaDeAtribuicaoRota()`
+      — Realtime em `rotas_entrega`, `UPDATE` filtrado por
+      `entregador_id=eq.<o meu>`, sem timeout nenhum, dispara
+      `verificarRotaAtiva()` no INSTANTE em que uma rota é atribuída,
+      não importa quanto tempo isso demore. Ativa o turno inteiro (mesmo
+      padrão de `iniciarEscutaDeOfertas()`), cobre reconciliação do
+      motor depois de restart também, não só o caminho de aceitar oferta.
+      **Achado colateral confirmado ao vivo**: com a tela do celular
+      BLOQUEADA, nem o Realtime nem nada mais atualiza a tela — mesmo
+      comportamento de degradação silenciosa do WebSocket já documentado
+      pro polling de ofertas (item 33/34), esperado, não é bug novo.
+    - Suíte completa **158/158** (sem teste novo dedicado — mudanças são
+      client-side/UI, cobertas pelo teste ao vivo extensivo no aparelho
+      físico real, não pela suíte automatizada).
+
 ## Pendências reais no momento
 - [ ] **Cobrança via Pix aparecendo em rota da sessão feira** (achado pelo
       usuário no item 33, 25/08/2026, não investigado) — segundo o
