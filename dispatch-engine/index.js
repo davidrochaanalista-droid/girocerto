@@ -136,12 +136,39 @@ function limparEstadoDaRota(rotaId) {
 
 // repete o mesmo push (mesmo "toque calmo") a cada segundosRepique, até a
 // tentativa resolver (aceito/recusado, ver tratarRespostaDespacho) ou o
-// timeout vencer (ver agendarTimeout) — os únicos dois jeitos de uma
-// tentativa terminar, então não precisa de limite de repetições nem de
-// timer de segurança separado aqui.
+// timeout vencer (ver agendarTimeout) — os dois jeitos "normais" de uma
+// tentativa terminar, cada um já limpa o interval explicitamente.
+//
+// achado real (25/08/2026, testando em aparelho físico): esses dois
+// caminhos dependem do NOTIFY do Postgres pra avisar este processo — e
+// tenant de teste (is_teste=true) nunca dispara esse NOTIFY de propósito
+// (item 26), então testar manualmente pelo app real (não pelo endpoint de
+// teste) deixava o repique preso pra sempre, mesmo já aceito/recusado.
+// Autocorreção: a cada disparo, confere direto no banco se a tentativa
+// ainda está pendente ANTES de mandar o push — se já foi resolvida (por
+// qualquer caminho, NOTIFY perdido ou não), para sozinho aqui, sem
+// precisar do NOTIFY pra limpar. Cobre não só o gap de teste, mas
+// qualquer NOTIFY perdido de verdade (rede, reconexão) em produção
+// também — rede de segurança, não só conveniência de teste.
 function agendarRepique(rotaId, pushToken, plataforma, segundosRepique, tentativaId) {
   if (!segundosRepique || segundosRepique <= 0) return;
-  const interval = setInterval(() => {
+  const interval = setInterval(async () => {
+    if (tentativaId) {
+      const { data: tentativa, error } = await admin
+        .from('tentativas_despacho')
+        .select('resultado')
+        .eq('id', tentativaId)
+        .single();
+      // erro de rede/conexão: falha aberta, manda o push mesmo assim — não
+      // quero um blip de rede parando um repique que ainda é legítimo.
+      // Só para quando a consulta FUNCIONOU e confirmou que já resolveu.
+      if (!error && (!tentativa || tentativa.resultado)) {
+        console.log(`[despacho] repique da tentativa ${tentativaId} parado — já resolvida (achado que o NOTIFY não avisou, ex: tenant de teste)`);
+        clearInterval(interval);
+        repiquesPorRota.delete(rotaId);
+        return;
+      }
+    }
     enviarPushBuzinaEntregador(pushToken, plataforma, tentativaId);
   }, segundosRepique * 1000);
   repiquesPorRota.set(rotaId, interval);

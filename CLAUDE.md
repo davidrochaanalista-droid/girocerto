@@ -1926,7 +1926,58 @@ C:\Users\Usuário\Projetos\giro certo
       desconhecido — conexão USB caiu sozinha, reconectou depois de
       reautorizar a depuração USB na tela do aparelho).
 
+33. **Repique autocorrige sozinho + sobreposição de som corrigida** (25/08/2026,
+    mesma sessão do item 32). Pedido do usuário: "vamos corrigir o disparo
+    sozinho" — as duas coisas que ficaram pendentes no item 32.
+    - **Autocorreção do repique** (`dispatch-engine/index.js`,
+      `agendarRepique()`): antes de mandar cada push do repique, confere
+      direto no banco se a tentativa ainda está pendente — se já foi
+      resolvida (aceita/recusada, por QUALQUER caminho, `NOTIFY` recebido
+      ou não), para o próprio interval ali mesmo, sem depender do `NOTIFY`
+      pra limpar. Corrige o gap real do item 32 (tenant `is_teste=true`
+      nunca dispara `NOTIFY`, então testar manualmente pelo app real
+      deixava o repique preso pra sempre) — mas é uma rede de segurança
+      geral, cobre qualquer `NOTIFY` perdido de verdade em produção
+      também, não só o cenário de teste. Falha aberta: erro de rede na
+      consulta não para o repique (só confirma que já resolveu quando a
+      consulta funciona e resultado não é mais null). **Testado ao vivo**:
+      aceitou a oferta pelo app real sem eu chamar nada manualmente — log
+      confirmou `repique da tentativa ... parado — já resolvida`,
+      repetido em 2 cenários diferentes sem falhar.
+    - **Sobreposição de som corrigida** (`mockups/app-entregador.html`):
+      `mostrarOferta(tentativa, tocarSom=true)` ganhou o parâmetro
+      `tocarSom` — o handler de Realtime (oferta genuinamente nova, app já
+      em uso) continua tocando o som via JS normalmente; o poll de 15s
+      (que existe pra RECUPERAR oferta perdida, não pra oferta nova em
+      primeiro plano) passa `tocarSom=false`, porque nesse caso o push
+      nativo quase certamente já tocou/está tocando sozinho. **Testado ao
+      vivo**: replicado o cenário exato que causava a sobreposição (tela
+      bloqueada, som nativo ainda tocando, destrava no meio) — sem
+      sobreposição depois do fix, confirmado pelo usuário duas vezes.
+    - **Teste adicional confirmado**: entregador com rota ativa na tela
+      (`em_rota`) recebendo uma segunda oferta simultânea — sistema
+      corretamente recusa despachar pro entregador ocupado
+      (`sem entregador disponível`, filtro `status='disponivel'` já
+      exclui), nada aparece/toca na tela. Sem código novo, só confirmação
+      ao vivo de um comportamento que já devia funcionar.
+    - **Achado à parte, fora de escopo, registrado pra depois**: usuário
+      notou olhando a tela de teste que uma rota da sessão "feira" estava
+      mostrando opção de cobrar via Pix/QR code do cliente — segundo o
+      usuário, isso está ERRADO: na sessão feira o entregador só recebe as
+      taxas de entrega, o cliente paga o feirante direto, e a opção de Pix
+      deveria existir só no fluxo do restaurante. **Não investigado nem
+      corrigido nesta sessão** — decisão do usuário de terminar o teste de
+      push primeiro. Fica como próximo item a investigar.
+    - Suíte completa rodou 154/154 antes de ir pro aparelho, depois dos
+      dois fixes de código aplicados.
+
 ## Pendências reais no momento
+- [ ] **Cobrança via Pix aparecendo em rota da sessão feira** (achado pelo
+      usuário no item 33, 25/08/2026, não investigado) — segundo o
+      usuário, na sessão feira o entregador só recebe as taxas de entrega,
+      o cliente paga o feirante direto; a opção de cobrar via Pix/QR code
+      do cliente deveria existir só no fluxo do restaurante. Investigar
+      onde essa UI/lógica mistura os dois fluxos antes de corrigir.
 - [ ] **Unificação visual das 5 telas HTML na identidade oficial da marca**
       (ver item 28) — investigação completa, nada aplicado. Ao retomar:
       primeiro resolver a pergunta em aberto sobre cor de alerta/erro (não
@@ -1994,22 +2045,20 @@ C:\Users\Usuário\Projetos\giro certo
         setado no item 31, redeploy confirmado saudável. Só falta um push
         real pra confirmar que funciona de ponta a ponta (item abaixo).
       - [x] ~~Nunca testado de ponta a ponta num dispositivo/emulador
-        real~~ — testado de verdade no item 32, no `RMX3941` (Realme) já
-        registrado. Buzina corrigida: normalizada (tocava baixo demais),
-        20s, `USAGE_ALARM`, sem empilhar notificação, limpa a notificação
-        ao resolver. Achado à parte: testar manualmente pelo app real (não
-        pelo endpoint de teste) num tenant `is_teste=true` NUNCA avisa o
-        `dispatch-engine` — o repique fica preso até chamar também
-        `POST /interno/resposta-despacho {"tentativaId":...}` (com
-        `HABILITAR_ENDPOINTS_TESTE=true`) depois de cada aceite/recusa
-        manual — não acontece em produção com tenant real. Script
+        real~~ — testado de verdade nos itens 32 e 33, no `RMX3941`
+        (Realme) já registrado. Buzina corrigida: normalizada (tocava
+        baixo demais), 20s, `USAGE_ALARM`, sem empilhar notificação, limpa
+        a notificação ao resolver, repique autocorrige sozinho se resolver
+        sem `NOTIFY` chegar (item 33 — cobre inclusive testar manualmente
+        num tenant `is_teste=true` sem precisar chamar o endpoint de teste
+        depois de cada aceite). Rota ativa na tela recebendo 2ª oferta:
+        confirmado que o entregador ocupado não é ofertado de novo. Script
         `dispatch-engine/__pedido_teste.js` continua local, não commitado.
-      - [ ] **Sobreposição de som na transição de destravar a tela**
-        (achado no item 32, registrado, não corrigido por decisão do
-        usuário): se a oferta ainda estiver tocando o som nativo quando a
-        tela destrava, o som via JS (primeiro plano) pode começar por cima
-        antes do nativo terminar — duas fontes de áudio sem coordenação
-        entre si.
+      - [x] ~~Sobreposição de som na transição de destravar a tela~~ —
+        corrigido no item 33 (`tocarSom=false` no caminho do poll de
+        segurança, que só recupera oferta perdida — o som via JS fica só
+        pro caminho de Realtime, oferta genuinamente nova). Testado ao
+        vivo replicando o cenário exato, sem sobreposição depois do fix.
       - [ ] **Tracking em background** (a outra metade original da
         pendência, junto com o push) — nunca começado. Zero permissão de
         localização, zero plugin de geolocalização instalado, zero código.

@@ -1181,12 +1181,22 @@ function iniciarEscutaDeOfertas(){
         .is('resultado', null)
         .order('notificado_em', { ascending: false })
         .limit(1);
-      if(pendentes && pendentes.length) mostrarOferta(pendentes[0]);
+      // achado real (25/08/2026, teste em aparelho físico): a sobreposição
+      // de som na transição de destravar a tela acontecia porque o poll
+      // (que existe pra RECUPERAR uma oferta perdida, não pra ofertas
+      // realmente novas em primeiro plano) tocava o som via JS por cima
+      // do som nativo do push que já pode estar tocando/ter tocado — as
+      // duas fontes sem coordenação entre si. tocarSom=false aqui: se o
+      // poll é quem achou a oferta, o mais provável é que o push nativo
+      // já cuidou do som (ele chega independente do app estar rodando);
+      // o card ainda aparece normalmente, só o som via JS fica só pro
+      // caminho do Realtime (oferta nova de verdade, app já em uso).
+      if(pendentes && pendentes.length) mostrarOferta(pendentes[0], false);
     }, POLL_INTERVAL_OFERTA_MS);
   }
 }
 
-async function mostrarOferta(tentativa){
+async function mostrarOferta(tentativa, tocarSom = true){
   if(tentativa.resultado) return; // já respondida (não deveria acontecer num INSERT, defensivo)
   // achado real (25/08/2026, teste em aparelho físico): com o app em
   // primeiro plano, o Android NÃO toca o som do push do sistema (só
@@ -1208,7 +1218,7 @@ async function mostrarOferta(tentativa){
     : 'Nova rota disponível';
   document.getElementById('oferta_resumo').textContent = resumo;
   document.getElementById('modalOferta').classList.add('show');
-  if(ehOfertaNova){
+  if(ehOfertaNova && tocarSom){
     // achado real (25/08/2026, teste em aparelho físico): tocando só uma
     // vez passava despercebido — precisa repetir igual o repique do
     // backend (dispatch-engine/index.js, agendarRepique), até o
