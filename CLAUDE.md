@@ -2310,22 +2310,84 @@ C:\Users\Usuário\Projetos\giro certo
       client-side/UI, cobertas pelo teste ao vivo extensivo no aparelho
       físico real, não pela suíte automatizada).
 
+41. **`mockups/painel-feirante.html` (tela nova) + início da unificação
+    visual + botão de emergência corrigido** (25/08/2026). Três pedidos do
+    usuário na mesma sessão: (1) esclareceu a regra de negócio da feira —
+    cliente paga o feirante direto (Pix/combinado via WhatsApp), o
+    entregador só recebe a taxa de entrega — e pediu pra testar do zero em
+    vez de fechar a pendência antiga como não-reproduzível; (2) mandou
+    `tela-feirante-mockup.html` (mockup ilustrativo, não funcional) e
+    confirmou "quero implementar o PainelFeirante agora"; (3) "usar essa
+    identidade visual no projeto todo" — reabre a unificação visual (item
+    28/pendência), escolhendo `painel-feirante` como primeira tela.
+    - **Painel do Feirante, tela nova, identidade oficial da marca**
+      (`--ink:#223526; --paper:#EDE7D9; --marigold:#D9A62E; --sage:#7C8B6F;
+      --leaf:#3B5B3F;`, fontes Fraunces/Inter/Space Mono). Login por
+      `auth_user_id` em `estabelecimentos` (`tipo_negocio='feirante'`),
+      lista pedidos pagos aguardando separação e pedidos com Pix pendente,
+      ação "Marcar como pronto" (reusa o trigger `gerar_nota_pedido()` já
+      existente — nenhuma RPC nova precisou ser criada pra isso).
+    - **Decisão de cor**: vermelho (`--error:#B84343`) mantido como exceção
+      deliberada fora da paleta nova, só pra erro/alerta — decisão explícita
+      do usuário, não esquecimento.
+    - **Achado ao vivo, gap funcional real**: comparando com o componente
+      React de referência (`PainelFeirante`/`PedidoFeiranteCard` em
+      `feira-dispatch.zip`/`FeiraApp.jsx`, nunca lido antes de construir a
+      v1 desta tela), faltava a AÇÃO de confirmar Pix — pedidos pendentes
+      só apareciam como card informativo, sem botão. Corrigido:
+      `renderCardPendente()` ganhou botão "Confirmei o Pix na minha conta"
+      → `confirmarPagamento(id)` (`status_pagamento='confirmado'`, sem RPC
+      nova, mesma policy de UPDATE que já existia). Não existe integração
+      automática com provedor de Pix ainda — confirmação é manual pelo
+      feirante, mesma pendência já documentada abaixo.
+    - **Bug real, trigger sem `security definer`**: `gerar_nota_pedido()`
+      rodava com o contexto RLS do feirante (que não tem policy de INSERT
+      em `pedido_nota`) → `"new row violates row-level security policy"`.
+      Corrigido: `security definer set search_path = public, pg_temp`.
+    - **Bug real, recursão infinita de RLS (Postgres 42P17)**: pra
+      `painel-feirante.html` mostrar nome do cliente, precisava de policy
+      nova de SELECT em `pedido_grupo`/`usuarios` pro feirante — a versão
+      ingênua (subquery direta em `pedido`) fechou um ciclo com a policy
+      já existente de `pedido` (que já faz subquery em `pedido_grupo`).
+      Corrigido com o mesmo padrão já usado em `meu_estabelecimento_id()`/
+      `meu_usuario_id()`: função `pedido_grupos_do_meu_estabelecimento()`
+      (SECURITY DEFINER, bypassa RLS internamente, quebra o ciclo) —
+      policies novas usam essa função em vez de subquery crua.
+    - **Bug real, relação 1:1 lida como array**: `pedido_nota.pedido_id` é
+      UNIQUE, então o Supabase JS devolve OBJETO, não array (diferente de
+      `pedido_item`, que é 1:N de verdade) — `p.pedido_nota?.[0]?.codigo_curto`
+      sempre `undefined`, mascarando dois sintomas ao mesmo tempo (ticket
+      não aparecia E botão ficava preso em "Marcar como pronto"). Corrigido
+      pra `p.pedido_nota?.codigo_curto`.
+    - **`app-entregador.html`**: botão de emergência trocado de
+      `tel:193`/"🚒 193 — Bombeiros" pra `tel:192`/"🚑 192 — SAMU/Resgate",
+      pedido explícito do usuário.
+    - Testado ao vivo via `npx serve` local (fluxo completo: pedido
+      pendente → Confirmei o Pix → Pix recebido → Marcar como pronto →
+      código de 4 caracteres gerado, sem regressão). Suíte completa
+      **158/158** (RLS/trigger novos não tocam nada fora do módulo feira,
+      não coberto por teste automatizado dedicado — mudança é client-side/
+      schema testado ao vivo).
+    - Ainda não commitado — mudanças em `db/schema.sql` (trigger fix +
+      policies + função nova) já aplicadas direto no banco hospedado.
+
 ## Pendências reais no momento
-- [ ] **Cobrança via Pix aparecendo em rota da sessão feira** (achado pelo
-      usuário no item 33, 25/08/2026, não investigado) — segundo o
-      usuário, na sessão feira o entregador só recebe as taxas de entrega,
-      o cliente paga o feirante direto; a opção de cobrar via Pix/QR code
-      do cliente deveria existir só no fluxo do restaurante. Investigar
-      onde essa UI/lógica mistura os dois fluxos antes de corrigir.
+- [x] ~~Cobrança via Pix aparecendo em rota da sessão feira~~ — não era bug:
+      usuário esclareceu a regra de negócio (item 41) e o fluxo certo
+      (feirante confirma recebimento do Pix da taxa de entrega) foi
+      construído em `painel-feirante.html`. Pendência nova, real, que ficou
+      explícita nessa conversa: **falta decidir/implementar o "sistema que
+      direciona o entregador na hora da entrega se é Pix ou dinheiro"**
+      pra taxa de entrega no modo feira (campo/UI novos na tela de
+      confirmação de entrega do entregador) — não escopado nem construído.
 - [ ] **Unificação visual das 5 telas HTML na identidade oficial da marca**
-      (ver item 28) — investigação completa, nada aplicado. Ao retomar:
-      primeiro resolver a pergunta em aberto sobre cor de alerta/erro (não
-      existe vermelho na paleta nova, precisa decidir se vira exceção
-      explícita ou outra abordagem), depois perguntar ao usuário a ordem de
-      prioridade das 5 telas antes de pedir um plano tela-por-tela completo.
-      Se prosseguir, cuidado pra não deixar `capacitor-www/index.html`
-      (cópia divergente de `app-entregador.html`, 37 linhas de diferença,
-      não rastreada no git) desatualizada sem perceber.
+      (ver item 28/41) — decisões já tomadas: vermelho fica como exceção
+      deliberada fora da paleta (`--error`), `painel-feirante.html` foi a
+      primeira tela migrada (item 41). Faltam `painel-loja.html`,
+      `app-entregador.html`, `painel-admin.html` (e o resto de
+      `painel-dev.html` se fizer sentido). Cuidado pra não deixar
+      `capacitor-www/index.html` (cópia divergente de `app-entregador.html`,
+      não rastreada no git) desatualizada sem perceber ao migrar essa tela.
 - [x] ~~PRÓXIMO PASSO GRANDE — painel operacional completo em
       `painel-admin.html`~~ — fechado no item 27 (v1: entregadores
       aprovado/pendente/online/offline/disponível/ocupado/pausado, lojas

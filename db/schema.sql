@@ -3687,6 +3687,15 @@ create trigger trg_atualizar_peso_total_rota
 after insert or delete on entrega_rota_grupo
 for each row execute function atualizar_peso_total_rota();
 
+-- item 41 (25/08/2026): achado ao vivo, testando o painel-feirante.html
+-- pela primeira vez — "Marcar como pronto" quebrava com "new row violates
+-- row-level security policy for table 'pedido_nota'". Essa função roda
+-- DENTRO da transação de UPDATE que o feirante dispara (trigger BEFORE em
+-- pedido), então sem SECURITY DEFINER ela herda a RLS do próprio
+-- feirante — e pedido_nota não tem NENHUMA policy de INSERT pra ninguém
+-- (só "feirante ve nota dos seus pedidos", SELECT). Mesmo padrão de fix já
+-- aplicado várias vezes nesta sessão pra RPCs (aprovar_entregador_teste(),
+-- enfileirar_notificacao_restaurante()), agora numa trigger function.
 create or replace function gerar_nota_pedido()
 returns trigger as $$
 declare
@@ -3723,7 +3732,7 @@ begin
   end if;
   return new;
 end;
-$$ language plpgsql;
+$$ language plpgsql security definer set search_path = public, pg_temp;
 
 drop trigger if exists trg_gerar_nota on pedido;
 create trigger trg_gerar_nota
@@ -4052,6 +4061,25 @@ as $$
   select id from estabelecimentos where auth_user_id = auth.uid();
 $$;
 
+-- item 41 (25/08/2026): achado ao vivo, testando painel-feirante.html —
+-- "infinite recursion detected in policy for relation 'pedido'" (código
+-- 42P17). Causa: a policy de pedido_grupo abaixo fazia subquery direta em
+-- `pedido` — mas `pedido` já tem uma policy própria ("consumidor ve
+-- pedidos do seu grupo") que faz subquery em `pedido_grupo` — ciclo
+-- fechado entre as duas tabelas assim que a policy nova entrou. Função
+-- SECURITY DEFINER quebra o ciclo (roda com bypass de RLS por dentro,
+-- mesmo motivo de meu_estabelecimento_id() acima não recursar ao
+-- consultar estabelecimentos).
+create or replace function pedido_grupos_do_meu_estabelecimento()
+returns setof uuid
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select pedido_grupo_id from pedido where estabelecimento_id in (select meu_estabelecimento_id());
+$$;
+
 create or replace function meu_usuario_id()
 returns setof uuid
 language sql
@@ -4140,6 +4168,13 @@ create policy "usuario ve e edita seu proprio perfil" on usuarios for all using 
   auth_user_id = auth.uid());
 create policy "autenticado cria seu proprio perfil de usuario" on usuarios for insert with check (
   auth_user_id = auth.uid());
+-- item 41 (25/08/2026): mesmo achado da policy de pedido_grupo acima —
+-- feirante precisa ver nome/telefone do cliente dos PRÓPRIOS pedidos (pra
+-- separar o pedido certo, e falar com o cliente se precisar, ver
+-- clarificação do usuário: "cliente paga direto pro feirante via
+-- WhatsApp"). Sem policy nenhuma antes, o join sempre voltava null.
+create policy "feirante ve cliente dos seus pedidos" on usuarios for select using (
+  id in (select consumidor_id from pedido_grupo where id in (select pedido_grupos_do_meu_estabelecimento())));
 
 -- feirante_participacao / feirante_excecoes: feirante gerencia a própria
 create policy "feirante gerencia sua participacao" on feirante_participacao for all using (
@@ -4154,6 +4189,12 @@ create policy "consumidor cria seu pedido grupo" on pedido_grupo for insert with
   consumidor_id in (select meu_usuario_id()));
 create policy "entregador ve pedido grupo da sua rota" on pedido_grupo for select using (
   entregador_id in (select meu_entregador_id_feira()));
+-- item 41 (25/08/2026): achado ao vivo, testando painel-feirante.html —
+-- faltava o feirante conseguir ver o pedido_grupo (endereço/nome do
+-- cliente) dos PRÓPRIOS pedidos. Sem isso o join pedido->pedido_grupo
+-- sempre voltava null pro feirante, mesmo o pedido sendo dele.
+create policy "feirante ve pedido grupo dos seus pedidos" on pedido_grupo for select using (
+  id in (select pedido_grupos_do_meu_estabelecimento()));
 
 -- pedido: feirante vê/atualiza os do seu estabelecimento (confirma pagamento,
 -- finaliza separação); consumidor vê os do próprio grupo; entregador vê os
