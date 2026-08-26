@@ -276,6 +276,41 @@ complementar). -->
     </div>
   </div>
 
+  <!-- ===================== VIEW: DESAFIO MFA (login) ===================== -->
+  <!-- Só aparece quando o entregador já ativou verificação em duas etapas
+       E o aparelho ainda não tem sessão com aal2 salva (26/08/2026). -->
+  <div class="view" id="view-mfa-challenge">
+    <h2 style="margin-bottom:4px;">Verificação em duas etapas</h2>
+    <p style="color:var(--gray);font-size:13.5px;margin:0 0 20px;">Digite o código do seu app autenticador (Google Authenticator, Authy, etc.).</p>
+    <div class="msg" id="mfaChallengeMsg"></div>
+    <div class="field"><label>Código</label><input type="text" id="mfaChallengeCodigo" inputmode="numeric" maxlength="6"></div>
+    <button class="btn-primary" onclick="confirmarMfaChallenge()">Confirmar</button>
+  </div>
+
+  <!-- ===================== VIEW: MFA (ativar/desativar) ===================== -->
+  <div class="view" id="view-mfa">
+    <button class="link-btn" onclick="mostrar('view-turno')">← Voltar</button>
+    <h2 style="margin:10px 0 4px;">Verificação em duas etapas</h2>
+    <p style="color:var(--gray);font-size:13.5px;margin:0 0 18px;">Pede um código do seu app autenticador quando um aparelho novo tenta entrar na sua conta — o aparelho que você já usa não pede de novo até você deslogar.</p>
+    <div class="msg" id="mfaMsg"></div>
+
+    <div id="mfaDesativado">
+      <button class="btn-primary" onclick="iniciarEnrollMfa()">Ativar verificação em duas etapas</button>
+    </div>
+
+    <div id="mfaEnrollBox" style="display:none;">
+      <div id="mfaQrCode" style="text-align:center;margin:14px 0;"></div>
+      <p style="font-size:12.5px;color:var(--gray);text-align:center;">Escaneie com seu app autenticador e digite o código de 6 dígitos abaixo.</p>
+      <div class="field"><label>Código</label><input type="text" id="mfaCodigoConfirmar" inputmode="numeric" maxlength="6"></div>
+      <button class="btn-primary" onclick="confirmarEnrollMfa()">Confirmar</button>
+    </div>
+
+    <div id="mfaAtivado" style="display:none;">
+      <div class="field" style="background:var(--green-soft);border-radius:12px;padding:12px 14px;font-size:13px;color:var(--teal-2);">✓ Verificação em duas etapas ativada.</div>
+      <button class="btn-primary" style="background:var(--red);margin-top:10px;" onclick="desativarMfa()">Desativar</button>
+    </div>
+  </div>
+
   <!-- ===================== VIEW: TURNO (home) ===================== -->
   <div class="view" id="view-turno">
     <div class="header-turno">
@@ -289,6 +324,10 @@ complementar). -->
       <a class="emerg-btn" href="tel:190">🚓 190 — Polícia</a>
       <a class="emerg-btn" href="tel:192">🚑 192 — SAMU/Resgate</a>
     </div>
+
+    <p style="text-align:right;margin:-8px 0 14px;">
+      <button class="link-btn" style="font-size:12.5px;" onclick="abrirViewMfa()">🔒 Verificação em duas etapas</button>
+    </p>
 
     <div id="turnoOffline">
       <button class="btn-primary" onclick="iniciarTurno()">Iniciar turno</button>
@@ -911,7 +950,104 @@ async function login(){
     password: document.getElementById('li_senha').value,
   });
   if(error){ msg.textContent = 'E-mail ou senha incorretos.'; msg.className = 'msg error'; return; }
+
+  // MFA (26/08/2026, análise de mercado GiroCerto vs Mercado — item
+  // "agora" de segurança). "Dispositivo confiável" (padrão descrito pelo
+  // Eng. do DoorDash) sai de graça da própria sessão persistida do
+  // Supabase: uma vez resolvido o desafio neste aparelho, a sessão fica
+  // salva com aal2 no localStorage e getAuthenticatorAssuranceLevel() já
+  // devolve currentLevel==='aal2' nas próximas vezes — sem precisar de
+  // nenhum controle próprio de "dispositivo confiável" além disso.
+  const { data: aal } = await supabaseClient.auth.mfa.getAuthenticatorAssuranceLevel();
+  if(aal && aal.nextLevel === 'aal2' && aal.currentLevel !== 'aal2'){
+    const { data: factors } = await supabaseClient.auth.mfa.listFactors();
+    const fator = factors?.totp?.find(f => f.status === 'verified');
+    if(fator){
+      const { data: challenge, error: errChallenge } = await supabaseClient.auth.mfa.challenge({ factorId: fator.id });
+      if(errChallenge){ msg.textContent = errChallenge.message; msg.className = 'msg error'; return; }
+      mfaFactorIdPendente = fator.id;
+      mfaChallengeIdPendente = challenge.id;
+      mostrar('view-mfa-challenge');
+      return;
+    }
+  }
+
   await carregarEntregador();
+}
+
+let mfaFactorIdPendente = null;
+let mfaChallengeIdPendente = null;
+
+async function confirmarMfaChallenge(){
+  const msg = document.getElementById('mfaChallengeMsg');
+  msg.className = 'msg';
+  const codigo = document.getElementById('mfaChallengeCodigo').value.trim();
+  const { error } = await supabaseClient.auth.mfa.verify({
+    factorId: mfaFactorIdPendente, challengeId: mfaChallengeIdPendente, code: codigo,
+  });
+  if(error){ msg.textContent = 'Código incorreto. Tente de novo.'; msg.className = 'msg error'; return; }
+  document.getElementById('mfaChallengeCodigo').value = '';
+  await carregarEntregador();
+}
+
+async function abrirViewMfa(){
+  mostrar('view-mfa');
+  document.getElementById('mfaMsg').className = 'msg';
+  const { data: factors } = await supabaseClient.auth.mfa.listFactors();
+  const ativo = factors?.totp?.some(f => f.status === 'verified');
+  document.getElementById('mfaDesativado').style.display = ativo ? 'none' : 'block';
+  document.getElementById('mfaEnrollBox').style.display = 'none';
+  document.getElementById('mfaAtivado').style.display = ativo ? 'block' : 'none';
+}
+
+async function iniciarEnrollMfa(){
+  const msg = document.getElementById('mfaMsg');
+  msg.className = 'msg';
+
+  // achado ao vivo (26/08/2026): se o usuário começa a ativar mas nunca
+  // confirma o código, o factor TOTP fica "unverified" pra sempre — e o
+  // Supabase recusa um 2º enroll() com "A factor with the friendly name
+  // already exists". Limpa qualquer factor não verificado antes de tentar
+  // de novo, senão o usuário fica travado sem conseguir reativar. 2º
+  // achado ao vivo: listFactors() só põe factor VERIFICADO em `.totp` —
+  // um não-verificado só aparece em `.all`, então precisa filtrar ali.
+  const { data: existentes } = await supabaseClient.auth.mfa.listFactors();
+  for(const f of (existentes?.all || [])){
+    if(f.factor_type === 'totp' && f.status !== 'verified'){
+      await supabaseClient.auth.mfa.unenroll({ factorId: f.id });
+    }
+  }
+
+  const { data, error } = await supabaseClient.auth.mfa.enroll({ factorType: 'totp' });
+  if(error){ msg.textContent = 'Não deu pra iniciar: ' + error.message; msg.className = 'msg error'; return; }
+  mfaFactorIdPendente = data.id;
+  document.getElementById('mfaQrCode').innerHTML =
+    `<img src="${data.totp.qr_code}" alt="QR code" style="width:200px;height:200px;">` +
+    `<div style="margin-top:8px;font-size:12px;font-family:monospace;letter-spacing:.04em;color:var(--gray);word-break:break-all;">Não consegue escanear? Digite: ${data.totp.secret}</div>`;
+  document.getElementById('mfaDesativado').style.display = 'none';
+  document.getElementById('mfaEnrollBox').style.display = 'block';
+}
+
+async function confirmarEnrollMfa(){
+  const msg = document.getElementById('mfaMsg');
+  msg.className = 'msg';
+  const codigo = document.getElementById('mfaCodigoConfirmar').value.trim();
+  const { data: challenge, error: errChallenge } = await supabaseClient.auth.mfa.challenge({ factorId: mfaFactorIdPendente });
+  if(errChallenge){ msg.textContent = errChallenge.message; msg.className = 'msg error'; return; }
+  const { error: errVerify } = await supabaseClient.auth.mfa.verify({
+    factorId: mfaFactorIdPendente, challengeId: challenge.id, code: codigo,
+  });
+  if(errVerify){ msg.textContent = 'Código incorreto. Tente de novo.'; msg.className = 'msg error'; return; }
+  document.getElementById('mfaEnrollBox').style.display = 'none';
+  document.getElementById('mfaAtivado').style.display = 'block';
+}
+
+async function desativarMfa(){
+  const { data: factors } = await supabaseClient.auth.mfa.listFactors();
+  const fator = factors?.totp?.find(f => f.status === 'verified');
+  if(fator) await supabaseClient.auth.mfa.unenroll({ factorId: fator.id });
+  document.getElementById('mfaAtivado').style.display = 'none';
+  document.getElementById('mfaDesativado').style.display = 'block';
 }
 
 // ------------------------------------------------------------
@@ -2477,10 +2613,16 @@ async function confirmarEntrega(){
 }
 
 // ------------------------------------------------------------
-// sessão já ativa?
+// sessão já ativa? — mas só entra direto se a sessão já resolveu o
+// desafio de MFA quando ele é exigido (achado ao vivo, 26/08/2026:
+// sem essa checagem, um F5 no meio do login pulava a verificação em
+// duas etapas inteira, ver mesma correção em painel-loja.html)
 // ------------------------------------------------------------
-supabaseClient.auth.getSession().then(({ data:{ session } }) => {
-  if(session) carregarEntregador();
+supabaseClient.auth.getSession().then(async ({ data:{ session } }) => {
+  if(!session) return;
+  const { data: aal } = await supabaseClient.auth.mfa.getAuthenticatorAssuranceLevel();
+  if(aal && aal.nextLevel === 'aal2' && aal.currentLevel !== 'aal2') return;
+  carregarEntregador();
 });
 </script>
 </body>

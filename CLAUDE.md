@@ -2492,14 +2492,66 @@ C:\Users\Usuário\Projetos\giro certo
       35 chamadas seguidas → exatamente 30 passaram e 5 foram bloqueadas;
       8 chamadas de avaliação → exatamente 5 passaram e 3 foram
       bloqueadas — bateu exato com o limite configurado.
-    - **MFA — não feito ainda**, é o último item da ordem escolhida pelo
-      usuário porque muda o fluxo de login de entregador/loja (decisão de
-      produto, não só técnica) — fica pra confirmar com o usuário antes
-      de implementar.
     - Suíte completa **158/158** depois de cada mudança (rodada 2x, uma
       por item de schema/dispatch-engine tocado), sempre com
       `railway down`/`railway up -c` do dispatch-engine ao redor pra não
-      cruzar com produção. Nada commitado ainda.
+      cruzar com produção.
+
+44. **MFA (TOTP) — entregador e loja, opcional, "dispositivo confiável"**
+    (26/08/2026, último item "agora" do relatório de mercado — usuário
+    escolheu "ativar agora com dispositivo confiável"). Supabase Auth já
+    suporta TOTP nativamente — sem RPC/schema nova, tudo via
+    `supabaseClient.auth.mfa.*`. Opcional (não obrigatório), ativado pelo
+    próprio usuário — nova view `view-mfa`/`view-mfa-challenge` em
+    `app-entregador.html` (+ `capacitor-www/index.html`), novo item de
+    nav "Segurança" + modal `modalMfaChallenge` em `painel-loja.html`.
+    - **"Dispositivo confiável" não precisou de controle próprio** —
+      sai de graça da sessão persistida do Supabase: uma vez resolvido o
+      desafio no aparelho, a sessão fica salva com `aal2` e
+      `getAuthenticatorAssuranceLevel()` já devolve `currentLevel==='aal2'`
+      nas próximas vezes, sem pedir código de novo até deslogar. Mesmo
+      princípio descrito pela Eng. do DoorDash na pesquisa de mercado.
+    - `login()`/`carregarEntregador()` (fluxo de login) checam AAL depois
+      do `signInWithPassword()`: se `nextLevel==='aal2'` e ainda não
+      alcançado, mostra o desafio em vez de entrar direto.
+    - **Achado ao vivo #1**: `listFactors()` só põe factor **VERIFICADO**
+      em `.totp` — um não-verificado só aparece em `.all`. Um enroll
+      abandonado (usuário ativa mas nunca confirma o código) deixava um
+      factor "unverified" pra sempre, e o Supabase recusava um 2º
+      `enroll()` com "A factor with the friendly name already exists" —
+      usuário ficava travado sem conseguir tentar de novo. Corrigido:
+      `iniciarEnrollMfa()` limpa qualquer factor não verificado (via
+      `.all`, filtrando `factor_type==='totp'`) antes de tentar de novo.
+    - **Achado ao vivo #2, mais sério — bypass de MFA num F5**: tanto
+      `app-entregador.html` quanto `painel-loja.html` tinham um
+      `getSession().then(...)` que entrava direto no app se já existisse
+      sessão — sem checar AAL. Uma sessão `aal1` já fica persistida no
+      localStorage no instante em que `signInWithPassword()` responde,
+      ANTES do desafio de MFA ser resolvido — um F5 bem nesse meio-tempo
+      pulava a verificação em duas etapas inteira. Corrigido nos dois
+      arquivos: o handler de sessão restaurada agora faz a mesma checagem
+      de AAL que o login normal, e só entra direto se `aal2` já foi
+      alcançado.
+    - QR code também mostra o segredo em texto (`data.totp.secret`) pra
+      quando o scanner falhar — padrão de mercado, não só conveniência de
+      teste. **Achado ao vivo #3, bug visual**: `qr_code` do Supabase é
+      uma data URI (`data:image/svg+xml;utf-8,...`), não markup SVG cru
+      — jogar direto em `innerHTML` fazia o prefixo aparecer como texto
+      solto na tela (o `<svg>` embutido ainda renderizava, escondendo o
+      bug em teste rápido). Corrigido: usa `<img src="...">`.
+    - **Testado ao vivo, ponta a ponta, com TOTP real** (RFC 6238
+      implementado à mão em ~30 linhas — sem lib nova — via
+      `crypto.subtle` no browser pro teste e `crypto` do Node pro script):
+      enroll → confirmar com código real → `view-mfa`/nav "Segurança"
+      mostra "ativado" → logout → login → modal de desafio aparece →
+      código errado rejeitado (modal continua aberto) → código certo
+      aceito → entra no app → **F5 recarrega e entra direto** (sessão já
+      `aal2`, dispositivo confiável funcionando) → testado também o F5
+      NO MEIO do desafio (antes de confirmar o código): fica preso na
+      tela de login, não pula mais a verificação (achado #2 acima,
+      confirmado corrigido).
+    - Suíte completa **158/158**. Dado de teste criado e limpo (tenant +
+      `usuarios_loja` + auth user dedicados). Nada commitado ainda.
 
 ## Pendências reais no momento
 - [ ] **OSRM self-hospedado bloqueado por plano do Railway** (item 43,
@@ -2513,10 +2565,11 @@ C:\Users\Usuário\Projetos\giro certo
       de confirmado no ar, trocar a URL do OSRM em `app-entregador.html`
       (`tracarRota()`) e `rastreio-pedido.html` de
       `router.project-osrm.org` pra `girocerto-osrm-production.up.railway.app`.
-- [ ] **MFA (TOTP) — decisão de produto pendente antes de implementar**
-      (item 43) — Supabase Auth já suporta nativamente, é configuração,
-      mas muda o fluxo de login de entregador/loja. Perguntar ao usuário
-      antes de ativar.
+- [x] ~~MFA (TOTP) — decisão de produto pendente antes de implementar~~ —
+      implementado (item 44), opcional, "dispositivo confiável" via
+      sessão persistida do Supabase. 2 achados reais corrigidos no
+      processo (factor unverified travando reenroll; F5 no meio do login
+      pulando o desafio) — ver item 44 pro detalhe.
 - [x] ~~Cobrança via Pix aparecendo em rota da sessão feira~~ — não era bug:
       usuário esclareceu a regra de negócio (item 41) e o fluxo certo
       (feirante confirma recebimento do Pix da taxa de entrega) foi
