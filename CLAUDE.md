@@ -2680,7 +2680,39 @@ C:\Users\Usuário\Projetos\giro certo
       Dado de teste criado e limpo.
     - **Unificação visual das 5 telas: concluída** (só `painel-dev.html`
       fica de fora, ferramenta interna, "se fizer sentido" — nunca virou
-      prioridade). Nada commitado ainda.
+      prioridade).
+
+49. **Ícone do app Android — placeholder do Capacitor substituído pela
+    identidade oficial** (26/08/2026, desbloqueado pelo item 48 —
+    unificação visual concluída, o motivo original do bloqueio não
+    existe mais). Fecha a pendência do item 31.
+    - **Sem ferramenta de rasterização confirmada no ambiente** (sem
+      ImageMagick/rsvg-convert/Inkscape; screenshot de navegador vira
+      JPEG, sem canal alfa — não serve pra ícone adaptativo, que exige
+      transparência de verdade). Resolvido instalando `sharp` num
+      diretório isolado de scratch (não entra no repo) — gera PNG com
+      alfa real a partir de SVG, nas 5 densidades exatas
+      (mdpi/hdpi/xhdpi/xxhdpi/xxxhdpi) direto, sem precisar reamostrar
+      depois.
+    - **Ícone adaptativo Android** (2 camadas): fundo sólido
+      `drawable/ic_launcher_background.xml` na cor leaf da paleta
+      (substituindo o grid ciano placeholder padrão do Android Studio) +
+      primeiro plano `mipmap-*/ic_launcher_foreground.png` com o mesmo
+      glifo SVG oficial (seta+check) em marigold/paper, dimensionado a
+      ~40% do canvas — bem dentro da safe zone de 66/108 pra não cortar
+      em nenhuma máscara de fabricante (círculo/squircle/quadrado
+      arredondado). `mipmap-*/ic_launcher.png` e `ic_launcher_round.png`
+      (fallback legado) gerados com o mesmo glifo já composto sobre o
+      fundo leaf.
+    - **Achado ao vivo**: `gradlew assembleDebug` falhou na 1ª tentativa
+      — `javax.xml.stream.XMLStreamException`, comentário XML com `--`
+      (`(--leaf)`) é inválido por spec (XML proíbe hífen duplo dentro de
+      comentário). Corrigido reescrevendo o comentário sem o `--`.
+    - **Testado**: `gradlew assembleDebug` com sucesso depois do fix;
+      conferido que os PNGs empacotados em
+      `app/build/intermediates/packaged_res/` batem com os novos
+      arquivos (72×72 em hdpi, etc.) — não ficou nada em cache velho.
+    - 17 arquivos alterados (15 PNGs + 2 XML). Nada commitado ainda.
 
 ## Pendências reais no momento
 - [ ] **OSRM self-hospedado bloqueado por plano do Railway** (item 43,
@@ -2809,14 +2841,9 @@ C:\Users\Usuário\Projetos\giro certo
         confirmado com `apksigner verify`. **Falta o usuário fazer backup
         do keystore/senha fora desta máquina** — ver item 47, não é algo
         automatizável.
-      - [ ] Ícone do app ainda é o placeholder padrão do Capacitor, não a
-        identidade GiroCerto (achado no item 31) — o bloqueio original
-        (unificação visual pausada, item 28) não existe mais: a
-        unificação já está em andamento de novo (itens 41/45/46), o
-        ícone oficial (SVG marca-icone) já existe e está em uso em 3
-        telas. Falta só gerar os PNGs em cada resolução exigida pelo
-        Android (`mipmap-*`) a partir dele — não tentado ainda nesta
-        sessão por falta de ferramenta de rasterização confirmada.
+      - [x] ~~Ícone do app ainda é o placeholder padrão do Capacitor~~ —
+        feito (item 49), ícone adaptativo + legado gerados (fundo leaf,
+        glifo marigold/paper), `gradlew assembleDebug` validado.
       - **Lembrete de config do aparelho** (achado no item 32, não é
         código): em aparelhos ColorOS/Realme/Oppo, o app precisa estar
         liberado em Configurações > Bateria > Gerenciamento de apps >
