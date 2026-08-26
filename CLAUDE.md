@@ -2553,6 +2553,33 @@ C:\Users\Usuário\Projetos\giro certo
     - Suíte completa **158/158**. Dado de teste criado e limpo (tenant +
       `usuarios_loja` + auth user dedicados). Nada commitado ainda.
 
+45. **Unificação visual — `painel-loja.html` migrado (2ª tela)** (26/08/2026,
+    "como especialista, faça o melhor" — próxima pendência escolhida por
+    critério: sem decisão bloqueante, pedido explícito do usuário pro
+    projeto todo). Mesma paleta/fontes de `painel-feirante.html` (item
+    41): ink/paper/marigold/sage/leaf, Fraunces+Inter+Space Mono.
+    - **Reskin puro** — nenhuma mudança de HTML estrutural/JS além de
+      cor/fonte/ícone; 58 usos de `var(--teal-1)`/`var(--teal-2)`/etc já
+      atualizaram sozinhos só redefinindo o `:root` com os MESMOS nomes de
+      variável (valores novos) — evitou reescrever regra por regra.
+    - Roxo (`#6C3FB5`, sem equivalente na paleta nova) retirado — status
+      "em preparo" passou a usar leaf (processo em andamento), mesmo
+      princípio de "pronto" já usar marigold (precisa de ação).
+    - Ícone da marca trocado do checkmark genérico antigo pro SVG oficial
+      (seta+check), igual `painel-feirante.html` — com o stroke do 3º
+      path adaptado por contexto (ink no login claro, paper no topbar
+      escuro) pra não repetir o bug do item 42 (traço invisível contra o
+      próprio fundo).
+    - **Achado ao vivo, pill sem estilo**: `.status-pill.a_caminho` nunca
+      tinha sido definida (nem antes desta sessão) — pedido nesse status
+      aparecia sem nenhuma cor/pill. Adicionado (tom âmbar/marigold,
+      mesmo padrão de "recebido").
+    - Testado ao vivo no navegador (login, Pedidos com as 6 combinações
+      de status, Painel operacional, Entregadores, Segurança/MFA, modal
+      Novo pedido) — tudo consistente, sem cor solta. Suíte completa
+      **158/158** (reskin não toca lógica). Dado de teste criado e limpo.
+      Nada commitado ainda.
+
 ## Pendências reais no momento
 - [ ] **OSRM self-hospedado bloqueado por plano do Railway** (item 43,
       26/08/2026) — `osrm-server/` pronto (Dockerfile + start.sh),
@@ -2579,10 +2606,10 @@ C:\Users\Usuário\Projetos\giro certo
       pra taxa de entrega no modo feira (campo/UI novos na tela de
       confirmação de entrega do entregador) — não escopado nem construído.
 - [ ] **Unificação visual das 5 telas HTML na identidade oficial da marca**
-      (ver item 28/41) — decisões já tomadas: vermelho fica como exceção
-      deliberada fora da paleta (`--error`), `painel-feirante.html` foi a
-      primeira tela migrada (item 41). Faltam `painel-loja.html`,
-      `app-entregador.html`, `painel-admin.html` (e o resto de
+      (ver item 28/41/45) — decisões já tomadas: vermelho fica como
+      exceção deliberada fora da paleta (`--error`). Migradas:
+      `painel-feirante.html` (item 41), `painel-loja.html` (item 45).
+      Faltam `app-entregador.html`, `painel-admin.html` (e o resto de
       `painel-dev.html` se fizer sentido). Cuidado pra não deixar
       `capacitor-www/index.html` (cópia divergente de `app-entregador.html`,
       não rastreada no git) desatualizada sem perceber ao migrar essa tela.

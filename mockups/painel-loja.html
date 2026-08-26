@@ -5,68 +5,80 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Painel operacional — GiroCerto</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
+  /* item 45 (26/08/2026): unificação visual — 2ª tela migrada pra
+  identidade oficial do GiroCerto (ink/paper/marigold/sage/leaf,
+  Fraunces+Inter+Space Mono), mesma paleta de painel-feirante.html
+  (item 41). Vermelho como exceção deliberada fora da paleta, só pra
+  erro/alerta — mesma decisão já tomada. Retirado o roxo (`#6C3FB5`) que
+  não tinha equivalente na paleta nova — status "em preparo" passou a
+  usar leaf (processo em andamento), mesmo princípio de "pronto" já usar
+  marigold (precisa de ação). */
   :root{
-    --teal-1:#14B8A0; --teal-2:#0B5C50;
-    --ink:#0B2A26; --gray:#5B6B69; --gray-soft:#9AA6A4;
-    --bg:#F6F8F8; --card:#FFFFFF; --border:#E7ECEB;
-    --amber:#F5A623; --amber-ink:#A9720C; --amber-soft:#FDF1DC;
-    --green-soft:#E3F5F1;
+    --teal-1:#D9A62E; --teal-2:#3B5B3F;
+    --ink:#223526; --gray:#7C8B6F; --gray-soft:#A8B39D;
+    --bg:#EDE7D9; --card:#FFFDF8; --border:rgba(34,53,38,0.10);
+    --amber:#D9A62E; --amber-ink:#7A5A16; --amber-soft:rgba(217,166,46,.15);
+    --green-soft:rgba(59,91,63,.10);
+    --purple-soft:rgba(59,91,63,.10); --purple:#3B5B3F;
+    --paper:#EDE7D9; --marigold:#D9A62E; --sage:#7C8B6F; --leaf:#3B5B3F;
+    --error:#B84343; --error-soft:#FBEAEA;
   }
   *{box-sizing:border-box;}
-  body{margin:0;background:#fff;color:var(--ink);font-family:'Inter',-apple-system,sans-serif;}
-  h1,h2,h3{font-family:'Sora',sans-serif;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:'Inter',-apple-system,sans-serif;-webkit-font-smoothing:antialiased;}
+  h1,h2,h3{font-family:'Fraunces',serif;}
 
   /* ---------- LOGIN GATE ---------- */
   #loginGate{
-    min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);
+    min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--ink);
   }
-  .login-card{background:#fff;border:1px solid var(--border);border-radius:18px;padding:36px 32px;width:360px;max-width:90vw;}
-  .login-card .badge{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--teal-1),var(--teal-2));display:flex;align-items:center;justify-content:center;margin-bottom:18px;}
-  .login-card h2{margin:0 0 4px;font-size:20px;}
+  .login-card{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:36px 32px;width:360px;max-width:90vw;box-shadow:0 40px 80px -20px rgba(0,0,0,.5);}
+  .login-card .marca{display:flex;align-items:center;gap:8px;margin-bottom:20px;}
+  .login-card .marca-icone{width:24px;height:24px;flex-shrink:0;}
+  .login-card h2{margin:0 0 4px;font-size:21px;}
   .login-card p{color:var(--gray);font-size:13.5px;margin:0 0 22px;}
-  .login-card input{width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;margin-bottom:12px;font-family:'Inter',sans-serif;}
-  .login-card input:focus{outline:none;border-color:var(--teal-1);}
-  .login-card button{width:100%;padding:13px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--teal-1),var(--teal-2));color:#fff;font-weight:700;font-size:14.5px;cursor:pointer;}
-  .login-msg{font-size:13px;color:#B84343;margin-bottom:10px;min-height:16px;}
+  .login-card input{width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;margin-bottom:12px;font-family:'Inter',sans-serif;background:#fff;}
+  .login-card input:focus{outline:none;border-color:var(--marigold);}
+  .login-card button{width:100%;padding:14px;border:none;border-radius:100px;background:var(--marigold);color:var(--ink);font-weight:700;font-size:14.5px;cursor:pointer;box-shadow:0 8px 20px -6px rgba(217,166,46,.5);}
+  .login-msg{font-size:13px;color:var(--error);margin-bottom:10px;min-height:16px;}
 
   /* ---------- APP ---------- */
   #app{display:none;}
-  .topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;border-bottom:1px solid var(--border);}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;background:var(--ink);}
   .brand-group{display:flex;align-items:center;gap:10px;}
-  .badge{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--teal-1),var(--teal-2));display:flex;align-items:center;justify-content:center;}
-  .brand{font-family:'Sora',sans-serif;font-weight:700;font-size:18px;}
-  .brand span{color:var(--teal-1);}
-  .loja-nome{color:var(--gray);font-size:14px;}
+  .marca-icone{width:22px;height:22px;flex-shrink:0;}
+  .brand{font-family:'Fraunces',serif;font-weight:700;font-size:18px;color:var(--paper);}
+  .brand span{color:var(--marigold);}
+  .loja-nome{color:rgba(237,231,217,.7);font-size:14px;}
 
   .layout{display:flex;min-height:calc(100vh - 65px);}
   .sidebar{width:210px;background:var(--bg);border-right:1px solid var(--border);padding:20px 14px;flex-shrink:0;}
-  .nav-item{padding:11px 16px;border-radius:9px;font-size:14px;color:var(--gray);margin-bottom:6px;cursor:default;}
-  .nav-item.active{background:var(--green-soft);color:var(--teal-2);font-weight:700;}
+  .nav-item{padding:11px 16px;border-radius:100px;font-size:14px;color:var(--gray);margin-bottom:6px;cursor:default;}
+  .nav-item.active{background:var(--marigold);color:var(--ink);font-weight:700;}
 
   .main{flex:1;padding:32px 28px;max-width:1100px;}
   .main h1{font-size:24px;margin:0 0 20px;}
 
   .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:28px;}
-  .stat-card{background:#fff;border:1px solid var(--border);border-radius:12px;padding:18px 18px;}
+  .stat-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px 18px;}
   .stat-card .label{font-size:12.5px;color:var(--gray);margin-bottom:6px;}
-  .stat-card .value{font-size:26px;font-weight:700;font-family:'Sora',sans-serif;}
-  .stat-card .value.teal{color:var(--teal-1);}
+  .stat-card .value{font-size:26px;font-weight:700;font-family:'Fraunces',serif;}
+  .stat-card .value.teal{color:var(--leaf);}
 
   .cols{display:grid;grid-template-columns:1.5fr 1fr;gap:24px;}
   .col h2{font-size:17px;margin:0 0 14px;}
 
-  .card{background:#fff;border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:14px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:14px;}
   .card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
   .card-title{font-weight:700;font-size:15px;}
   .pill{display:inline-block;padding:4px 12px;border-radius:12px;font-size:11.5px;font-weight:700;margin-left:8px;}
-  .pill.em_entrega,.pill.a_caminho_da_loja{background:var(--green-soft);color:var(--teal-2);}
-  .pill.planejada{background:#F1F3F2;color:var(--gray);}
-  .pill.ativo{background:var(--green-soft);color:var(--teal-2);}
+  .pill.em_entrega,.pill.a_caminho_da_loja{background:var(--green-soft);color:var(--leaf);}
+  .pill.planejada{background:rgba(124,139,111,.14);color:var(--gray);}
+  .pill.ativo{background:var(--green-soft);color:var(--leaf);}
   .pill.pausado{background:var(--amber-soft);color:var(--amber-ink);}
-  .pill.offline{background:#F1F3F2;color:var(--gray-soft);}
+  .pill.offline{background:rgba(124,139,111,.14);color:var(--gray-soft);}
   .card-meta{font-size:12.5px;color:var(--gray);}
   .empty{color:var(--gray-soft);font-size:13.5px;padding:24px 0;text-align:center;}
   .stop-line{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;color:var(--ink);}
@@ -74,50 +86,51 @@
 
   #globalLoading{padding:60px;text-align:center;color:var(--gray-soft);}
 
-  /* ---------- B2: alertas de segurança ao vivo ---------- */
-  #alertasBanner{background:#FBEAEA;border-bottom:1px solid #E7B8B8;padding:10px 28px;}
+  /* ---------- B2: alertas de segurança ao vivo (vermelho, exceção deliberada) ---------- */
+  #alertasBanner{background:var(--error-soft);border-bottom:1px solid #E7B8B8;padding:10px 28px;}
   .alerta-item{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;font-size:13.5px;color:#7A2E2E;}
   .alerta-item:not(:last-child){border-bottom:1px solid #F0D5D5;}
   .alerta-msg{font-weight:700;}
   .alerta-meta{font-weight:400;color:#9A5252;font-size:12px;margin-left:8px;}
   .alerta-acoes{display:flex;gap:8px;flex-shrink:0;}
-  .alerta-btn{border:1.5px solid #B84343;background:#fff;color:#B84343;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;}
-  .alerta-btn.escalar{background:#B84343;color:#fff;}
+  .alerta-btn{border:1.5px solid var(--error);background:var(--card);color:var(--error);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;}
+  .alerta-btn.escalar{background:var(--error);color:#fff;}
   .posicao-freshness{font-size:11px;color:var(--gray-soft);margin-top:3px;}
 
   /* ---------- pedidos ---------- */
   .pedidos-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px;}
   .pedidos-head h1{margin:0;}
-  .btn-primary{background:linear-gradient(135deg,var(--teal-1),var(--teal-2));color:#fff;border:none;border-radius:11px;padding:12px 18px;font-weight:700;font-size:14px;cursor:pointer;font-family:'Inter',sans-serif;}
-  .btn-ghost{background:var(--bg);color:var(--gray);border:none;border-radius:11px;padding:12px 18px;font-weight:700;font-size:14px;cursor:pointer;font-family:'Inter',sans-serif;}
+  .btn-primary{background:var(--marigold);color:var(--ink);border:none;border-radius:100px;padding:12px 18px;font-weight:700;font-size:14px;cursor:pointer;font-family:'Inter',sans-serif;box-shadow:0 8px 20px -6px rgba(217,166,46,.4);}
+  .btn-ghost{background:var(--bg);color:var(--gray);border:none;border-radius:100px;padding:12px 18px;font-weight:700;font-size:14px;cursor:pointer;font-family:'Inter',sans-serif;}
 
-  .pedido-card{background:#fff;border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:16px;}
+  .pedido-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:16px;}
   .pedido-info .nome{font-weight:700;font-size:14.5px;}
   .pedido-info .end{font-size:13px;color:var(--gray);margin-top:2px;}
   .pedido-info .meta{font-size:12px;color:var(--gray-soft);margin-top:4px;}
   .pedido-status{display:flex;flex-direction:column;align-items:flex-end;gap:8px;}
   .status-pill{padding:5px 12px;border-radius:12px;font-size:11.5px;font-weight:700;}
   .status-pill.recebido{background:var(--amber-soft);color:var(--amber-ink);}
-  .status-pill.em_preparo{background:#EFE9FB;color:#6C3FB5;}
-  .status-pill.pronto{background:var(--green-soft);color:var(--teal-2);}
-  .status-pill.entregue{background:#F1F3F2;color:var(--gray);}
-  .status-pill.cancelado{background:#FBEAEA;color:#B84343;}
-  .action-btn{background:var(--teal-1);color:#fff;border:none;border-radius:9px;padding:9px 14px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;}
-  .action-btn.pronto{background:#6C3FB5;}
+  .status-pill.em_preparo{background:var(--purple-soft);color:var(--purple);}
+  .status-pill.pronto{background:var(--green-soft);color:var(--leaf);}
+  .status-pill.a_caminho{background:var(--amber-soft);color:var(--amber-ink);}
+  .status-pill.entregue{background:rgba(124,139,111,.14);color:var(--gray);}
+  .status-pill.cancelado{background:var(--error-soft);color:var(--error);}
+  .action-btn{background:var(--marigold);color:var(--ink);border:none;border-radius:9px;padding:9px 14px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;}
+  .action-btn.pronto{background:var(--leaf);color:var(--paper);}
 
   /* ---------- modal ---------- */
-  .overlay{position:fixed;inset:0;background:rgba(11,42,38,.4);display:none;align-items:center;justify-content:center;z-index:50;}
+  .overlay{position:fixed;inset:0;background:rgba(34,53,38,.5);display:none;align-items:center;justify-content:center;z-index:50;}
   .overlay.show{display:flex;}
-  .modal-card{background:#fff;border-radius:18px;padding:26px 26px;width:420px;max-width:90vw;max-height:88vh;overflow-y:auto;}
+  .modal-card{background:var(--card);border-radius:18px;padding:26px 26px;width:420px;max-width:90vw;max-height:88vh;overflow-y:auto;}
   .modal-card .field{margin-bottom:14px;}
   .modal-card label{display:block;font-size:12.5px;font-weight:600;color:var(--gray);margin-bottom:5px;}
   .modal-card input,.modal-card select{width:100%;padding:11px 13px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;font-family:'Inter',sans-serif;}
-  .modal-card input:focus,.modal-card select:focus{outline:none;border-color:var(--teal-1);}
+  .modal-card input:focus,.modal-card select:focus{outline:none;border-color:var(--marigold);}
   .row2f{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
   .nav2{display:flex;justify-content:flex-end;gap:10px;margin-top:6px;}
   .msg{padding:10px 13px;border-radius:9px;font-size:13px;margin-bottom:14px;display:none;}
-  .msg.error{background:#FBEAEA;color:#B84343;display:block;}
-  .msg.success{background:var(--green-soft);color:var(--teal-2);display:block;}
+  .msg.error{background:var(--error-soft);color:var(--error);display:block;}
+  .msg.success{background:var(--green-soft);color:var(--leaf);display:block;}
 </style>
 </head>
 <body>
@@ -125,8 +138,13 @@
 <!-- ===================== LOGIN ===================== -->
 <div id="loginGate">
   <div class="login-card">
-    <div class="badge">
-      <svg width="16" height="16" viewBox="0 0 18 18"><path d="M3 9 L7 13 L15 3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <div class="marca">
+      <svg class="marca-icone" viewBox="0 0 24 24" fill="none">
+        <path d="M4 8 C4 5, 6 4, 9 4 L15 4 C18 4, 20 6, 20 9 C20 12, 18 13.5, 15 13.5 L8 13.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+        <path d="M11 10.5 L8 13.5 L11 16.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M9 19 L11.5 21.5 L16.5 15.5" stroke="#223526" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </svg>
+      <div class="brand" style="color:var(--ink);">Giro<span>Certo</span></div>
     </div>
     <h2>Entrar no painel</h2>
     <p>Use o e-mail e senha do cadastro da loja.</p>
@@ -141,9 +159,11 @@
 <div id="app">
   <div class="topbar">
     <div class="brand-group">
-      <div class="badge">
-        <svg width="16" height="16" viewBox="0 0 18 18"><path d="M3 9 L7 13 L15 3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </div>
+      <svg class="marca-icone" viewBox="0 0 24 24" fill="none">
+        <path d="M4 8 C4 5, 6 4, 9 4 L15 4 C18 4, 20 6, 20 9 C20 12, 18 13.5, 15 13.5 L8 13.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+        <path d="M11 10.5 L8 13.5 L11 16.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M9 19 L11.5 21.5 L16.5 15.5" stroke="#EDE7D9" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </svg>
       <div class="brand">Giro<span>Certo</span></div>
     </div>
     <div class="loja-nome" id="lojaNome">—</div>
@@ -180,7 +200,7 @@
       não consegue mais subir documentos direto no signUp() (o projeto exige
       confirmação de e-mail — sem sessão, upload pro Storage bate em RLS, ver
       db/schema.sql). Documentos ficam pendentes até o primeiro login aqui. -->
-      <div id="avisoDocumentos" style="display:none;background:#FDF1DC;color:#A9720C;border-radius:12px;padding:14px 16px;margin-bottom:18px;font-size:13.5px;">
+      <div id="avisoDocumentos" style="display:none;background:var(--amber-soft);color:var(--amber-ink);border-radius:12px;padding:14px 16px;margin-bottom:18px;font-size:13.5px;">
         ⚠ Falta enviar os documentos do cadastro — sem eles, o cadastro da loja fica incompleto.
         <div class="field" style="margin-top:10px;">
           <label style="color:inherit;">Foto do documento do proprietário (RG ou CNH)</label>
@@ -201,21 +221,21 @@
       de Wi-Fi/IP pode passar de 1km. Busca por endereço (Nominatim/OSM,
       gratuito, sem API key) funciona em qualquer dispositivo como alternativa
       confiável. Os dois ficam disponíveis, nenhum substitui o outro. -->
-      <div id="avisoLocalizacao" style="display:none;background:#FDF1DC;color:#A9720C;border-radius:12px;padding:14px 16px;margin-bottom:18px;font-size:13.5px;">
+      <div id="avisoLocalizacao" style="display:none;background:var(--amber-soft);color:var(--amber-ink);border-radius:12px;padding:14px 16px;margin-bottom:18px;font-size:13.5px;">
         ⚠ Localização da loja ainda não definida — o motor de despacho não consegue calcular
         quais entregadores estão perto o suficiente pra chamar.
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
           <button class="btn-primary" style="width:auto;padding:8px 18px;" onclick="definirLocalizacaoLoja()">📍 Usar minha localização agora (GPS)</button>
-          <button class="btn-ghost" style="width:auto;padding:8px 18px;background:#fff;border:1.5px solid #F0DBA8;color:#A9720C;" onclick="mostrarBuscaEndereco()">🔎 Buscar por endereço</button>
+          <button class="btn-ghost" style="width:auto;padding:8px 18px;background:var(--card);border:1.5px solid rgba(217,166,46,.4);color:var(--amber-ink);" onclick="mostrarBuscaEndereco()">🔎 Buscar por endereço</button>
         </div>
         <div style="font-size:11.5px;opacity:.8;margin-top:6px;">
           GPS funciona melhor no celular, fisicamente na loja. Buscar por endereço funciona em qualquer dispositivo.
         </div>
 
-        <div id="buscaEnderecoBox" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid #F0DBA8;">
-          <label style="display:block;font-size:12.5px;font-weight:600;color:#A9720C;margin-bottom:5px;">Endereço completo (rua, número, bairro, cidade)</label>
+        <div id="buscaEnderecoBox" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid rgba(217,166,46,.4);">
+          <label style="display:block;font-size:12.5px;font-weight:600;color:var(--amber-ink);margin-bottom:5px;">Endereço completo (rua, número, bairro, cidade)</label>
           <input type="text" id="loc_endereco" placeholder="Ex: Avenida Basiléia, 97, Lauzane Paulista, São Paulo - SP"
-            style="width:100%;padding:11px 13px;border:1.5px solid #F0DBA8;border-radius:9px;font-size:14px;font-family:'Inter',sans-serif;margin-bottom:8px;">
+            style="width:100%;padding:11px 13px;border:1.5px solid rgba(217,166,46,.4);border-radius:9px;font-size:14px;font-family:'Inter',sans-serif;margin-bottom:8px;">
           <button class="btn-primary" style="width:auto;padding:8px 18px;" id="btnBuscarEndereco" onclick="buscarEnderecoLoja()">Buscar</button>
           <div id="buscaEnderecoMsg" class="msg" style="margin-top:10px;"></div>
           <div id="candidatosEnderecoBox"></div>
@@ -331,8 +351,8 @@
         </div>
 
         <div id="mfaAtivado" style="display:none;">
-          <div class="field" style="background:#E3F5F1;border-radius:12px;padding:12px 14px;font-size:13px;color:#0B5C50;">✓ Verificação em duas etapas ativada.</div>
-          <button class="btn-primary" style="background:#B84343;margin-top:10px;" onclick="desativarMfa()">Desativar</button>
+          <div class="field" style="background:var(--green-soft);border-radius:12px;padding:12px 14px;font-size:13px;color:var(--leaf);">✓ Verificação em duas etapas ativada.</div>
+          <button class="btn-primary" style="background:var(--error);color:#fff;margin-top:10px;" onclick="desativarMfa()">Desativar</button>
         </div>
       </div>
     </div>
@@ -857,7 +877,7 @@ function mostrarCandidatosEndereco(resultados){
   msg.className = 'msg';
   const box = document.getElementById('candidatosEnderecoBox');
   box.innerHTML = resultados.map((r, i) => `
-    <button type="button" class="btn-ghost" style="width:100%;text-align:left;margin-bottom:6px;font-weight:400;font-size:12.5px;background:#fff;border:1px solid #F0DBA8;color:var(--ink);" data-idx="${i}">
+    <button type="button" class="btn-ghost" style="width:100%;text-align:left;margin-bottom:6px;font-weight:400;font-size:12.5px;background:var(--card);border:1px solid rgba(217,166,46,.4);color:var(--ink);" data-idx="${i}">
       ${escapeHtml(r.display_name)}
     </button>
   `).join('');
@@ -872,10 +892,10 @@ function mostrarConfirmacaoEndereco(resultado){
   const mapaUrl = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=18/${lat}/${lng}`;
   const box = document.getElementById('candidatosEnderecoBox');
   box.innerHTML = `
-    <div style="background:#fff;border:1px solid #F0DBA8;border-radius:10px;padding:12px;margin-top:8px;">
+    <div style="background:var(--card);border:1px solid rgba(217,166,46,.4);border-radius:10px;padding:12px;margin-top:8px;">
       <div style="font-weight:700;color:var(--ink);font-size:13px;margin-bottom:4px;">${escapeHtml(resultado.display_name)}</div>
       <div style="font-size:12px;color:var(--gray);margin-bottom:8px;">lat ${lat.toFixed(6)}, lng ${lng.toFixed(6)}</div>
-      <a href="${mapaUrl}" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--teal-2);font-weight:600;">Abrir no mapa pra conferir ↗</a>
+      <a href="${mapaUrl}" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:var(--leaf);font-weight:600;">Abrir no mapa pra conferir ↗</a>
       <div style="font-size:10.5px;color:var(--gray-soft);margin:8px 0;">Dados de localização © colaboradores do OpenStreetMap</div>
       <button class="btn-primary" style="width:auto;padding:8px 18px;" onclick="confirmarLocalizacaoManual(${lat}, ${lng})">Confirmar essa localização</button>
     </div>
