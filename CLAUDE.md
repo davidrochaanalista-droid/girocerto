@@ -2371,6 +2371,51 @@ C:\Users\Usuário\Projetos\giro certo
     - Ainda não commitado — mudanças em `db/schema.sql` (trigger fix +
       policies + função nova) já aplicadas direto no banco hospedado.
 
+42. **Link público de rastreio pro cliente final** (26/08/2026, escolhido
+    como próximo passo por prioridade — "como especialista, qual o
+    próximo passo das pendências"). Fecha a pendência que já estava
+    registrada desde item 10. `mockups/rastreio-pedido.html` (tela nova),
+    sem login, `pedidos.id` (já é `gen_random_uuid()`, aleatório de
+    verdade) serve de token — sem coluna nova, sem enumeração possível.
+    - **2 RPCs novas, `db/schema.sql`** (RLS de `pedidos` não tem policy
+      pra `anon`, bloqueia tudo por padrão — mesmo padrão SECURITY
+      DEFINER já usado no resto do arquivo): `rastrear_pedido_publico(uuid)`
+      devolve só o necessário (status, loja, endereço, lat/lng de
+      destino, e — só quando `status='a_caminho'` — primeiro nome do
+      entregador + veículo + posição + `codigo_entrega`; nunca nome
+      completo/telefone/CPF do entregador, nunca dado de outro pedido);
+      `avaliar_entrega_publica(uuid, nota, comentario)` grava a avaliação
+      de ENTREGA (não do pedido/comida — `pedidos.avaliacao_entrega`/
+      `avaliacao_comentario` já existiam no schema exatamente pra isso,
+      nunca tinham sido usados) só quando `status='entregue'`, write-once
+      (2ª tentativa não erra, só não afeta linha nenhuma via `found`,
+      mesmo princípio das claims atômicas já usadas em outros lugares).
+    - **Testado ao vivo via `npx serve` local, chamando as RPCs pela
+      chave `anon` de verdade** (não a service role — validação real do
+      bypass de RLS controlado): fluxo completo (timeline de 5 passos,
+      mapa com trajeto traçado via OSRM até status `a_caminho`, código de
+      entrega exibido só nessa janela, avaliação write-once, id
+      inexistente devolve erro genérico sem vazar nada).
+    - **Achado ao vivo, RPC faltava lat/lng de destino**: sem isso o
+      mapa mostrava só o entregador, sem conseguir traçar rota nem
+      mostrar o destino — corrigido adicionando `destino_lat`/
+      `destino_lng` ao retorno (precisou `drop function` antes do
+      `create or replace`, mudança de shape de `returns table` não é
+      só substituir).
+    - **Achado ao vivo, ícone errado**: a página nasceu com um emoji de
+      pata (🐾) no lugar do ícone da marca — copiado errado. Corrigido
+      pro SVG real (mesmo de `painel-feirante.html`). No processo,
+      achado um segundo bug real: o SVG tem um traço `#223526` (`--ink`)
+      fixo, que ficava invisível num cabeçalho com fundo `--ink` também
+      — `.topo` mudado pra `--leaf` (mesma cor de fundo que
+      `painel-feirante.html` já usa no cabeçalho, por isso lá nunca deu
+      esse problema).
+    - Nasce direto na identidade visual oficial (unificação visual) —
+      página nova, sem legado pra migrar depois.
+    - Suíte completa **158/158**. Dado de teste criado e limpo
+      (tenant/entregador/rota/pedido de teste dedicados, apagados ao
+      final). Ainda não commitado.
+
 ## Pendências reais no momento
 - [x] ~~Cobrança via Pix aparecendo em rota da sessão feira~~ — não era bug:
       usuário esclareceu a regra de negócio (item 41) e o fluxo certo
@@ -2547,11 +2592,12 @@ C:\Users\Usuário\Projetos\giro certo
       inerte foi fechada, mas o comportamento não foi re-testado especificamente com
       dado real do motor de despacho nesta sessão. Vale um teste dedicado antes de
       considerar 100% validado em produção.
-- [ ] **Link público de rastreio pro cliente final** — ainda não implementado. O motor
-      de despacho real (item 10) já existe, então a posição ao vivo agora faz sentido
-      de verdade — mas a página pública em si (token por pedido sem enumeração, sem
-      vazar dados de outros pedidos/tenants) não foi construída, não fazia parte do
-      escopo desta sessão.
+- [x] ~~Link público de rastreio pro cliente final~~ — construído (item 42),
+      `mockups/rastreio-pedido.html` + 2 RPCs SECURITY DEFINER, testado ao vivo
+      com a chave anon de verdade. Ainda falta o disparo automático do envio do
+      link (WhatsApp) pro `cliente_telefone` quando o pedido entra em `a_caminho`
+      — a página existe e funciona, mas hoje precisa do link ser copiado/enviado
+      manualmente; ninguém envia isso pro cliente sozinho ainda.
 - [ ] **Integração real de Pix** — decisão de produto pendente (qual provedor:
       `mercado_pago`/`asaas`/`stone`/`outro`), não decisão técnica. Confirmado
       isolado e não vazado por vários arquivos — ver `tests/COBERTURA.md` seção

@@ -4391,3 +4391,88 @@ create policy "entregador cria avaliacao da sua rota" on avaliacao for insert wi
     where er.entregador_id in (select meu_entregador_id_feira())
   )
 );
+
+-- ------------------------------------------------------------
+-- RASTREIO PÚBLICO (restaurante, seção 7) — link sem login enviado ao
+-- cliente por WhatsApp (pedidos.cliente_telefone já existia pra isso,
+-- nunca tinha sido usado). pedidos.id (gen_random_uuid(), aleatório de
+-- verdade) já serve de token — sem coluna nova, sem enumeração possível.
+-- RLS de "pedidos" não tem policy pra anon (bloqueia tudo por padrão);
+-- as 2 funções abaixo são SECURITY DEFINER pra bypassar isso de forma
+-- controlada, devolvendo só o que o dono do link precisa ver: nunca
+-- nome completo/telefone/CPF do entregador (só primeiro nome +
+-- veículo), nunca posição do entregador fora da janela em que ele está
+-- de fato a caminho, nunca dado de outro pedido (1 pedido por chamada,
+-- por id exato — sem listagem, sem paginação).
+-- ------------------------------------------------------------
+create or replace function rastrear_pedido_publico(p_pedido_id uuid)
+returns table(
+  status text,
+  nome_loja text,
+  endereco text,
+  destino_lat double precision,
+  destino_lng double precision,
+  criado_em timestamptz,
+  pronto_previsto_em timestamptz,
+  entregador_nome text,
+  entregador_veiculo text,
+  entregador_lat double precision,
+  entregador_lng double precision,
+  entregador_localizacao_atualizada_em timestamptz,
+  codigo_entrega text,
+  avaliacao_entrega smallint,
+  avaliacao_comentario text
+)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select
+    p.status,
+    t.nome,
+    p.endereco,
+    p.lat,
+    p.lng,
+    p.criado_em,
+    p.pronto_previsto_em,
+    case when p.status = 'a_caminho' then split_part(e.nome, ' ', 1) end,
+    case when p.status = 'a_caminho' then e.tipo_veiculo end,
+    case when p.status = 'a_caminho' then e.lat end,
+    case when p.status = 'a_caminho' then e.lng end,
+    case when p.status = 'a_caminho' then e.localizacao_atualizada_em end,
+    case when p.status = 'a_caminho' then p.codigo_entrega end,
+    p.avaliacao_entrega,
+    p.avaliacao_comentario
+  from pedidos p
+  join tenants t on t.id = p.tenant_id
+  left join rotas_entrega r on r.id = p.rota_id
+  left join entregadores e on e.id = r.entregador_id
+  where p.id = p_pedido_id;
+$$;
+
+-- write-once (status='entregue' + avaliacao_entrega ainda null, checado
+-- pelo próprio UPDATE) — 2ª tentativa de avaliar não erra, só não afeta
+-- nenhuma linha (`found` volta false), mesmo princípio das claims
+-- atômicas já usadas em tratarRespostaDespacho()/confirmarEntrega().
+create or replace function avaliar_entrega_publica(p_pedido_id uuid, p_nota smallint, p_comentario text default null)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if p_nota is null or p_nota < 1 or p_nota > 5 then
+    raise exception 'nota deve estar entre 1 e 5';
+  end if;
+
+  update pedidos
+  set avaliacao_entrega = p_nota,
+      avaliacao_comentario = p_comentario
+  where id = p_pedido_id
+    and status = 'entregue'
+    and avaliacao_entrega is null;
+
+  return found;
+end;
+$$;

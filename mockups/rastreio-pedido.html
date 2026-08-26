@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>Acompanhar pedido — GiroCerto</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  /* item 42 (26/08/2026): página pública de rastreio, sem login — nasce
+  já na identidade oficial (ink/paper/marigold/sage/leaf), sem legado
+  pra migrar depois. Vermelho como exceção fora da paleta, só erro. */
+  :root{
+    --ink:#223526; --paper:#EDE7D9; --marigold:#D9A62E; --sage:#7C8B6F; --leaf:#3B5B3F;
+    --card:#FFFDF8; --border:rgba(34,53,38,0.08); --gray:#7C8B6F;
+    --error:#B84343; --error-soft:#FBEAEA;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:'Inter',-apple-system,sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;}
+  h1,h2,h3{font-family:'Fraunces',serif;margin:0;}
+
+  .topo{background:var(--leaf);color:var(--paper);padding:20px 20px 28px;}
+  .marca{display:flex;align-items:center;gap:8px;font-family:'Fraunces',serif;font-weight:700;font-size:16px;margin-bottom:14px;}
+  .marca span{color:var(--marigold);}
+  .marca-icone{width:20px;height:20px;flex-shrink:0;}
+  .topo h1{font-size:19px;color:var(--paper);}
+  .topo p{margin:4px 0 0;color:#C9D2C4;font-size:13.5px;}
+
+  .conteudo{max-width:480px;margin:-16px auto 0;padding:0 16px 40px;}
+  .card{background:var(--card);border-radius:16px;padding:20px;margin-bottom:14px;box-shadow:0 12px 30px -18px rgba(0,0,0,.25);border:1px solid var(--border);}
+
+  /* ---------- TIMELINE DE STATUS ---------- */
+  .timeline{display:flex;justify-content:space-between;position:relative;margin:6px 4px 4px;}
+  .timeline::before{content:'';position:absolute;top:11px;left:16px;right:16px;height:2px;background:var(--border);z-index:0;}
+  .timeline-passo{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;}
+  .timeline-bola{width:22px;height:22px;border-radius:50%;background:var(--paper);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;transition:all .2s;}
+  .timeline-passo.feito .timeline-bola{background:var(--leaf);border-color:var(--leaf);color:#fff;}
+  .timeline-passo.atual .timeline-bola{background:var(--marigold);border-color:var(--marigold);color:var(--ink);box-shadow:0 0 0 4px rgba(217,166,46,.25);}
+  .timeline-label{font-size:10px;color:var(--gray);text-align:center;font-weight:600;letter-spacing:.02em;}
+  .timeline-passo.feito .timeline-label,.timeline-passo.atual .timeline-label{color:var(--ink);}
+
+  .status-cancelado{background:var(--error-soft);color:var(--error);border-radius:12px;padding:14px 16px;font-size:14px;font-weight:600;text-align:center;}
+
+  /* ---------- MAPA + CÓDIGO ---------- */
+  #mapaRastreio{width:100%;height:260px;border-radius:12px;overflow:hidden;background:var(--border);margin-top:14px;}
+  .codigo-entrega{margin-top:14px;background:var(--ink);color:var(--paper);border-radius:12px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;}
+  .codigo-entrega-label{font-size:11px;color:#C9D2C4;letter-spacing:.04em;text-transform:uppercase;}
+  .codigo-entrega-valor{font-family:'Space Mono',monospace;font-size:22px;font-weight:700;letter-spacing:.06em;color:var(--marigold);}
+  .codigo-entrega-dica{font-size:11.5px;color:#C9D2C4;margin-top:4px;}
+
+  .entregador-info{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:13.5px;color:var(--gray);}
+  .entregador-info .moto-badge{width:30px;height:30px;border-radius:10px;background:linear-gradient(135deg,#14B8A0,#0B5C50);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
+
+  .pedido-meta{font-size:13px;color:var(--gray);margin-top:6px;}
+  .pedido-meta strong{color:var(--ink);}
+
+  /* ---------- AVALIAÇÃO ---------- */
+  .avaliacao-estrelas{display:flex;gap:8px;justify-content:center;margin:14px 0;}
+  .estrela{font-size:32px;cursor:pointer;color:var(--border);transition:color .15s;user-select:none;}
+  .estrela.ativa{color:var(--marigold);}
+  .avaliacao-comentario{width:100%;border:1.5px solid var(--border);border-radius:10px;padding:10px 12px;font-family:'Inter',sans-serif;font-size:13.5px;resize:vertical;min-height:64px;margin-bottom:10px;background:#fff;}
+  .avaliacao-comentario:focus{outline:none;border-color:var(--marigold);}
+  .btn-avaliar{width:100%;padding:13px;border:none;border-radius:100px;background:var(--marigold);color:var(--ink);font-weight:700;font-size:14.5px;cursor:pointer;}
+  .btn-avaliar:disabled{opacity:.5;cursor:default;}
+  .avaliacao-ok{text-align:center;color:var(--leaf);font-weight:600;font-size:14.5px;padding:8px 0;}
+
+  .msgErro{background:var(--error-soft);color:var(--error);border-radius:10px;padding:12px 14px;font-size:13.5px;text-align:center;}
+  .carregando{text-align:center;color:var(--gray);font-size:13.5px;padding:30px 0;}
+</style>
+</head>
+<body>
+
+<div class="topo">
+  <div class="marca">
+    <svg class="marca-icone" viewBox="0 0 24 24" fill="none">
+      <path d="M4 8 C4 5, 6 4, 9 4 L15 4 C18 4, 20 6, 20 9 C20 12, 18 13.5, 15 13.5 L8 13.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+      <path d="M11 10.5 L8 13.5 L11 16.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <path d="M9 19 L11.5 21.5 L16.5 15.5" stroke="#223526" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    </svg>
+    Giro<span>Certo</span>
+  </div>
+  <h1 id="t_titulo">Acompanhando seu pedido</h1>
+  <p id="t_loja">carregando...</p>
+</div>
+
+<div class="conteudo">
+  <div id="carregando" class="carregando">Carregando pedido...</div>
+  <div id="msgErro" class="msgErro" style="display:none;"></div>
+  <div id="app" style="display:none;">
+
+    <div class="card">
+      <div id="timelineBox"></div>
+      <div id="canceladoBox" style="display:none;" class="status-cancelado">Este pedido foi cancelado.</div>
+
+      <div id="mapaBox" style="display:none;">
+        <div id="mapaRastreio"></div>
+        <div class="entregador-info">
+          <div class="moto-badge">🛵</div>
+          <span id="entregadorTexto"></span>
+        </div>
+      </div>
+
+      <div id="codigoBox" style="display:none;" class="codigo-entrega">
+        <div>
+          <div class="codigo-entrega-label">Código de entrega</div>
+          <div class="codigo-entrega-valor" id="codigoValor"></div>
+          <div class="codigo-entrega-dica">Informe esse código pro entregador na porta</div>
+        </div>
+        <div style="font-size:26px;">🔑</div>
+      </div>
+
+      <div class="pedido-meta"><strong>Endereço:</strong> <span id="enderecoTexto"></span></div>
+    </div>
+
+    <div id="avaliacaoCard" class="card" style="display:none;">
+      <h3 style="font-size:15px;margin-bottom:4px;">Como foi a entrega?</h3>
+      <p style="font-size:12.5px;color:var(--gray);margin:0 0 4px;">Isso avalia só a entrega, não a comida/produto.</p>
+      <div id="avaliacaoForm">
+        <div class="avaliacao-estrelas" id="estrelas">
+          <span class="estrela" data-nota="1">★</span>
+          <span class="estrela" data-nota="2">★</span>
+          <span class="estrela" data-nota="3">★</span>
+          <span class="estrela" data-nota="4">★</span>
+          <span class="estrela" data-nota="5">★</span>
+        </div>
+        <textarea id="comentario" class="avaliacao-comentario" placeholder="Comentário (opcional)"></textarea>
+        <button id="btnAvaliar" class="btn-avaliar" disabled>Enviar avaliação</button>
+      </div>
+      <div id="avaliacaoOk" class="avaliacao-ok" style="display:none;">Obrigado pela avaliação! 🙌</div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://ntmxkwzhumiqspxijuln.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_2f1de7VdoaxdWnGHHZenGQ_3ROsSDSi';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const params = new URLSearchParams(window.location.search);
+const pedidoId = params.get('id');
+
+const PASSOS = [
+  { chave: 'recebido', label: 'Recebido' },
+  { chave: 'em_preparo', label: 'Preparo' },
+  { chave: 'pronto', label: 'Pronto' },
+  { chave: 'a_caminho', label: 'A caminho' },
+  { chave: 'entregue', label: 'Entregue' },
+];
+
+let mapaLeaflet = null;
+let marcadorEntregador = null;
+let marcadorDestino = null;
+let notaEscolhida = 0;
+let intervaloAtualizacao = null;
+
+function escapeHtml(s){
+  const d = document.createElement('div');
+  d.textContent = s ?? '';
+  return d.innerHTML;
+}
+
+function renderTimeline(status){
+  const idx = PASSOS.findIndex(p => p.chave === status);
+  const html = PASSOS.map((p, i) => {
+    let classe = '';
+    if (idx === -1) classe = '';
+    else if (i < idx) classe = 'feito';
+    else if (i === idx) classe = 'atual';
+    const icone = classe === 'feito' ? '✓' : (i + 1);
+    return `<div class="timeline-passo ${classe}">
+      <div class="timeline-bola">${icone}</div>
+      <div class="timeline-label">${p.label}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('timelineBox').innerHTML = `<div class="timeline">${html}</div>`;
+}
+
+async function atualizarMapa(entregadorLat, entregadorLng, destLat, destLng){
+  const mapaBox = document.getElementById('mapaBox');
+  if (entregadorLat == null || entregadorLng == null){
+    mapaBox.style.display = 'none';
+    return;
+  }
+  mapaBox.style.display = 'block';
+
+  if (!mapaLeaflet){
+    mapaLeaflet = L.map('mapaRastreio', { zoomControl: false, attributionControl: true });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(mapaLeaflet);
+  }
+
+  const iconMoto = L.divIcon({
+    className: '',
+    html: '<div style="width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#14B8A0,#0B5C50);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);border:2px solid white;font-size:18px;">🛵</div>',
+    iconSize: [34, 34],
+    iconAnchor: [17, 17],
+  });
+
+  if (marcadorEntregador) mapaLeaflet.removeLayer(marcadorEntregador);
+  marcadorEntregador = L.marker([entregadorLat, entregadorLng], { icon: iconMoto }).addTo(mapaLeaflet);
+
+  if (destLat != null && destLng != null){
+    if (marcadorDestino) mapaLeaflet.removeLayer(marcadorDestino);
+    marcadorDestino = L.marker([destLat, destLng]).addTo(mapaLeaflet);
+    try{
+      const url = `https://router.project-osrm.org/route/v1/driving/${entregadorLng},${entregadorLat};${destLng},${destLat}?overview=full&geometries=geojson`;
+      const res = await fetch(url);
+      const json = await res.json();
+      const rota = json && json.routes && json.routes[0];
+      if (rota){
+        const coords = rota.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+        L.polyline(coords, { color: '#14B8A0', weight: 5, opacity: 0.85 }).addTo(mapaLeaflet);
+        mapaLeaflet.fitBounds(L.latLngBounds(coords), { padding: [30, 30] });
+        return;
+      }
+    } catch(err){ console.warn('OSRM indisponível:', err.message); }
+    mapaLeaflet.fitBounds(L.latLngBounds([[entregadorLat, entregadorLng], [destLat, destLng]]), { padding: [40, 40] });
+  } else {
+    mapaLeaflet.setView([entregadorLat, entregadorLng], 15);
+  }
+  setTimeout(() => mapaLeaflet.invalidateSize(), 100);
+}
+
+function renderAvaliacao(p){
+  const card = document.getElementById('avaliacaoCard');
+  if (p.status !== 'entregue'){
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  if (p.avaliacao_entrega){
+    document.getElementById('avaliacaoForm').style.display = 'none';
+    document.getElementById('avaliacaoOk').style.display = 'block';
+  } else {
+    document.getElementById('avaliacaoForm').style.display = 'block';
+    document.getElementById('avaliacaoOk').style.display = 'none';
+  }
+}
+
+function pararAtualizacaoPeriodica(){
+  if (intervaloAtualizacao){ clearInterval(intervaloAtualizacao); intervaloAtualizacao = null; }
+}
+
+async function carregarPedido(){
+  const { data, error } = await supabaseClient.rpc('rastrear_pedido_publico', { p_pedido_id: pedidoId });
+  const msgErro = document.getElementById('msgErro');
+
+  if (error || !data || !data.length){
+    document.getElementById('carregando').style.display = 'none';
+    msgErro.style.display = 'block';
+    msgErro.textContent = 'Não encontramos esse pedido. Confira se o link está completo.';
+    pararAtualizacaoPeriodica();
+    return;
+  }
+
+  const p = data[0];
+  document.getElementById('carregando').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('t_loja').textContent = p.nome_loja || '';
+  document.getElementById('enderecoTexto').textContent = p.endereco || '';
+
+  const canceladoBox = document.getElementById('canceladoBox');
+  const timelineBox = document.getElementById('timelineBox');
+  if (p.status === 'cancelado'){
+    timelineBox.style.display = 'none';
+    canceladoBox.style.display = 'block';
+    document.getElementById('mapaBox').style.display = 'none';
+    document.getElementById('codigoBox').style.display = 'none';
+    pararAtualizacaoPeriodica();
+    return;
+  }
+  timelineBox.style.display = 'block';
+  canceladoBox.style.display = 'none';
+  renderTimeline(p.status);
+
+  if (p.status === 'a_caminho' && p.entregador_lat != null){
+    document.getElementById('entregadorTexto').textContent =
+      `${escapeHtml(p.entregador_nome || 'Entregador')} está a caminho (${p.entregador_veiculo === 'bicicleta' ? 'bicicleta' : 'moto'})`;
+    await atualizarMapa(p.entregador_lat, p.entregador_lng, p.destino_lat, p.destino_lng);
+  } else {
+    document.getElementById('mapaBox').style.display = 'none';
+  }
+
+  const codigoBox = document.getElementById('codigoBox');
+  if (p.status === 'a_caminho' && p.codigo_entrega){
+    codigoBox.style.display = 'flex';
+    document.getElementById('codigoValor').textContent = p.codigo_entrega;
+  } else {
+    codigoBox.style.display = 'none';
+  }
+
+  renderAvaliacao(p);
+
+  if (p.status === 'entregue' || p.status === 'cancelado'){
+    pararAtualizacaoPeriodica();
+  }
+}
+
+document.getElementById('estrelas').addEventListener('click', (e) => {
+  const el = e.target.closest('.estrela');
+  if (!el) return;
+  notaEscolhida = Number(el.dataset.nota);
+  document.querySelectorAll('.estrela').forEach(s => {
+    s.classList.toggle('ativa', Number(s.dataset.nota) <= notaEscolhida);
+  });
+  document.getElementById('btnAvaliar').disabled = false;
+});
+
+document.getElementById('btnAvaliar').addEventListener('click', async () => {
+  if (!notaEscolhida) return;
+  const btn = document.getElementById('btnAvaliar');
+  btn.disabled = true;
+  btn.textContent = 'Enviando...';
+  const comentario = document.getElementById('comentario').value.trim() || null;
+  const { data, error } = await supabaseClient.rpc('avaliar_entrega_publica', {
+    p_pedido_id: pedidoId, p_nota: notaEscolhida, p_comentario: comentario,
+  });
+  if (error || !data){
+    btn.disabled = false;
+    btn.textContent = 'Enviar avaliação';
+    alert('Não deu pra enviar a avaliação. Tenta de novo.');
+    return;
+  }
+  document.getElementById('avaliacaoForm').style.display = 'none';
+  document.getElementById('avaliacaoOk').style.display = 'block';
+});
+
+if (!pedidoId){
+  document.getElementById('carregando').style.display = 'none';
+  document.getElementById('msgErro').style.display = 'block';
+  document.getElementById('msgErro').textContent = 'Link inválido — falta o identificador do pedido.';
+} else {
+  carregarPedido();
+  intervaloAtualizacao = setInterval(() => {
+    if (document.visibilityState === 'visible') carregarPedido();
+  }, 8000);
+}
+</script>
+</body>
+</html>
