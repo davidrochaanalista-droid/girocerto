@@ -2597,6 +2597,57 @@ C:\Users\Usuário\Projetos\giro certo
     - **3 das 5 telas migradas** — faltam `app-entregador.html` e
       `painel-dev.html` (se fizer sentido). Nada commitado ainda.
 
+47. **Keystore de release do app Android — gerado, `build.gradle` ligado,
+    build de release testada de ponta a ponta** (26/08/2026, próxima
+    pendência escolhida por critério: mais bem definida/técnica que o
+    ícone do app, que precisaria de geração de asset gráfico ainda não
+    validada nesta sessão). Fecha a pendência "sem keystore não dá pra
+    gerar APK assinado fora do modo debug" (achado no item 31).
+    - `keytool -genkeypair` (RSA 2048, validade 30 anos, alias
+      `girocerto`) — **bloqueado pelo classificador do modo automático**
+      na 1ª tentativa (geração de credencial criptográfica); refeito
+      pedindo confirmação direta do usuário, que autorizou.
+    - `dispatch-engine/android/keystore/girocerto-release.jks` +
+      `dispatch-engine/android/keystore.properties` (senha em texto
+      puro) — **nunca comitados**, repositório é público.
+      `android/.gitignore` tinha as linhas de keystore comentadas por
+      padrão (template do Android) — descomentado e `keystore.properties`
+      adicionado. Confirmado com `git check-ignore -v` antes de qualquer
+      commit.
+    - `app/build.gradle`: `signingConfigs.release` lê de
+      `keystore.properties` via `rootProject.file(...)` — build de debug
+      continua funcionando sem o arquivo (`temKeystore` guarda todo o
+      bloco condicionalmente), só a build de release exige.
+    - **Achado ao vivo, ambiente**: `gradlew assembleRelease` falhou de
+      cara com "Unsupported class file major version 69" usando o
+      `JAVA_HOME` padrão do Android Studio atual (JBR embutido, Java 25)
+      — Gradle 8.14.3 (versão deste projeto) ainda não suporta Java 25.
+      Corrigido apontando `JAVA_HOME` pro JDK 21 já instalado em
+      `C:\Users\Usuário\.jdks\jbr-21.0.11` (mesmo usado por builds
+      anteriores do projeto). Registrado aqui pra não perder tempo de
+      novo: **usar sempre esse JDK 21 pra builds Gradle deste projeto,
+      não o JBR mais novo do Android Studio**.
+    - **Testado de ponta a ponta**: `gradlew assembleRelease` terminou
+      com sucesso (`app:validateSigningRelease`/`writeReleaseSigningConfigVersions`
+      rodaram, confirmando que o signingConfig foi de fato aplicado);
+      `apksigner verify --print-certs` no APK gerado confirmou o
+      certificado batendo exatamente com o DN usado no keystore
+      (`CN=GiroCerto, OU=GiroCerto, O=GiroCerto, L=Sao Paulo, ST=SP,
+      C=BR`) — SHA-256 do certificado:
+      `7a1df148b8b9efd12a7041478629cc50d510668a4f43fbaf9bd07b7387f8b2fb`.
+    - **⚠️ Ação do usuário pendente, fora do que dá pra automatizar**:
+      fazer backup do arquivo `keystore/girocerto-release.jks` e da senha
+      (`keystore.properties`) em algum lugar FORA desta máquina (gerenciador
+      de senha, HD externo, etc.) — se esse arquivo se perder, não tem
+      como publicar atualização nenhuma do app sob a mesma identidade de
+      assinatura nunca mais (Play Store exige a mesma chave pra updates).
+      Não é algo que eu deveria fazer sozinho (é a única cópia de uma
+      credencial que nunca deveria existir em texto puro em mais lugares
+      do que o estritamente necessário).
+    - `dispatch-engine/android/.gitignore` e `app/build.gradle`
+      commitáveis normalmente (só plumbing, sem segredo). Nada commitado
+      ainda.
+
 ## Pendências reais no momento
 - [ ] **OSRM self-hospedado bloqueado por plano do Railway** (item 43,
       26/08/2026) — `osrm-server/` pronto (Dockerfile + start.sh),
@@ -2719,13 +2770,19 @@ C:\Users\Usuário\Projetos\giro certo
       - [ ] **Tracking em background** (a outra metade original da
         pendência, junto com o push) — nunca começado. Zero permissão de
         localização, zero plugin de geolocalização instalado, zero código.
-      - [ ] Keystore de release + `signingConfig` — sem isso não dá pra
-        gerar um APK assinado/instalável de verdade fora do modo debug do
-        Android Studio (achado no item 31).
+      - [x] ~~Keystore de release + `signingConfig`~~ — feito (item 47),
+        `gradlew assembleRelease` testado de ponta a ponta, APK assinado
+        confirmado com `apksigner verify`. **Falta o usuário fazer backup
+        do keystore/senha fora desta máquina** — ver item 47, não é algo
+        automatizável.
       - [ ] Ícone do app ainda é o placeholder padrão do Capacitor, não a
-        identidade GiroCerto (achado no item 31) — esbarra na unificação
-        visual pausada (item 28), não resolver sem o usuário trazer aquele
-        assunto de volta primeiro.
+        identidade GiroCerto (achado no item 31) — o bloqueio original
+        (unificação visual pausada, item 28) não existe mais: a
+        unificação já está em andamento de novo (itens 41/45/46), o
+        ícone oficial (SVG marca-icone) já existe e está em uso em 3
+        telas. Falta só gerar os PNGs em cada resolução exigida pelo
+        Android (`mipmap-*`) a partir dele — não tentado ainda nesta
+        sessão por falta de ferramenta de rasterização confirmada.
       - **Lembrete de config do aparelho** (achado no item 32, não é
         código): em aparelhos ColorOS/Realme/Oppo, o app precisa estar
         liberado em Configurações > Bateria > Gerenciamento de apps >

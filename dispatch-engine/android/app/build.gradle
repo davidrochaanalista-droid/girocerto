@@ -1,5 +1,16 @@
 apply plugin: 'com.android.application'
 
+// Keystore de release (item 47, 26/08/2026) — keystore.properties nunca é
+// comitado (repo público, ver android/.gitignore). Sem ele, a build de
+// release falha com uma mensagem clara em vez de um erro genérico do
+// Gradle; a build de debug continua funcionando normalmente sem o arquivo.
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+def temKeystore = keystorePropertiesFile.exists()
+if (temKeystore) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 android {
     namespace = "dev.girocerto.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,10 +27,23 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (temKeystore) {
+            release {
+                storeFile rootProject.file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (temKeystore) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }
