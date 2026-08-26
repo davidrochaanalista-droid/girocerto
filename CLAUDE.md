@@ -2578,7 +2578,24 @@ C:\Users\Usuário\Projetos\giro certo
       de status, Painel operacional, Entregadores, Segurança/MFA, modal
       Novo pedido) — tudo consistente, sem cor solta. Suíte completa
       **158/158** (reskin não toca lógica). Dado de teste criado e limpo.
-      Nada commitado ainda.
+
+46. **Unificação visual — `painel-admin.html` migrado (3ª tela)**
+    (26/08/2026, mesma sessão do item 45, continuando "próxima
+    pendência" com o critério já estabelecido: `painel-admin.html`
+    escolhido por ser bem menor — 469 linhas vs. as ~2600 de
+    `app-entregador.html`, que fica pra depois de propósito por ter sido
+    muito mexido hoje com MFA/fingerprint). Mesmo reskin puro,
+    mesma paleta/fontes de `painel-feirante.html`/`painel-loja.html`.
+    - Badge "A" (círculo com letra) trocado pelo SVG oficial da marca —
+      no login, **sem repetir "GiroCerto"** perto do ícone (o h2 já diz
+      "GiroCerto Admin" logo abaixo; só o ícone sozinho evita
+      redundância, diferente de painel-loja/painel-feirante onde o texto
+      da marca não se repetia em outro lugar da tela).
+    - Testado ao vivo (Visão Geral, Aprovação, modal "Aprovar cadastro?")
+      com conta admin de teste real (`desenvolvedores_admin`). Suíte
+      completa **158/158**. Dado de teste criado e limpo.
+    - **3 das 5 telas migradas** — faltam `app-entregador.html` e
+      `painel-dev.html` (se fizer sentido). Nada commitado ainda.
 
 ## Pendências reais no momento
 - [ ] **OSRM self-hospedado bloqueado por plano do Railway** (item 43,
@@ -2606,11 +2623,12 @@ C:\Users\Usuário\Projetos\giro certo
       pra taxa de entrega no modo feira (campo/UI novos na tela de
       confirmação de entrega do entregador) — não escopado nem construído.
 - [ ] **Unificação visual das 5 telas HTML na identidade oficial da marca**
-      (ver item 28/41/45) — decisões já tomadas: vermelho fica como
+      (ver item 28/41/45/46) — decisões já tomadas: vermelho fica como
       exceção deliberada fora da paleta (`--error`). Migradas:
-      `painel-feirante.html` (item 41), `painel-loja.html` (item 45).
-      Faltam `app-entregador.html`, `painel-admin.html` (e o resto de
-      `painel-dev.html` se fizer sentido). Cuidado pra não deixar
+      `painel-feirante.html` (item 41), `painel-loja.html` (item 45),
+      `painel-admin.html` (item 46). Falta só `app-entregador.html`
+      (deixada por último de propósito, é a maior e mais mexida hoje) e
+      `painel-dev.html` se fizer sentido. Cuidado pra não deixar
       `capacitor-www/index.html` (cópia divergente de `app-entregador.html`,
       não rastreada no git) desatualizada sem perceber ao migrar essa tela.
 - [x] ~~PRÓXIMO PASSO GRANDE — painel operacional completo em
