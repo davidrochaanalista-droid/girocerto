@@ -52,7 +52,7 @@
   .codigo-entrega-dica{font-size:11.5px;color:#C9D2C4;margin-top:4px;}
 
   .entregador-info{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:13.5px;color:var(--gray);}
-  .entregador-info .moto-badge{width:30px;height:30px;border-radius:10px;background:linear-gradient(135deg,#14B8A0,#0B5C50);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
+  .entregador-info .moto-badge{width:30px;height:30px;border-radius:10px;background:linear-gradient(135deg,#D9A62E,#7A5A16);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
 
   .pedido-meta{font-size:13px;color:var(--gray);margin-top:6px;}
   .pedido-meta strong{color:var(--ink);}
@@ -194,7 +194,7 @@ async function atualizarMapa(entregadorLat, entregadorLng, destLat, destLng){
 
   const iconMoto = L.divIcon({
     className: '',
-    html: '<div style="width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#14B8A0,#0B5C50);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);border:2px solid white;font-size:18px;">🛵</div>',
+    html: '<div style="width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#D9A62E,#7A5A16);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);border:2px solid white;font-size:18px;">🛵</div>',
     iconSize: [34, 34],
     iconAnchor: [17, 17],
   });
@@ -212,7 +212,7 @@ async function atualizarMapa(entregadorLat, entregadorLng, destLat, destLng){
       const rota = json && json.routes && json.routes[0];
       if (rota){
         const coords = rota.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
-        L.polyline(coords, { color: '#14B8A0', weight: 5, opacity: 0.85 }).addTo(mapaLeaflet);
+        L.polyline(coords, { color: '#D9A62E', weight: 5, opacity: 0.85 }).addTo(mapaLeaflet);
         mapaLeaflet.fitBounds(L.latLngBounds(coords), { padding: [30, 30] });
         return;
       }

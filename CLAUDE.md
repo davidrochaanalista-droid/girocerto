@@ -2645,8 +2645,42 @@ C:\Users\Usuário\Projetos\giro certo
       credencial que nunca deveria existir em texto puro em mais lugares
       do que o estritamente necessário).
     - `dispatch-engine/android/.gitignore` e `app/build.gradle`
-      commitáveis normalmente (só plumbing, sem segredo). Nada commitado
-      ainda.
+      commitáveis normalmente (só plumbing, sem segredo). Commitado
+      (`a7915a5`). **Usuário confirmou backup feito** dos dois arquivos
+      (`.jks` + `keystore.properties`) fora desta máquina.
+
+48. **Unificação visual — `app-entregador.html` migrado (4ª e última
+    tela grande)** (26/08/2026, mesmo critério de sempre — próxima
+    pendência escolhida por ser a continuação natural depois do
+    keystore). Mesma paleta/fontes de `painel-feirante.html` (item 41),
+    `painel-loja.html` (item 45) e `painel-admin.html` (item 46).
+    `capacitor-www/index.html` sincronizado junto (cópia byte-idêntica).
+    - **Achado real de design, não só cor**: gradiente marrom/dourado
+      (`#8B6F3F`/`#5C4A2A`) usado deliberadamente nos botões de AÇÕES DO
+      MODO FEIRA (aceitar oferta, confirmar parada, avaliar banca) — uma
+      linguagem visual própria pra distinguir "isso é feira" de "isso é
+      restaurante" (que usava o teal/marigold principal). Preservada a
+      distinção, só trocando a cor: modo feira agora usa `--leaf` sólido
+      (verde escuro + texto paper), modo restaurante continua com
+      `--marigold`. Sistema de duas cores dentro da mesma paleta, não
+      precisou inventar uma terceira.
+    - **Consistência retroativa**: o marcador de moto e a linha de rota
+      no mapa (Leaflet/OSRM) ainda usavam o teal antigo
+      (`#14B8A0`/`#0B5C50`) — inclusive em `rastreio-pedido.html` (item
+      42), construído DEPOIS da unificação visual começar mas que herdou
+      esse trecho de código sem adaptar. Corrigido nos dois arquivos pro
+      mesmo dourado (`#D9A62E`→`#7A5A16`) — mapa e marcador agora batem
+      com o resto da marca em toda a base.
+    - Testado ao vivo (login, tela de turno/home, verificação em duas
+      etapas, turno ativo com "aguardando rota") com entregador de teste
+      aprovado. **Achado de ambiente durante o teste**: extensão do
+      Chrome desconectou momentaneamente — não relacionado ao código,
+      reconectou sozinha, retomado sem perda.
+    - Suíte completa **158/158** (2 rodadas — reskin não toca lógica).
+      Dado de teste criado e limpo.
+    - **Unificação visual das 5 telas: concluída** (só `painel-dev.html`
+      fica de fora, ferramenta interna, "se fizer sentido" — nunca virou
+      prioridade). Nada commitado ainda.
 
 ## Pendências reais no momento
 - [ ] **OSRM self-hospedado bloqueado por plano do Railway** (item 43,
@@ -2673,15 +2707,15 @@ C:\Users\Usuário\Projetos\giro certo
       direciona o entregador na hora da entrega se é Pix ou dinheiro"**
       pra taxa de entrega no modo feira (campo/UI novos na tela de
       confirmação de entrega do entregador) — não escopado nem construído.
-- [ ] **Unificação visual das 5 telas HTML na identidade oficial da marca**
-      (ver item 28/41/45/46) — decisões já tomadas: vermelho fica como
-      exceção deliberada fora da paleta (`--error`). Migradas:
-      `painel-feirante.html` (item 41), `painel-loja.html` (item 45),
-      `painel-admin.html` (item 46). Falta só `app-entregador.html`
-      (deixada por último de propósito, é a maior e mais mexida hoje) e
-      `painel-dev.html` se fizer sentido. Cuidado pra não deixar
-      `capacitor-www/index.html` (cópia divergente de `app-entregador.html`,
-      não rastreada no git) desatualizada sem perceber ao migrar essa tela.
+- [x] ~~Unificação visual das 5 telas HTML na identidade oficial da
+      marca~~ — **concluída** (ver item 28/41/45/46/48). Migradas:
+      `painel-feirante.html` (41), `painel-loja.html` (45),
+      `painel-admin.html` (46), `app-entregador.html` +
+      `capacitor-www/index.html` (48) — sincronizados, ambos migrados
+      juntos. `mockups/rastreio-pedido.html` também ajustada de brinde
+      (mapa/marcador que tinham herdado cor antiga). Só
+      `painel-dev.html` fica de fora — ferramenta interna, nunca virou
+      prioridade.
 - [x] ~~PRÓXIMO PASSO GRANDE — painel operacional completo em
       `painel-admin.html`~~ — fechado no item 27 (v1: entregadores
       aprovado/pendente/online/offline/disponível/ocupado/pausado, lojas

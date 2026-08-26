@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
 <title>App do entregador — GiroCerto</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <!-- item 38 (25/08/2026): mapa embutido na tela (Leaflet + OpenStreetMap,
 gratuito, sem chave de API) — pedido explícito do usuário: "o mapa tem
@@ -15,23 +15,30 @@ complementar). -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
+  /* item 48 (26/08/2026): unificação visual — 4ª tela migrada pra
+  identidade oficial do GiroCerto (ink/paper/marigold/sage/leaf,
+  Fraunces+Inter+Space Mono), mesma paleta de painel-feirante.html (item
+  41), painel-loja.html (item 45) e painel-admin.html (item 46). Vermelho
+  como exceção deliberada fora da paleta, só pra erro/alerta — mesma
+  decisão já tomada. */
   :root{
-    --teal-1:#14B8A0; --teal-2:#0B5C50;
-    --ink:#0B2A26; --gray:#5B6B69; --gray-soft:#9AA6A4;
-    --bg:#F1F3F2; --card:#FFFFFF; --border:#E7ECEB;
-    --amber:#F5A623; --amber-ink:#A9720C; --amber-soft:#FDF1DC;
-    --red:#B84343; --red-soft:#FBEAEA; --green-soft:#E3F5F1;
+    --teal-1:#D9A62E; --teal-2:#3B5B3F;
+    --ink:#223526; --gray:#7C8B6F; --gray-soft:#A8B39D;
+    --bg:#EDE7D9; --card:#FFFDF8; --border:rgba(34,53,38,0.10);
+    --amber:#D9A62E; --amber-ink:#7A5A16; --amber-soft:rgba(217,166,46,.15);
+    --red:#B84343; --red-soft:#FBEAEA; --green-soft:rgba(59,91,63,.10);
+    --paper:#EDE7D9; --marigold:#D9A62E; --sage:#7C8B6F; --leaf:#3B5B3F;
   }
   *{box-sizing:border-box;}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',-apple-system,sans-serif;-webkit-font-smoothing:antialiased;}
-  h1,h2,h3{font-family:'Sora',sans-serif;margin:0;}
+  h1,h2,h3{font-family:'Fraunces',serif;margin:0;}
 
-  .phone{max-width:440px;margin:0 auto;background:#fff;min-height:100vh;position:relative;}
+  .phone{max-width:440px;margin:0 auto;background:var(--card);min-height:100vh;position:relative;}
 
   .topbar{display:flex;align-items:center;gap:10px;padding:18px 20px;border-bottom:1px solid var(--border);}
-  .badge{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--teal-1),var(--teal-2));display:flex;align-items:center;justify-content:center;flex-shrink:0;}
-  .brand{font-family:'Sora',sans-serif;font-weight:700;font-size:17px;}
-  .brand span{color:var(--teal-1);}
+  .marca-icone{width:26px;height:26px;flex-shrink:0;}
+  .brand{font-family:'Fraunces',serif;font-weight:700;font-size:17px;}
+  .brand span{color:var(--marigold);}
 
   .view{display:none;padding:22px 20px 100px;}
   .view.active{display:block;animation:fade .2s ease;}
@@ -43,51 +50,51 @@ complementar). -->
   não dentro do fluxo normal de scroll da página. position:fixed escapa
   do padding/scroll de .view de propósito. */
   .mapa-tela-cheia{position:fixed;top:0;left:0;right:0;bottom:0;z-index:400;}
-  .mapa-btn-voltar{position:fixed;top:18px;left:18px;z-index:401;width:42px;height:42px;border-radius:50%;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;padding:0;font-size:20px;color:var(--ink);line-height:1;}
-  .mapa-sheet{position:fixed;left:0;right:0;bottom:0;z-index:401;background:#fff;border-radius:20px 20px 0 0;padding:20px 20px 26px;box-shadow:0 -6px 24px rgba(0,0,0,.18);max-width:440px;margin:0 auto;}
-  .clima-flutuante{position:fixed;top:18px;right:18px;z-index:401;background:#fff;border-radius:16px;padding:9px 14px;box-shadow:0 2px 10px rgba(0,0,0,.25);font-weight:700;font-size:14px;display:none;align-items:center;gap:6px;color:var(--ink);}
+  .mapa-btn-voltar{position:fixed;top:18px;left:18px;z-index:401;width:42px;height:42px;border-radius:50%;background:var(--card);box-shadow:0 2px 10px rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;padding:0;font-size:20px;color:var(--ink);line-height:1;}
+  .mapa-sheet{position:fixed;left:0;right:0;bottom:0;z-index:401;background:var(--card);border-radius:20px 20px 0 0;padding:20px 20px 26px;box-shadow:0 -6px 24px rgba(0,0,0,.18);max-width:440px;margin:0 auto;}
+  .clima-flutuante{position:fixed;top:18px;right:18px;z-index:401;background:var(--card);border-radius:16px;padding:9px 14px;box-shadow:0 2px 10px rgba(0,0,0,.25);font-weight:700;font-size:14px;display:none;align-items:center;gap:6px;color:var(--ink);}
 
   .field{margin-bottom:14px;}
   .field label{display:block;font-size:12.5px;font-weight:600;color:var(--gray);margin-bottom:5px;}
   input[type=text],input[type=email],input[type=password],input[type=date],select{
     width:100%;padding:12px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;background:#fff;
   }
-  input:focus,select:focus{outline:none;border-color:var(--teal-1);}
+  input:focus,select:focus{outline:none;border-color:var(--marigold);}
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 
   .upload{border:1.5px dashed var(--border);border-radius:12px;padding:16px;text-align:center;cursor:pointer;font-size:13px;color:var(--gray);}
   .upload input{display:none;}
-  .upload .fname{color:var(--teal-2);font-weight:600;margin-top:4px;font-size:12px;}
+  .upload .fname{color:var(--leaf);font-weight:600;margin-top:4px;font-size:12px;}
 
-  button{font-family:'Inter',sans-serif;font-weight:700;font-size:14.5px;border:none;border-radius:14px;padding:14px 18px;cursor:pointer;}
+  button{font-family:'Inter',sans-serif;font-weight:700;font-size:14.5px;border:none;border-radius:100px;padding:14px 18px;cursor:pointer;}
   button:active{transform:scale(.98);}
-  .btn-primary{width:100%;background:linear-gradient(135deg,var(--teal-1),var(--teal-2));color:#fff;}
-  .btn-outline{width:100%;background:#fff;border:2px solid var(--amber);color:var(--amber-ink);}
+  .btn-primary{width:100%;background:var(--marigold);color:var(--ink);box-shadow:0 8px 20px -6px rgba(217,166,46,.4);}
+  .btn-outline{width:100%;background:var(--card);border:2px solid var(--amber);color:var(--amber-ink);}
   .btn-ghost{width:100%;background:var(--bg);color:var(--gray);}
   .btn-danger{width:100%;background:var(--red);color:#fff;}
   .btn-primary:disabled{opacity:.5;}
-  .link-btn{background:none;border:none;color:var(--teal-2);font-weight:700;font-size:13.5px;cursor:pointer;padding:0;}
+  .link-btn{background:none;border:none;color:var(--leaf);font-weight:700;font-size:13.5px;cursor:pointer;padding:0;}
 
   .msg{padding:11px 13px;border-radius:10px;font-size:13px;margin-bottom:14px;display:none;}
   .msg.error{background:var(--red-soft);color:var(--red);display:block;}
 
   .toggle-tipo{display:flex;gap:10px;margin-bottom:18px;}
   .tipo-opt{flex:1;border:1.5px solid var(--border);border-radius:12px;padding:14px;text-align:center;cursor:pointer;font-weight:700;font-size:14px;color:var(--gray);}
-  .tipo-opt.sel{border-color:var(--teal-1);background:var(--green-soft);color:var(--teal-2);}
+  .tipo-opt.sel{border-color:var(--marigold);background:var(--green-soft);color:var(--leaf);}
 
   .cond{display:none;}
   .cond.show{display:block;}
 
   /* -------- turno home -------- */
-  .header-turno{background:linear-gradient(135deg,var(--teal-1),var(--teal-2));border-radius:18px;padding:20px;color:#fff;margin-bottom:18px;}
-  .header-turno .nome{font-size:19px;font-weight:700;font-family:'Sora',sans-serif;}
+  .header-turno{background:var(--leaf);border-radius:18px;padding:20px;color:var(--paper);margin-bottom:18px;}
+  .header-turno .nome{font-size:19px;font-weight:700;font-family:'Fraunces',serif;}
   .header-turno .sub{font-size:13px;opacity:.9;margin-top:2px;}
-  .status-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#4ADE80;margin-right:6px;}
+  .status-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--marigold);margin-right:6px;}
 
   .stats-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;}
   .stat-card{border:1px solid var(--border);border-radius:14px;padding:14px;}
   .stat-card .lbl{font-size:11.5px;color:var(--gray);}
-  .stat-card .val{font-size:22px;font-weight:700;font-family:'Sora',sans-serif;display:flex;align-items:center;gap:8px;}
+  .stat-card .val{font-size:22px;font-weight:700;font-family:'Fraunces',serif;display:flex;align-items:center;gap:8px;}
   .eye{cursor:pointer;opacity:.5;}
 
   .waiting-box{border:1.5px dashed var(--border);border-radius:16px;padding:34px 20px;text-align:center;color:var(--gray);margin-bottom:18px;}
@@ -99,25 +106,25 @@ complementar). -->
   /* -------- rota / paradas -------- */
   .stop-card{border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px;}
   .stop-head{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
-  .stop-num{width:26px;height:26px;border-radius:50%;background:var(--teal-1);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .stop-num{width:26px;height:26px;border-radius:50%;background:var(--marigold);color:var(--ink);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
   .stop-addr{font-weight:700;font-size:14.5px;}
   .stop-meta{font-size:12px;color:var(--gray);margin-left:36px;}
   .pay-pill{display:inline-block;margin-left:36px;margin-top:8px;padding:4px 10px;border-radius:10px;font-size:11.5px;font-weight:700;}
-  .pay-pill.pix{background:var(--green-soft);color:var(--teal-2);}
+  .pay-pill.pix{background:var(--green-soft);color:var(--leaf);}
   .pay-pill.qrcode{background:var(--amber-soft);color:var(--amber-ink);}
 
   /* -------- entrega/pagamento -------- */
   .qr-card{border:1px solid var(--border);border-radius:16px;padding:20px;text-align:center;margin-bottom:16px;}
   .qr-placeholder{width:170px;height:170px;margin:14px auto;background:var(--bg);border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--gray-soft);font-size:12px;}
   .status-aguardando{background:var(--amber-soft);color:var(--amber-ink);border-radius:20px;padding:10px 16px;font-weight:700;font-size:13px;display:inline-block;}
-  .status-confirmado{background:var(--green-soft);color:var(--teal-2);border-radius:20px;padding:10px 16px;font-weight:700;font-size:13px;display:inline-block;}
+  .status-confirmado{background:var(--green-soft);color:var(--leaf);border-radius:20px;padding:10px 16px;font-weight:700;font-size:13px;display:inline-block;}
   .codigo-box{margin-top:16px;}
   .codigo-box input{text-align:center;font-size:22px;letter-spacing:6px;font-weight:700;}
 
   /* -------- modais de fadiga -------- */
-  .overlay{position:fixed;inset:0;background:rgba(11,42,38,.45);display:none;align-items:center;justify-content:center;z-index:50;}
+  .overlay{position:fixed;inset:0;background:rgba(34,53,38,.5);display:none;align-items:center;justify-content:center;z-index:50;}
   .overlay.show{display:flex;}
-  .modal{background:#fff;border-radius:20px;padding:26px 22px;width:88%;max-width:340px;text-align:center;}
+  .modal{background:var(--card);border-radius:20px;padding:26px 22px;width:88%;max-width:340px;text-align:center;}
   .modal .ic{width:52px;height:52px;border-radius:50%;margin:0 auto 16px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;}
   .modal h3{font-size:17px;margin-bottom:8px;}
   .modal p{font-size:13.5px;color:var(--gray);margin-bottom:20px;line-height:1.5;}
@@ -128,7 +135,11 @@ complementar). -->
 <div class="phone">
 
   <div class="topbar">
-    <div class="badge"><svg width="15" height="15" viewBox="0 0 18 18"><path d="M3 9 L7 13 L15 3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <svg class="marca-icone" viewBox="0 0 24 24" fill="none">
+      <path d="M4 8 C4 5, 6 4, 9 4 L15 4 C18 4, 20 6, 20 9 C20 12, 18 13.5, 15 13.5 L8 13.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+      <path d="M11 10.5 L8 13.5 L11 16.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <path d="M9 19 L11.5 21.5 L16.5 15.5" stroke="#223526" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    </svg>
     <div class="brand">Giro<span>Certo</span></div>
   </div>
 
@@ -269,7 +280,7 @@ complementar). -->
        acontecer sem nenhuma ação humana visível pro entregador) -->
   <div class="view" id="view-reprovado">
     <div style="text-align:center;padding:40px 10px;">
-      <div style="width:60px;height:60px;border-radius:50%;background:#FDEAEA;margin:0 auto 18px;display:flex;align-items:center;justify-content:center;font-size:26px;">✕</div>
+      <div style="width:60px;height:60px;border-radius:50%;background:var(--red-soft);margin:0 auto 18px;display:flex;align-items:center;justify-content:center;font-size:26px;">✕</div>
       <h2>Cadastro reprovado</h2>
       <p style="color:var(--gray);font-size:13.5px;margin-top:8px;" id="r_motivo">—</p>
       <p style="color:var(--gray);font-size:12.5px;margin-top:14px;">Atualize o documento e entre em contato com a loja pra reavaliação.</p>
@@ -363,7 +374,7 @@ complementar). -->
       conta atende restaurante e feira, sem seletor de modo — se as duas
       existirem ao mesmo tempo, os dois botões aparecem juntos aqui. -->
       <div id="comRotaFeira" style="display:none;">
-        <button class="btn-primary" onclick="abrirRotaFeira()" style="margin-bottom:12px;background:linear-gradient(135deg,#8B6F3F,#5C4A2A);">🧺 Ver rota da feira</button>
+        <button class="btn-primary" onclick="abrirRotaFeira()" style="margin-bottom:12px;background:var(--leaf);color:var(--paper);">🧺 Ver rota da feira</button>
       </div>
 
       <button class="link-btn" id="btnExtratoFeira" onclick="abrirExtratoFeira()" style="display:none;text-align:center;width:100%;margin-bottom:14px;">Ver extrato da feira</button>
@@ -404,7 +415,7 @@ complementar). -->
     ainda está 'a_caminho_da_loja', o entregador precisa confirmar que pegou o
     pedido antes de sair — isso é o que popula rotas_entrega.iniciada_em, campo
     que já existia no schema mas nada escrevia (achado de sessão anterior). -->
-    <div id="retiradaBox" style="display:none;background:var(--teal-soft,#E6F4F1);border-radius:14px;padding:16px;margin-bottom:18px;text-align:center;">
+    <div id="retiradaBox" style="display:none;background:var(--green-soft);border-radius:14px;padding:16px;margin-bottom:18px;text-align:center;">
       <div style="font-weight:700;margin-bottom:6px;">Retire o pedido na loja</div>
       <div style="font-size:13px;color:var(--gray);margin-bottom:12px;">Fale o código <b id="r_codigoRetirada">—</b> pro atendente confirmar que é você.</div>
       <button class="btn-primary" onclick="confirmarRetirada()">Confirmar que peguei o pedido</button>
@@ -536,7 +547,7 @@ referências a tentativas_despacho no arquivo inteiro antes desta sessão). -->
     <div id="ofertaFeira_paradas" style="text-align:left;font-size:12.5px;color:var(--gray);margin-bottom:16px;max-height:160px;overflow-y:auto;"></div>
     <div style="display:flex;gap:10px;">
       <button class="btn-ghost" style="flex:1;" onclick="recusarOfertaFeira()">Recusar</button>
-      <button class="btn-primary" style="flex:1;background:linear-gradient(135deg,#8B6F3F,#5C4A2A);" onclick="aceitarOfertaFeira()">Aceitar</button>
+      <button class="btn-primary" style="flex:1;background:var(--leaf);color:var(--paper);" onclick="aceitarOfertaFeira()">Aceitar</button>
     </div>
   </div>
 </div>
@@ -548,7 +559,7 @@ referências a tentativas_despacho no arquivo inteiro antes desta sessão). -->
     <p style="color:var(--gray);font-size:13px;margin:0 0 16px;" id="propostaConsolidacao_resumo">—</p>
     <div style="display:flex;gap:10px;">
       <button class="btn-ghost" style="flex:1;" onclick="recusarPropostaConsolidacao()">Recusar</button>
-      <button class="btn-primary" style="flex:1;background:linear-gradient(135deg,#8B6F3F,#5C4A2A);" onclick="aceitarPropostaConsolidacao()">Aceitar</button>
+      <button class="btn-primary" style="flex:1;background:var(--leaf);color:var(--paper);" onclick="aceitarPropostaConsolidacao()">Aceitar</button>
     </div>
   </div>
 </div>
@@ -559,7 +570,7 @@ referências a tentativas_despacho no arquivo inteiro antes desta sessão). -->
     <h3 style="margin-bottom:4px;">Como foi com <span id="av_nomeAvaliado">a banca</span>?</h3>
     <p style="color:var(--gray);font-size:12.5px;margin-bottom:14px;">Sua avaliação ajuda a manter a feira confiável.</p>
     <div id="av_estrelas" style="font-size:32px;letter-spacing:4px;margin-bottom:18px;cursor:pointer;">☆☆☆☆☆</div>
-    <button class="btn-primary" style="background:linear-gradient(135deg,#8B6F3F,#5C4A2A);margin-bottom:8px;" onclick="enviarAvaliacaoFeira()">Enviar avaliação</button>
+    <button class="btn-primary" style="background:var(--leaf);color:var(--paper);margin-bottom:8px;" onclick="enviarAvaliacaoFeira()">Enviar avaliação</button>
     <button class="btn-ghost" onclick="fecharModalAvaliacaoFeira()">Pular</button>
   </div>
 </div>
@@ -1440,7 +1451,7 @@ async function tracarRota(containerId, mapa, origem, destino){
 
     const coords = rota.geometry.coordinates.map(([lng,lat]) => [lat,lng]); // OSRM devolve [lng,lat], Leaflet quer [lat,lng]
     if(linhasRotaLeaflet[containerId]) mapa.removeLayer(linhasRotaLeaflet[containerId]);
-    linhasRotaLeaflet[containerId] = L.polyline(coords, { color: '#14B8A0', weight: 5, opacity: 0.85 }).addTo(mapa);
+    linhasRotaLeaflet[containerId] = L.polyline(coords, { color: '#D9A62E', weight: 5, opacity: 0.85 }).addTo(mapa);
     mapa.fitBounds(linhasRotaLeaflet[containerId].getBounds(), { padding: [30,30] });
     ultimaChaveRota[containerId] = chave;
 
@@ -1594,7 +1605,7 @@ async function atualizarMapaInterno(containerId, endereco){
       // do app) em vez de um ponto genérico, com 🛵 dentro.
       const iconEu = L.divIcon({
         className: '',
-        html: '<div style="width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#14B8A0,#0B5C50);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);border:2px solid white;font-size:18px;">🛵</div>',
+        html: '<div style="width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#D9A62E,#7A5A16);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.35);border:2px solid white;font-size:18px;">🛵</div>',
         iconSize: [34,34],
         iconAnchor: [17,17],
       });
@@ -2273,16 +2284,16 @@ async function montarRotaFeira(){
     // fluxo do PainelEntregador em FeiraApp.jsx.
     let acao = '';
     if(atual && !concluida && !p.chegou_em){
-      acao = `<button class="btn-outline" style="margin-top:12px;border-color:#8B6F3F;color:#5C4A2A;" data-parada-id="${escapeHtml(p.id)}" onclick="marcarChegadaFeira(this)">⏱ Cheguei</button>`;
+      acao = `<button class="btn-outline" style="margin-top:12px;border-color:var(--leaf);color:var(--leaf);" data-parada-id="${escapeHtml(p.id)}" onclick="marcarChegadaFeira(this)">⏱ Cheguei</button>`;
     } else if(atual && !concluida && p.chegou_em){
       acao = isEntrega
-        ? `<button class="btn-primary" style="margin-top:12px;background:linear-gradient(135deg,#8B6F3F,#5C4A2A);" data-parada-id="${escapeHtml(p.id)}" data-tipo="entrega" onclick="confirmarParadaFeira(this)">Marcar como entregue</button>`
+        ? `<button class="btn-primary" style="margin-top:12px;background:var(--leaf);color:var(--paper);" data-parada-id="${escapeHtml(p.id)}" data-tipo="entrega" onclick="confirmarParadaFeira(this)">Marcar como entregue</button>`
         : `<div style="margin-top:12px;">
              <p style="font-size:11px;color:var(--gray);margin-bottom:6px;">Aguardando desde a chegada — espera é remunerada.</p>
              <div class="field codigo-box" style="margin-bottom:8px;">
                <input type="text" maxlength="4" placeholder="Código do ticket" id="codigo-parada-${escapeHtml(p.id)}" style="text-align:center;">
              </div>
-             <button class="btn-primary" style="background:linear-gradient(135deg,#8B6F3F,#5C4A2A);" data-parada-id="${escapeHtml(p.id)}" data-tipo="coleta" data-pedido-id="${escapeHtml(p.pedido?.id || '')}" onclick="confirmarParadaFeira(this)">Confirmar coleta</button>
+             <button class="btn-primary" style="background:var(--leaf);color:var(--paper);" data-parada-id="${escapeHtml(p.id)}" data-tipo="coleta" data-pedido-id="${escapeHtml(p.pedido?.id || '')}" onclick="confirmarParadaFeira(this)">Confirmar coleta</button>
            </div>`;
     }
 
