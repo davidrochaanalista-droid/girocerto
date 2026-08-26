@@ -61,9 +61,16 @@ src/
   rodada, sem tela existente pra integrar.
 - Wrapper Capacitor (push nativo com som customizado, tracking em
   background) — depende do item acima.
-- Nenhum cron real configurado ainda (`fecharRotasExpiradas`,
-  `expirar_pedidos_pendentes`, `processarLote` de notificações) — os
-  endpoints existem em `src/index.js`, mas nada dispara eles hoje.
+- **`src/index.js` nunca foi implantado em lugar nenhum** — é rotulado
+  "Exemplo de integração" no próprio arquivo, um router Express nunca
+  montado em nenhum processo real. Confirmado: só existe 1 serviço no
+  Railway (`girocerto-dispatch-engine`, motor de restaurante); nada da
+  feira roda em produção — `despacharPedido()` só funcionou nos testes ao
+  vivo porque foi chamado manualmente via script. Decisão de arquitetura
+  pendente (mesclar no `dispatch-engine/` vs. serviço separado) antes de
+  sequer cogitar o cron de `fecharRotasExpiradas`/
+  `expirar_pedidos_pendentes`/`processarLote`. Ver CLAUDE.md, pendência
+  "motor de despacho da feira não roda em lugar nenhum" (26/08/2026).
 
 ## Rodando os testes
 

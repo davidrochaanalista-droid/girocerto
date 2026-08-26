@@ -2426,11 +2426,24 @@ C:\Users\Usuário\Projetos\giro certo
       se o entregador nunca responder o card de "parada nova", a proposta
       fica `'pendente'` pra sempre — sem cron, não tem quem force o
       timeout nem redespache sozinho.
-- [ ] **Nenhum cron do módulo feira está rodando** — `fecharRotasExpiradas`,
-      `expirar_pedidos_pendentes`, `processarLote` (notificações) existem
-      como funções/endpoints em `feira-dispatch/src/`, mas nada os
-      dispara periodicamente ainda (precisaria de `node-cron` ou um
-      processo tipo `dispatch-engine/` rodando no Railway).
+- [ ] **O motor de despacho da feira não roda em lugar nenhum em produção —
+      achado real, é maior do que "falta um cron"** (investigado
+      26/08/2026). `feira-dispatch/src/index.js` é literalmente rotulado
+      "Exemplo de integração" no próprio arquivo — um router Express que
+      nunca foi montado em nenhum processo. Confirmado no Railway: existe
+      só 1 serviço hospedado (`girocerto-dispatch-engine`, o motor de
+      restaurante); não existe segundo serviço pra feira. Ou seja
+      `despacharPedido()` **nunca roda sozinho** — nos testes ao vivo dos
+      itens 23/24 ele só funcionou porque foi chamado manualmente via
+      script de teste (mesmo padrão do `/interno/resposta-despacho` do
+      motor de restaurante em tenant de teste). Hoje, sem intervenção
+      manual, nenhum pedido de feira pronto é despachado pra nenhum
+      entregador. Perguntado ao usuário como resolver (mesclar no
+      `dispatch-engine/` existente vs. serviço Railway separado) —
+      **decisão explícita: não subir infra nova agora, só manter
+      documentado**. `fecharRotasExpiradas`/`expirar_pedidos_pendentes`/
+      `processarLote` (cron de timeout) dependem dessa decisão de
+      arquitetura ser tomada primeiro — não é só "adicionar node-cron".
 - [ ] **`PainelFeirante`/`DashboardFeirante` e `CheckoutConsumidor`** (as 2
       de 4 personas de `FeiraApp.jsx` fora de escopo) — sem tela existente
       pra integrar (GiroCerto nunca teve painel de feirante nem checkout de
