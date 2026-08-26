@@ -558,9 +558,36 @@ async function iniciarListener() {
   console.log('[listener] conectado — escutando pedido_pronto e tentativa_despacho_respondida');
 }
 
+// Expurgo de localizacoes_entregador (26/08/2026, análise de mercado
+// GiroCerto vs Mercado — item "agora" de segurança/LGPD): dado de
+// geolocalização acumulava pra sempre, sem prazo de retenção — boa
+// prática de mercado é ter expurgo automático definido, minimização de
+// dados é exigência de LGPD, não só recomendação. 30 dias é margem
+// suficiente pra qualquer investigação de desvio de rota/alerta antes de
+// apagar. Roda dentro do próprio processo do dispatch-engine (já fica no
+// ar 24/7) em vez de precisar de infra de cron nova — mesmo princípio já
+// usado pros timers de repique/timeout por rota.
+const DIAS_RETENCAO_LOCALIZACAO = 30;
+
+async function expurgarLocalizacoesAntigas() {
+  const limite = new Date(Date.now() - DIAS_RETENCAO_LOCALIZACAO * 24 * 60 * 60 * 1000).toISOString();
+  const { error, count } = await admin
+    .from('localizacoes_entregador')
+    .delete({ count: 'exact' })
+    .lt('registrado_em', limite);
+  if (error) {
+    console.error('[expurgo] falha ao apagar localizacoes_entregador antigas:', error.message);
+    return;
+  }
+  console.log(`[expurgo] localizacoes_entregador: ${count ?? 0} linha(s) com mais de ${DIAS_RETENCAO_LOCALIZACAO} dias apagada(s).`);
+}
+
 async function main() {
   await reconciliarNaSubida();
   await iniciarListener();
+
+  await expurgarLocalizacoesAntigas();
+  setInterval(expurgarLocalizacoesAntigas, 24 * 60 * 60 * 1000);
 
   const app = express();
   app.get('/health', (req, res) => res.json({ status: 'ok', tentadosPorRota: tentadosPorRota.size, timersAtivos: timersPorRota.size }));

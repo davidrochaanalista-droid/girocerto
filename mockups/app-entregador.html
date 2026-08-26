@@ -945,6 +945,41 @@ function iniciarEscutaDeStatusPendente(){
   }
 }
 
+// Fingerprint de dispositivo (26/08/2026, análise de mercado GiroCerto vs
+// Mercado — item "agora" de segurança). UUID gerado 1x e persistido no
+// localStorage do próprio app — não é hardware ID de verdade, mas já
+// resolve boa parte do problema de conta emprestada/compartilhada: iFood
+// já bloqueia por "dispositivo suspeito" com o mesmo princípio.
+function obterDeviceId(){
+  let id = localStorage.getItem('giro_device_id');
+  if(!id){
+    id = crypto.randomUUID();
+    localStorage.setItem('giro_device_id', id);
+  }
+  return id;
+}
+
+// Nunca bloqueia sozinho — mesmo princípio de confirmação humana já usado
+// em desvio de rota/SOS (alertas_seguranca). Silencioso no 1º login (não
+// tem baseline pra comparar ainda); gera alerta só quando o dispositivo
+// muda EM RELAÇÃO a um já conhecido.
+async function verificarDispositivo(entregador){
+  const deviceIdAtual = obterDeviceId();
+  if(entregador.device_id_atual === deviceIdAtual) return;
+
+  if(entregador.device_id_atual){
+    await supabaseClient.from('alertas_seguranca').insert({
+      entregador_id: entregador.id,
+      tipo: 'dispositivo_trocado',
+    });
+  }
+
+  await supabaseClient
+    .from('entregadores')
+    .update({ device_id_atual: deviceIdAtual, device_id_atualizado_em: new Date().toISOString() })
+    .eq('id', entregador.id);
+}
+
 async function carregarEntregador(){
   const { data: { user } } = await supabaseClient.auth.getUser();
   if(!user) return;
@@ -993,6 +1028,8 @@ async function carregarEntregador(){
     iniciarEscutaDeStatusPendente();
     return;
   }
+
+  await verificarDispositivo(entregador);
 
   document.getElementById('t_nome').textContent = 'Olá, ' + entregador.nome.split(' ')[0];
   mostrar('view-turno');

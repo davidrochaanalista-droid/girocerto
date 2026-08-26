@@ -456,6 +456,7 @@ function legendaAlerta(a){
   if(a.tipo === 'desvio_rota') return 'Desvio de rota' + (a.distancia_desvio_km ? ` (${Number(a.distancia_desvio_km).toFixed(1)} km)` : '');
   if(a.tipo === 'motoboy_parado') return 'Motoboy parado sem se mexer';
   if(a.tipo === 'sos_manual') return 'SOS acionado manualmente';
+  if(a.tipo === 'dispositivo_trocado') return 'Entregador logou de um aparelho diferente do habitual';
   return a.tipo;
 }
 

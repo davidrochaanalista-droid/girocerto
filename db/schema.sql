@@ -202,6 +202,17 @@ create table if not exists entregadores (
   -- rota atual, só impede receber a próxima assim que essa terminar
   pausar_apos_rota_atual boolean not null default false,
 
+  -- fingerprint de dispositivo (26/08/2026, análise de mercado GiroCerto vs
+  -- Mercado — item "agora" de segurança) — UUID gerado e persistido no
+  -- localStorage do próprio app-entregador.html, não é hardware ID de
+  -- verdade, mas já resolve boa parte do problema de conta emprestada/
+  -- compartilhada: quando o mesmo login aparece com um device_id diferente
+  -- do último conhecido, gera alerta_seguranca (tipo 'dispositivo_trocado')
+  -- pra loja revisar — nunca bloqueia sozinho, mesmo princípio de
+  -- confirmação humana já usado em desvio de rota/SOS.
+  device_id_atual text,
+  device_id_atualizado_em timestamptz,
+
   -- LGPD (seção 37/38)
   consentimento_lgpd_aceito_em timestamptz,
   dados_anonimizados_em timestamptz,  -- preenchido quando ele pede exclusão (ver seção 38);
@@ -520,7 +531,11 @@ create table if not exists alertas_seguranca (
   -- humana dos outros dois tipos (nunca aciona 190 sozinho) — ver
   -- avaliar_alertas_seguranca_localizacao() na seção de SEGURANÇA mais
   -- abaixo, padrão adaptado do Torre (fleet-orchestrator)
-  tipo text not null check (tipo in ('desvio_rota', 'sos_manual', 'motoboy_parado')),
+  -- 'dispositivo_trocado' (26/08/2026, análise de mercado GiroCerto vs
+  -- Mercado): mesmo fluxo de confirmação humana dos outros tipos — nunca
+  -- bloqueia sozinho, só sinaliza troca de aparelho na mesma conta (sinal
+  -- barato de conta emprestada/compartilhada, ver entregadores.device_id_atual)
+  tipo text not null check (tipo in ('desvio_rota', 'sos_manual', 'motoboy_parado', 'dispositivo_trocado')),
   distancia_desvio_km numeric(6,2),
   status text not null default 'aguardando_confirmacao'
     check (status in ('aguardando_confirmacao', 'confirmado_ok', 'escalado_loja', 'acionado_190', 'falso_alarme')),
@@ -4393,6 +4408,62 @@ create policy "entregador cria avaliacao da sua rota" on avaliacao for insert wi
 );
 
 -- ------------------------------------------------------------
+-- ------------------------------------------------------------
+-- RATE LIMITING (26/08/2026, análise de mercado GiroCerto vs Mercado —
+-- item "agora" de segurança): PostgREST/Supabase não tem rate limit
+-- nativo em RPC customizada (confirmado — precisaria de Edge Function ou
+-- proxy na frente). Implementado direto no Postgres em vez disso: o
+-- PostgREST expõe o IP real do chamador via a GUC `request.headers`
+-- (`x-forwarded-for`, setado pelo proxy da Supabase a partir da conexão
+-- TCP de verdade — não é um header que o cliente possa forjar), suficiente
+-- pra um contador de janela fixa por IP sem precisar de infra nova. Fica
+-- mais saliente com rastrear_pedido_publico()/avaliar_entrega_publica()
+-- sendo chamadas SEM AUTENTICAÇÃO NENHUMA (role anon).
+-- ------------------------------------------------------------
+create table if not exists rate_limit_contador (
+  chave text not null,
+  janela timestamptz not null,
+  contador int not null default 1,
+  primary key (chave, janela)
+);
+
+create or replace function ip_do_chamador()
+returns text
+language sql
+stable
+set search_path = public, pg_temp
+as $$
+  select coalesce(
+    split_part((current_setting('request.headers', true)::json ->> 'x-forwarded-for'), ',', 1),
+    'desconhecido'
+  );
+$$;
+
+-- Janela fixa de 1 minuto por (nome da operação + IP). Limpa janelas
+-- velhas a cada chamada em vez de precisar de cron dedicado — mesmo
+-- princípio de "sem infra nova" do expurgo de localizacoes_entregador.
+create or replace function verificar_rate_limit(p_nome text, p_max_por_minuto int)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_chave text := p_nome || ':' || ip_do_chamador();
+  v_janela timestamptz := date_trunc('minute', now());
+  v_contador int;
+begin
+  insert into rate_limit_contador (chave, janela, contador)
+  values (v_chave, v_janela, 1)
+  on conflict (chave, janela) do update set contador = rate_limit_contador.contador + 1
+  returning contador into v_contador;
+
+  delete from rate_limit_contador where janela < now() - interval '10 minutes';
+
+  return v_contador <= p_max_por_minuto;
+end;
+$$;
+
 -- RASTREIO PÚBLICO (restaurante, seção 7) — link sem login enviado ao
 -- cliente por WhatsApp (pedidos.cliente_telefone já existia pra isso,
 -- nunca tinha sido usado). pedidos.id (gen_random_uuid(), aleatório de
@@ -4423,11 +4494,16 @@ returns table(
   avaliacao_entrega smallint,
   avaliacao_comentario text
 )
-language sql
+language plpgsql
 security definer
-stable
 set search_path = public, pg_temp
 as $$
+begin
+  if not verificar_rate_limit('rastrear_pedido_publico', 30) then
+    raise exception 'Muitas tentativas — aguarde um momento e tente de novo.';
+  end if;
+
+  return query
   select
     p.status,
     t.nome,
@@ -4449,6 +4525,7 @@ as $$
   left join rotas_entrega r on r.id = p.rota_id
   left join entregadores e on e.id = r.entregador_id
   where p.id = p_pedido_id;
+end;
 $$;
 
 -- write-once (status='entregue' + avaliacao_entrega ainda null, checado
@@ -4462,6 +4539,10 @@ security definer
 set search_path = public, pg_temp
 as $$
 begin
+  if not verificar_rate_limit('avaliar_entrega_publica', 5) then
+    raise exception 'Muitas tentativas — aguarde um momento e tente de novo.';
+  end if;
+
   if p_nota is null or p_nota < 1 or p_nota > 5 then
     raise exception 'nota deve estar entre 1 e 5';
   end if;

@@ -2416,7 +2416,107 @@ C:\Users\Usuário\Projetos\giro certo
       (tenant/entregador/rota/pedido de teste dedicados, apagados ao
       final). Ainda não commitado.
 
+43. **Análise de mercado (GiroCerto vs. iFood/Rappi/Uber/DoorDash) + 4 dos
+    5 itens "agora" implementados** (26/08/2026, pedido explícito do
+    usuário: "faça uma analise minusiosa na internet... comparando o que
+    pode ser melhorado em segurança, tecnologia, roterização"). 3
+    pesquisas web em paralelo (fork), relatório publicado como Artifact
+    ("GiroCerto vs. Mercado", 17 achados com fonte). Usuário escolheu
+    executar os 5 itens marcados "agora", nesta ordem: OSRM self-hosted →
+    fingerprint de dispositivo → expurgo de localização (LGPD) → rate
+    limiting → MFA.
+    - **OSRM self-hospedado — construído, implantado, BLOQUEADO por
+      plano do Railway** (não é bug de código). `osrm-server/` novo
+      (`Dockerfile` + `start.sh`): baixa e pré-processa o extrato
+      Sudeste (SP/RJ/MG/ES, Geofabrik, 816MB) no primeiro boot — não no
+      build da imagem — persistindo em volume Railway (`/data`) via
+      marker file, pra não reprocessar a cada deploy. Serviço novo
+      `girocerto-osrm` criado no mesmo projeto Railway do
+      `dispatch-engine`, domínio público gerado
+      (`girocerto-osrm-production.up.railway.app`). **Achado real**: o
+      volume padrão vem com 500MB, mas só o extrato já tem 816MB —
+      `railway volume` não tem flag de tamanho no CLI/GraphQL
+      (`VolumeUpdateInput` só aceita `name`), resize só existe no
+      dashboard web ("Live Resize Volume"). Tentado lá: erro explícito
+      **"Max size of 500 MB on current plan. Please select a valid size
+      or upgrade"** — a conta está no plano Trial, que trava volume em
+      500MB (pago libera até 5GB no Hobby). **Não é algo que dá pra
+      contornar por código** — precisa o usuário adicionar forma de
+      pagamento e mudar de plano no Railway antes de eu conseguir voltar
+      e concluir. Serviço pausado (`railway down`) pra não ficar
+      reiniciando à toa enquanto isso. `.gitattributes` novo (`*.sh text
+      eol=lf`) pra proteger `start.sh` de virar CRLF num futuro checkout
+      Windows (`core.autocrlf=true` local) e quebrar o shebang.
+    - **Fingerprint de dispositivo** (`app-entregador.html` +
+      `capacitor-www/index.html`): UUID gerado 1x via
+      `crypto.randomUUID()` e persistido no `localStorage` (não é
+      hardware ID de verdade, mas resolve boa parte do problema de conta
+      emprestada/compartilhada — mesmo princípio do "dispositivo
+      suspeito" que o iFood já usa). Colunas novas
+      `entregadores.device_id_atual`/`device_id_atualizado_em`.
+      `verificarDispositivo()`, chamada em `carregarEntregador()` antes
+      de mostrar a tela de turno: 1º login (sem baseline) grava
+      silencioso; login de um device já conhecido não faz nada; device
+      DIFERENTE do último conhecido gera `alertas_seguranca` (tipo novo
+      `dispositivo_trocado`) pra loja revisar — nunca bloqueia sozinho,
+      mesmo princípio de confirmação humana do resto da seção de
+      segurança. Rótulo novo em `legendaAlerta()` (`painel-loja.html`).
+      **Testado ao vivo com login real** (entregador de teste, RLS via
+      chave anon, não service role): os 3 cenários (1º login, mesmo
+      device, device trocado) bateram exatamente com o esperado.
+    - **Retenção/expurgo de `localizacoes_entregador` (LGPD)**:
+      acumulava posição pra sempre, sem prazo — boa prática de mercado
+      é ter expurgo automático definido, minimização de dados é exigência
+      LGPD. `expurgarLocalizacoesAntigas()` nova em `dispatch-engine/index.js`
+      — roda 1x na subida e depois a cada 24h via `setInterval`, direto
+      no processo que já fica no ar 24/7 (sem precisar de infra de cron
+      nova, mesmo achado da pendência do motor de despacho da feira, mas
+      resolvido aqui porque o dispatch-engine do restaurante JÁ é um
+      processo vivo). Retenção de 30 dias. Testado contra o banco
+      hospedado (linha de 40 dias apagada, linha de 1 dia mantida) e
+      **implantado em produção** (`railway up -c`, log confirmado:
+      "[expurgo] localizacoes_entregador: 0 linha(s)... apagada(s)").
+    - **Rate limiting nas RPCs públicas de rastreio** — confirmado que
+      PostgREST/Supabase não tem rate limit nativo em RPC customizada;
+      em vez de subir uma Edge Function nova, resolvido 100% dentro do
+      Postgres: `ip_do_chamador()` lê `x-forwarded-for` via a GUC
+      `request.headers` que o PostgREST expõe (testado ao vivo com curl
+      puro contra o endpoint REST — devolveu o IP real, não é header que
+      o cliente possa forjar, é setado pelo proxy da Supabase a partir da
+      conexão TCP). `verificar_rate_limit(nome, max_por_minuto)` — janela
+      fixa de 1 minuto por `nome:ip` em `rate_limit_contador`, limpa
+      janelas velhas a cada chamada (mesmo princípio "sem infra nova" do
+      expurgo acima). `rastrear_pedido_publico()` convertida de `sql` pra
+      `plpgsql` pra poder checar (30/min); `avaliar_entrega_publica()`
+      ganhou a mesma checagem (5/min). **Testado ao vivo via chave anon**:
+      35 chamadas seguidas → exatamente 30 passaram e 5 foram bloqueadas;
+      8 chamadas de avaliação → exatamente 5 passaram e 3 foram
+      bloqueadas — bateu exato com o limite configurado.
+    - **MFA — não feito ainda**, é o último item da ordem escolhida pelo
+      usuário porque muda o fluxo de login de entregador/loja (decisão de
+      produto, não só técnica) — fica pra confirmar com o usuário antes
+      de implementar.
+    - Suíte completa **158/158** depois de cada mudança (rodada 2x, uma
+      por item de schema/dispatch-engine tocado), sempre com
+      `railway down`/`railway up -c` do dispatch-engine ao redor pra não
+      cruzar com produção. Nada commitado ainda.
+
 ## Pendências reais no momento
+- [ ] **OSRM self-hospedado bloqueado por plano do Railway** (item 43,
+      26/08/2026) — `osrm-server/` pronto (Dockerfile + start.sh),
+      serviço `girocerto-osrm` criado e pausado. Falta só o usuário
+      adicionar forma de pagamento e mudar do plano Trial pro Hobby (ou
+      superior) no Railway — o Trial trava volume em 500MB, o extrato
+      sozinho já tem 816MB. Depois disso: aumentar o volume pra ~5GB
+      (dashboard → serviço → Volume → Live Resize) e rodar `railway up -c`
+      de dentro de `osrm-server/` pra retomar o pré-processamento. Depois
+      de confirmado no ar, trocar a URL do OSRM em `app-entregador.html`
+      (`tracarRota()`) e `rastreio-pedido.html` de
+      `router.project-osrm.org` pra `girocerto-osrm-production.up.railway.app`.
+- [ ] **MFA (TOTP) — decisão de produto pendente antes de implementar**
+      (item 43) — Supabase Auth já suporta nativamente, é configuração,
+      mas muda o fluxo de login de entregador/loja. Perguntar ao usuário
+      antes de ativar.
 - [x] ~~Cobrança via Pix aparecendo em rota da sessão feira~~ — não era bug:
       usuário esclareceu a regra de negócio (item 41) e o fluxo certo
       (feirante confirma recebimento do Pix da taxa de entrega) foi
