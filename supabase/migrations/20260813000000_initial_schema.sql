@@ -5999,3 +5999,118 @@ as $$
   order by point(p.lng, p.lat) <-> point(p_longitude, p_latitude)
   limit 1;
 $$;
+
+-- ==============================================================
+-- ITEM 55 (27/08/2026) — FIX: gerar_repasse_ao_entregar() quebrada desde
+-- o item 52 (achado real do teste sustentado de 10 entregadores/4min:
+-- toda confirmação de entrega falhava com "column entregador_id does not
+-- exist"). Essa função nunca tinha sido tocada nas migrações do item 52 e
+-- ainda buscava o turno por turnos.entregador_id — coluna removida quando
+-- turnos virou por pessoa. Trigger BEFORE UPDATE, então o erro impedia o
+-- UPDATE inteiro de completar: NENHUMA entrega conseguia ser confirmada
+-- em produção com esse bug. Não pego nos testes anteriores porque eles
+-- inseriam repasses direto via SQL, nunca passando pela trigger de
+-- verdade numa confirmação de entrega real.
+-- ==============================================================
+create or replace function gerar_repasse_ao_entregar()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_rota record;
+  v_tenant record;
+  v_qtd_pedidos integer;
+  v_espera_loja_min numeric;
+  v_espera_cliente_min numeric;
+  v_espera_total_min numeric;
+  v_excedente_min numeric;
+  v_km_chamada_excedente numeric;
+  v_valor numeric;
+  v_turno_id uuid;
+begin
+  if new.status <> 'entregue' or old.status is not distinct from 'entregue' then
+    return new;
+  end if;
+
+  select * into v_rota from rotas_entrega where id = new.rota_id;
+  if v_rota.entregador_id is null then
+    return new;
+  end if;
+
+  select * into v_tenant from tenants where id = new.tenant_id;
+
+  select count(*) into v_qtd_pedidos from pedidos where rota_id = new.rota_id;
+  v_qtd_pedidos := greatest(v_qtd_pedidos, 1);
+
+  v_espera_loja_min := 0;
+  if v_rota.chegou_loja_em is not null and v_rota.iniciada_em is not null then
+    v_espera_loja_min := extract(epoch from (v_rota.iniciada_em - v_rota.chegou_loja_em)) / 60.0 / v_qtd_pedidos;
+  end if;
+
+  v_espera_cliente_min := 0;
+  if new.chegou_entrega_em is not null and new.entregue_em is not null then
+    v_espera_cliente_min := extract(epoch from (new.entregue_em - new.chegou_entrega_em)) / 60.0;
+  end if;
+
+  v_espera_total_min := v_espera_loja_min + v_espera_cliente_min;
+  new.tempo_espera_min := round(v_espera_total_min);
+
+  v_excedente_min := greatest(0, v_espera_total_min - coalesce(v_tenant.tempo_espera_tolerado_min, 0));
+
+  v_km_chamada_excedente := greatest(0,
+    coalesce(v_rota.distancia_chamada_km, 0) - coalesce(v_tenant.raio_chamada_motoboy_km, 0)
+  ) / v_qtd_pedidos;
+
+  v_valor := coalesce(v_tenant.tarifa_minima, 0) / v_qtd_pedidos
+    + v_excedente_min * coalesce(v_tenant.valor_por_minuto_espera_excedente, 0)
+    + v_km_chamada_excedente * coalesce(v_tenant.valor_por_km_adicional, 0);
+  v_valor := round(v_valor, 2);
+  new.valor_entrega := v_valor;
+
+  select id into v_turno_id from turnos
+  where pessoa_id = (select pessoa_id from entregadores where id = v_rota.entregador_id)
+    and status = 'ativo'
+  order by iniciado_em desc limit 1;
+
+  insert into repasses (entregador_id, pedido_id, turno_id, valor, status)
+  values (v_rota.entregador_id, new.id, v_turno_id, v_valor, 'pendente');
+
+  return new;
+end;
+$$;
+
+-- ==============================================================
+-- ITEM 56 (27/08/2026) — CORREÇÃO DOS ACHADOS (itens 53-55)
+-- ==============================================================
+
+-- "pedido chegando" pro restaurante (achado do item 55: só existia
+-- "pedido a caminho"). Reaproveita o mesmo ponto de confirmação explícita
+-- já usado por confirmar_retirada_rota() (item 34) — o entregador já
+-- confirma "cheguei no local de entrega" antes de digitar o código, então
+-- enfileirar a notificação nesse exato momento é consistente com o padrão
+-- já estabelecido (evento confirmado pelo entregador, não GPS/proximidade
+-- automática — isso seria escopo maior, replicar
+-- verificar_proximidade_entregas() da feira pro restaurante, não pedido
+-- aqui).
+create or replace function confirmar_chegada_entrega(p_pedido_id uuid)
+returns void
+language plpgsql
+as $$
+declare
+  v_atualizado int;
+begin
+  update pedidos
+  set chegou_entrega_em = now()
+  where id = p_pedido_id
+    and status = 'a_caminho'
+    and chegou_entrega_em is null
+    and rota_id in (select id from rotas_entrega where entregador_id in (select meus_entregador_ids()));
+
+  get diagnostics v_atualizado = row_count;
+  if v_atualizado > 0 then
+    perform enfileirar_notificacao_restaurante(p_pedido_id, 'chegando', '{}'::jsonb);
+  end if;
+end;
+$$;

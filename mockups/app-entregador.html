@@ -834,16 +834,28 @@ function pararRastreioPosicao(){
   watchId = null;
 }
 
+// item 56 (27/08/2026), achado do item 54: com até 3 rotas simultâneas
+// possíveis (Fase 2), gravar a posição só na rota "em foco"
+// (rotaAtivaId) deixava as OUTRAS rotas ativas sem checagem de
+// desvio_rota/motoboy_parado (a trigger avaliar_alertas_seguranca_localizacao()
+// avalia por rota_id da própria linha inserida) — a posição física do
+// entregador é uma só, mas o alerta de segurança precisa valer pra todas
+// as rotas que ele está com pedido em mãos, não só a que está na tela
+// agora. Grava 1 linha por rota ativa (mesma lat/lng), não só a focada.
 async function enviarPosicao(lat, lng){
   if(!entregadorId) return;
-  const { error } = await supabaseClient.from('localizacoes_entregador').insert({
-    entregador_id: entregadorId,
-    rota_id: rotaAtivaId,
-    lat, lng,
-  });
-  // Falha de envio de posição não deveria interromper o fluxo do
-  // entregador (ele nem veria isso na tela) — só loga pra debug.
-  if(error) console.warn('Não deu pra gravar a posição:', error.message);
+  const rotas = rotasAtivasLista.length ? rotasAtivasLista.map(r => r.id) : (rotaAtivaId ? [rotaAtivaId] : []);
+  if(!rotas.length) return;
+  for(const rid of rotas){
+    const { error } = await supabaseClient.from('localizacoes_entregador').insert({
+      entregador_id: entregadorId,
+      rota_id: rid,
+      lat, lng,
+    });
+    // Falha de envio de posição não deveria interromper o fluxo do
+    // entregador (ele nem veria isso na tela) — só loga pra debug.
+    if(error) console.warn('Não deu pra gravar a posição:', error.message);
+  }
 }
 
 function mostrar(id){

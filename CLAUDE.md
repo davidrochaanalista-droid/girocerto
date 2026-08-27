@@ -3036,14 +3036,75 @@ C:\Users\Usuário\Projetos\giro certo
     - Testado: 9/9 asserts contra o banco real (capacidade freelance=3,
       bloqueio no 4º, libera ao concluir 1, fixo respeita limite
       configurado pela loja, fixo sem configuração cai no default 1).
+    - Commitado junto com o item 53 (`14b09bd`).
+55. **Teste real sustentado — 10 entregadores em ciclo completo por 4min,
+    achou um bug crítico que quebrava TODA confirmação de entrega em
+    produção** (27/08/2026, pedido direto do usuário: "10 entregadores
+    cada um aceitando rota cada 30 segundos... loja recebendo e
+    despachando, enviando mensagem pros clientes"). Protocolo de sempre:
+    `railway down -y` → `dispatch-engine/` local por 4 minutos reais,
+    10 entregadores (4 fixo, 6 freelance) + 1 loja criando pedidos novos
+    continuamente, cada entregador em loop próprio (aceitar → chegada na
+    loja → retirada → chegada no cliente → entregar), horários escalonados
+    + jitter (diversificado, não em lockstep) → `railway up -y -c` no
+    final, confirmado saudável de novo.
+    - **BUG CRÍTICO achado e corrigido**: `gerar_repasse_ao_entregar()`
+      (trigger `BEFORE UPDATE` em `pedidos`, dispara ao marcar
+      `status='entregue'`) nunca tinha sido tocada nas migrações do item
+      52 — continuava buscando o turno por `turnos.entregador_id`, coluna
+      que não existe mais desde que turno virou por pessoa. Resultado:
+      **toda tentativa de confirmar entrega falhava** ("column
+      entregador_id does not exist"), o UPDATE inteiro era abortado pela
+      trigger — ninguém conseguiria finalizar uma entrega em produção
+      com esse bug ativo. Não pego antes porque os testes anteriores
+      inseriam `repasses` direto via SQL, nunca passando pela trigger de
+      verdade numa confirmação de entrega real — só um teste sustentado
+      indo até o fim do ciclo (não só "aceitar") pegaria isso. Corrigido:
+      busca o turno via `pessoa_id` resolvido a partir do vínculo da rota.
+    - **Achado, não é bug**: notificação de "pedido chegando" (proximidade)
+      não existe pro fluxo de restaurante — só "pedido a caminho"
+      (`saiu_para_entrega`) existe hoje. A feira tem
+      `verificar_proximidade_entregas()` própria; o restaurante não tem
+      equivalente. Confirmado via teste (nenhuma notificação de
+      chegada/proximidade foi gerada, como esperado).
+    - Resultado final (depois do fix): 21 pedidos criados, 20 entregues de
+      ponta a ponta em 4 minutos reais, notificação "saiu_para_entrega"
+      enfileirada pra cada uma (fila real, não envio de WhatsApp — isso
+      continua pendente de `integracoes.whatsapp_*`), repasse gerado pra
+      cada entrega, todos os 10 entregadores voltaram a 0 rotas ativas ao
+      final (nenhum ficou "preso"), nenhum excedeu a própria capacidade em
+      nenhum momento. 9/9 asserts.
+    - Nada commitado ainda.
+56. **Correção dos 2 achados que ficaram pendentes dos itens 54/55**
+    (27/08/2026, pedido direto do usuário: "faça toda a correção dos
+    achados").
+    - **"Pedido chegando" pro restaurante** (achado do item 55): reaproveita
+      `confirmar_chegada_entrega()` — já existia como confirmação explícita
+      do entregador ("cheguei no local de entrega", item 34), agora
+      também enfileira `enfileirar_notificacao_restaurante(pedido,
+      'chegando', ...)` no mesmo instante. Escolha deliberada: não replicar
+      `verificar_proximidade_entregas()` da feira (GPS/proximidade
+      automática, exige job periódico) — o padrão já estabelecido pro
+      restaurante é confirmação explícita do entregador, não detecção
+      automática, então "chegando" segue a mesma lógica de "a caminho"
+      (`saiu_para_entrega`, na retirada). Idempotente (só a 1ª chamada gera
+      notificação, testado).
+    - **Rastreio de posição/alertas cobrindo só a rota "em foco"** (achado
+      do item 54): `enviarPosicao()` em `app-entregador.html` agora grava
+      1 linha em `localizacoes_entregador` POR ROTA ATIVA (mesma lat/lng,
+      `rota_id` diferente), não só na `rotaAtivaId` focada na tela. A
+      trigger `avaliar_alertas_seguranca_localizacao()` (já existente,
+      não mudou) avalia por `rota_id` de cada linha — então com isso,
+      `desvio_rota`/`motoboy_parado` passam a ser avaliados pra TODAS as
+      rotas simultâneas do entregador, não só a que está aberta na tela.
+    - Testado: 4/4 asserts contra o banco real (notificação enfileirada +
+      idempotência + posição gravada em 2 rotas simultâneas).
     - Nada commitado ainda.
 
 ## Pendências reais no momento
-- [ ] **Rastreio de posição/alertas de segurança só cobrem a rota "em foco"**
-      quando há 2-3 rotas simultâneas (item 54, 27/08/2026) — ver detalhe no
-      item 54 acima. Não é urgente pro piloto atual (poucas lojas, baixo
-      volume), mas é uma lacuna real assim que o pool freelance realmente
-      passar a usar a capacidade de 3.
+- [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
+      **corrigido no item 56** (27/08/2026): `enviarPosicao()` grava posição em
+      todas as rotas ativas agora, não só a focada na tela.
 - [ ] **OSRM self-hospedado bloqueado por plano do Railway** (item 43,
       26/08/2026) — `osrm-server/` pronto (Dockerfile + start.sh),
       serviço `girocerto-osrm` criado e pausado. Falta só o usuário
