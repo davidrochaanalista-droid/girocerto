@@ -384,6 +384,11 @@ complementar). -->
         <button class="btn-primary" onclick="mostrar('view-rota')" style="margin-bottom:12px;">Ver rota ativa</button>
       </div>
 
+      <!-- item 54 (27/08/2026, Fase 2): freelance pode ter até 3 rotas de
+      restaurante ativas ao mesmo tempo — essa lista só aparece quando há
+      mais de 1, pra nenhuma ficar escondida (ver verificarRotaAtiva()). -->
+      <div id="comRotaMultipla" style="display:none;margin-bottom:12px;"></div>
+
       <!-- Módulo feira (sessão de 22/08/2026, ver CLAUDE.md item 23): a MESMA
       conta atende restaurante e feira, sem seletor de modo — se as duas
       existirem ao mesmo tempo, os dois botões aparecem juntos aqui. -->
@@ -1771,26 +1776,58 @@ async function garantirEnderecoLoja(){
   enderecoLojaAtual = (data && data[0] && data[0].endereco_loja) || '';
 }
 
+// item 54 (27/08/2026, Fase 2 — limite de rotas simultâneas): freelance
+// pode ter até 3 rotas ativas ao mesmo tempo agora — sem o .limit(1) de
+// antes, uma 2ª/3ª rota atribuída ficava invisível pro entregador (ele
+// nunca saberia que tinha outra entrega esperando). Com 1 só, comporta
+// exatamente como antes; com 2+, mostra uma lista pra escolher qual ver
+// agora — rastreio de posição (enviarPosicao) continua vinculado só à
+// rota "em foco" no momento (rotaAtivaId), não a todas de uma vez.
+let rotasAtivasLista = [];
+
 async function verificarRotaAtiva(){
   const { data: rotas } = await supabaseClient
     .from('rotas_entrega')
     .select('*, pedidos(*)')
     .eq('entregador_id', entregadorId)
     .in('status', ['a_caminho_da_loja','em_entrega'])
-    .order('criado_em', { ascending:false })
-    .limit(1);
+    .order('criado_em', { ascending:false });
 
-  if(rotas && rotas.length){
-    rotaAtivaId = rotas[0].id; // B1 — a próxima posição enviada já sai vinculada a essa rota
-    document.getElementById('semRota').style.display = 'none';
-    document.getElementById('comRota').style.display = 'block';
-    await garantirEnderecoLoja();
-    montarRota(rotas[0]);
-  } else {
+  rotasAtivasLista = rotas || [];
+
+  if(rotasAtivasLista.length === 0){
     rotaAtivaId = null;
     document.getElementById('semRota').style.display = 'block';
     document.getElementById('comRota').style.display = 'none';
+    document.getElementById('comRotaMultipla').style.display = 'none';
+  } else if(rotasAtivasLista.length === 1){
+    rotaAtivaId = rotasAtivasLista[0].id; // B1 — a próxima posição enviada já sai vinculada a essa rota
+    document.getElementById('semRota').style.display = 'none';
+    document.getElementById('comRota').style.display = 'block';
+    document.getElementById('comRotaMultipla').style.display = 'none';
+    await garantirEnderecoLoja();
+    montarRota(rotasAtivasLista[0]);
+  } else {
+    document.getElementById('semRota').style.display = 'none';
+    document.getElementById('comRota').style.display = 'none';
+    const box = document.getElementById('comRotaMultipla');
+    box.style.display = 'block';
+    box.innerHTML = `<div style="font-weight:700;font-size:13px;margin-bottom:8px;">Você tem ${rotasAtivasLista.length} rotas ativas agora</div>` +
+      rotasAtivasLista.map((r, i) => `
+        <button class="btn-outline" style="margin-bottom:8px;text-align:left;" onclick="abrirRotaEspecifica(${i})">
+          Rota ${i + 1} — ${(r.pedidos || []).length} parada(s) · ${r.status === 'a_caminho_da_loja' ? 'indo pra loja' : 'em entrega'}
+        </button>
+      `).join('');
   }
+}
+
+async function abrirRotaEspecifica(indice){
+  const rota = rotasAtivasLista[indice];
+  if(!rota) return;
+  rotaAtivaId = rota.id;
+  await garantirEnderecoLoja();
+  montarRota(rota);
+  mostrar('view-rota');
 }
 
 function montarRota(rota){

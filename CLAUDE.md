@@ -2921,9 +2921,129 @@ C:\Users\Usuário\Projetos\giro certo
       já usado pelo módulo feira — não reescreve os blocos originais de
       `entregadores`/`turnos`, adiciona por cima). `supabase/migrations/`
       re-sincronizado junto.
+53. **Teste real de carga simultâneo — loja + feira + vários entregadores ao
+    mesmo tempo, achou e corrigiu 2 bugs de verdade** (27/08/2026, pedido
+    direto do usuário: "faz o teste real, com loja, feirante e entregador
+    tudo simultâneo, vários pedidos ao mesmo tempo, vários entregadores").
+    Protocolo já estabelecido: `railway down -y` (confirmado com o usuário
+    antes, produção estava online) → subiu `dispatch-engine/` local como
+    subprocesso real (mesmo padrão de `tests/despacho_motor.test.js`) →
+    `railway up -y -c` no final, confirmado saudável de novo.
+    - **Cenário**: 1 loja restaurante + 1 feira/feirante, 5 pessoas
+      entregadoras (2 fixo, 3 freelance — 1 delas bike com `aceita_feira`),
+      6 pedidos de restaurante ficando 'pronto' via `Promise.all` verdadeiro
+      (só 5 candidatos pros 6), 1 pedido de feira despachado no mesmo
+      instante via `feira-dispatch/src/routeManager.js` chamado direto.
+    - **BUG REAL #1, achado e corrigido**: os 6 pedidos simultâneos foram
+      TODOS oferecidos ao MESMO entregador antes da correção. Causa: o lock
+      em memória do dispatch-engine (`rotasProcessando`) só protege 2
+      chamadas concorrentes pra MESMA rota — não protege N pedidos
+      DIFERENTES (rotas diferentes) escolhendo o mesmo candidato "mais
+      perto" antes de qualquer um ter inserido a tentativa de verdade
+      (busca e INSERT não eram atômicos juntos). Não é regressão do item
+      52 — o mesmo bug já existia na versão anterior do dispatch-engine
+      (a proteção "mesmo entregador recebendo 2 ofertas simultâneas" do
+      item 12 só cobria NOTIFY duplicado pro MESMO pedido, nunca pedidos
+      genuinamente diferentes competindo pelo mesmo candidato) — só nunca
+      tinha sido exercitado por um teste com pedidos verdadeiramente
+      simultâneos até agora. **Corrigido com índice único parcial**
+      (`idx_tentativas_despacho_um_aberto_por_entregador`, no máximo 1
+      tentativa aberta por entregador no banco INTEIRO, não só por rota) +
+      retry em `tentarDespachar()` (trata violação 23505 como "perdi a
+      corrida", exclui o candidato e tenta o próximo, até 10x). Re-testado
+      ao vivo: 6 pedidos simultâneos → 5 entregadores distintos, cada um
+      com exatamente 1 oferta, o 6º pedido corretamente sem candidato
+      ("sem entregador disponível — precisa de intervenção manual").
+    - **BUG REAL #2, achado e DOCUMENTADO (não corrigido — decisão de
+      escopo)**: a entregadora com `modo_disponibilidade='ambos'` (bike,
+      também `aceita_feira=true`) recebeu DUAS ofertas simultâneas de
+      domínios diferentes no mesmo instante — 1 tentativa de restaurante E
+      1 rota de feira, ao mesmo tempo. Causa: `buscar_candidatos_despacho()`
+      (restaurante) não verifica se a pessoa já tem uma `entrega_rota` de
+      feira em andamento, e `buscar_entregador_mais_proximo()`/etc (feira)
+      não verificam `tentativas_despacho` de restaurante — os dois pools
+      não se enxergam. O modo "ambos" existe pra dar flexibilidade, mas
+      hoje não impede esse conflito específico — só times diferentes
+      (`'restaurante'` vs `'feira'`, sem `'ambos'`) ficam realmente livres
+      de conflito. Ver pendência nova abaixo.
+    - **Achado colateral, corrigido**: `cleanup()` de `tests/lib/helpers.js`
+      (usado por TODA a suíte de testes, não só este) vazava
+      `pessoas_entregadoras`/`turnos` a cada teste desde o item 52 — a
+      tabela nova não tem `tenant_id`, então o cascade de tenant não a
+      alcança mais, e `auth_user_id` nunca teve `on delete cascade`.
+      Achado real: 17 pessoas de teste órfãs acumuladas no banco hospedado
+      (algumas com turno "ativo" há 2 dias, de sessões passadas), todas
+      limpas manualmente. `cleanup()` corrigido pra deletar
+      `pessoas_entregadoras` por `auth_user_id` depois do delete de
+      tenants (ordem importa: antes disso, `rotas_entrega` ainda bloqueia).
+    - **`feira-dispatch/src/routeManager.js` também estava quebrado pelo
+      item 52** (achado ao tentar rodar o teste) — consultava
+      `entregadores.lat/lng/tipo_veiculo`/`status` direto (colunas que
+      moveram pra `pessoas_entregadoras`), separado das 3 funções SQL já
+      corrigidas no item 52. Corrigido: `buscarRotasCandidatas()`,
+      `notificarEntregadorPush()`, `buscarBikesOciosas()` — mesmo join
+      encadeado via `entregadores(pessoas_entregadoras(...))`.
+    - Testado 100% contra o Supabase hospedado real + `dispatch-engine/`
+      real como subprocesso + `feira-dispatch/` chamado direto — não
+      simulado. Produção confirmada saudável nos dois lados (antes de
+      derrubar e depois de subir de novo).
+    - Nada commitado ainda.
+54. **Fase 2 do item 52 — limite de rotas simultâneas** (27/08/2026, pedido
+    direto do usuário: "freelance pode receber até 3 rotas no máximo, sem
+    passar do km exigido, e do peso, faça todas as correções e commita").
+    - **Modelo**: `rotas_ativas_da_pessoa()` conta rotas de verdade em
+      andamento (restaurante `a_caminho_da_loja`/`em_entrega` + feira
+      `em_montagem`/`em_rota`, somadas — as duas contam pro mesmo teto).
+      `capacidade_maxima_pessoa()`: freelance (sem nenhum vínculo `fixo`
+      em lugar nenhum) = 3; fixo = `entregadores.limite_rotas_simultaneas`
+      (coluna já existia desde o item 52, sem uso até agora) definido pela
+      loja, ou 1 por padrão se a loja não configurar nada — preserva
+      exatamente o comportamento da Fase 1 pra quem não mexer em nada.
+      `buscar_candidatos_despacho()` (restaurante) e
+      `buscar_entregador_mais_proximo()` (feira) passaram a checar
+      capacidade em vez de só `status='disponivel'` — status continua
+      existindo (só bloqueia mesmo se `'offline'`/`'pausado'`), mas não é
+      mais o único critério de disponibilidade.
+    - **km/peso por rota**: intocados de propósito, exatamente como o
+      usuário pediu ("sem passar do km exigido, e do peso") —
+      `raio_coleta_km`/`raio_chamada_maximo_km` (distância) e
+      `dispatch_config.peso_max_kg`/`checar_peso_rota()` (peso) continuam
+      valendo por rota, independente de quantas rotas simultâneas a
+      capacidade permite. Fase 2 só adicionou "quantas rotas de uma vez",
+      não mudou nenhum limite existente por rota individual.
+    - **Resolve de graça o "conflito de domínio" do item 53** (pessoa em
+      `modo_disponibilidade='ambos'` recebendo oferta de restaurante E
+      feira ao mesmo tempo): com capacidade, isso deixou de ser um
+      conflito — é o comportamento pretendido (até 3 rotas de qualquer
+      combinação de domínio). Só passa a ser bloqueado se estourar o
+      teto de capacidade, que agora conta os dois domínios juntos.
+    - **`app-entregador.html` — achado real, corrigido no mesmo passo**:
+      `verificarRotaAtiva()` tinha `.limit(1)` — com mais de 1 rota
+      simultânea possível agora, uma 2ª/3ª rota atribuída ficaria
+      completamente invisível pro entregador (risco real: ele nunca
+      saberia que tinha outra entrega esperando). Corrigido: busca todas
+      as rotas ativas; com 1 só, comporta exatamente como antes; com 2+,
+      mostra uma lista pra escolher qual ver agora (`comRotaMultipla` +
+      `abrirRotaEspecifica()`).
+    - **Limitação conhecida, não resolvida (fora de escopo desta rodada)**:
+      rastreio de posição (`enviarPosicao()`) e os alertas de segurança
+      (`desvio_rota`/`motoboy_parado`) continuam vinculados só à rota "em
+      foco" no momento (`rotaAtivaId`) — com 2-3 rotas simultâneas, as que
+      não estão em foco não recebem atualização de posição nem geram
+      alerta de desvio enquanto isso. Corrigir isso de verdade exige
+      repensar o rastreio pra ser por pessoa, não por rota focada —
+      trabalho maior, não pedido explicitamente ainda.
+    - Testado: 9/9 asserts contra o banco real (capacidade freelance=3,
+      bloqueio no 4º, libera ao concluir 1, fixo respeita limite
+      configurado pela loja, fixo sem configuração cai no default 1).
     - Nada commitado ainda.
 
 ## Pendências reais no momento
+- [ ] **Rastreio de posição/alertas de segurança só cobrem a rota "em foco"**
+      quando há 2-3 rotas simultâneas (item 54, 27/08/2026) — ver detalhe no
+      item 54 acima. Não é urgente pro piloto atual (poucas lojas, baixo
+      volume), mas é uma lacuna real assim que o pool freelance realmente
+      passar a usar a capacidade de 3.
 - [ ] **OSRM self-hospedado bloqueado por plano do Railway** (item 43,
       26/08/2026) — `osrm-server/` pronto (Dockerfile + start.sh),
       serviço `girocerto-osrm` criado e pausado. Falta só o usuário
@@ -3107,13 +3227,9 @@ C:\Users\Usuário\Projetos\giro certo
       Testado 19/19 contra o banco real. O que ainda falta, ver pendências novas
       abaixo: Fase 2 (limite de rotas simultâneas), painel-dev.html não atualizado,
       feira não re-verificada de ponta a ponta, staleness de lat/lng no restaurante.
-- [ ] **Fase 2 do item 52 — limite de rotas simultâneas** (freelance até 3 ao mesmo
-      tempo, fixo com o limite que a loja definir — `entregadores.limite_rotas_simultaneas`
-      já existe na tabela, sem uso ainda). Fase 1 preservou o comportamento atual (1 rota
-      ativa por vez, via `status`) de propósito — decisão consciente de não misturar
-      "abrir o pool freelance" com "mudar quantas rotas cabem ao mesmo tempo" no mesmo
-      passo. Precisa de contador de capacidade de verdade no motor de despacho (contar
-      rotas ativas da pessoa, não só checar `status='disponivel'`).
+- [x] ~~Fase 2 do item 52 — limite de rotas simultâneas~~ — **feita no item 54
+      (27/08/2026)**: freelance até 3, fixo com o limite configurado pela loja
+      (default 1). Ver item 54 pro detalhe completo.
 - [ ] `painel-dev.html` (ferramenta interna, nunca deployada) não foi atualizado no item
       52 — lê `entregadores.nome`/`status_verificacao` direto em 2 lugares, quebrado
       desde a separação pessoa/vínculo. Decisão consciente: não é produto,

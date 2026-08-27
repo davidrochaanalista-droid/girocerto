@@ -127,9 +127,12 @@ function createRouteManager(supabase) {
   async function buscarRotasCandidatas(tipoPerfil, raioKm = 8) {
     const { data: rotas, error } = await supabase
       .from('entrega_rota')
+      // item 52 (27/08/2026): lat/lng/tipo_veiculo moveram de entregadores
+      // (vínculo por loja) pra pessoas_entregadoras (identidade única,
+      // compartilhada entre restaurante e feira) — join encadeado.
       .select(
         `id, entregador_id, tipo_perfil, peso_total, status,
-         entregadores(lat, lng, tipo_veiculo),
+         entregadores(pessoas_entregadoras(lat, lng, tipo_veiculo)),
          rota_parada(id, tipo, pedido_id, pedido_grupo_id, latitude, longitude, ordem, status)`
       )
       .in('status', ['em_montagem', 'em_rota'])
@@ -138,17 +141,17 @@ function createRouteManager(supabase) {
     if (error) throw error;
 
     return (rotas || [])
-      .filter((r) => r.entregadores) // entregador precisa ter posição conhecida
+      .filter((r) => r.entregadores && r.entregadores.pessoas_entregadoras) // entregador precisa ter posição conhecida
       .map((r) => ({
         entregaRotaId: r.id,
         entregadorId: r.entregador_id,
         statusRota: r.status,
         tipoPerfil: r.tipo_perfil,
-        tipoVeiculo: r.entregadores.tipo_veiculo,
+        tipoVeiculo: r.entregadores.pessoas_entregadoras.tipo_veiculo,
         pesoTotalAtual: Number(r.peso_total),
         posicaoEntregador: {
-          latitude: r.entregadores.lat,
-          longitude: r.entregadores.lng,
+          latitude: r.entregadores.pessoas_entregadoras.lat,
+          longitude: r.entregadores.pessoas_entregadoras.lng,
         },
         paradasAtuais: (r.rota_parada || [])
           .filter((p) => p.status === 'pendente')
@@ -195,7 +198,7 @@ function createRouteManager(supabase) {
   async function notificarEntregadorPush(entregadorId) {
     try {
       const { data: entregador } = await supabase
-        .from('entregadores')
+        .from('entregadores_completo')
         .select('push_token, push_plataforma')
         .eq('id', entregadorId)
         .single();
@@ -295,8 +298,10 @@ function createRouteManager(supabase) {
    * mesmo já estando numa rota. Corrigido fazendo o join até `entregadores`
    * pra checar o tipo de veículo do dono da rota, não da rota em si. */
   async function buscarBikesOciosas() {
+    // item 52 (27/08/2026): status/lat/lng/tipo_veiculo moveram pra
+    // pessoas_entregadoras — entregadores_completo (view) já junta tudo.
     const { data: bikes, error } = await supabase
-      .from('entregadores')
+      .from('entregadores_completo')
       .select('id, lat, lng')
       .eq('status', 'disponivel')
       .eq('tipo_veiculo', 'bicicleta')
@@ -306,11 +311,11 @@ function createRouteManager(supabase) {
     // exclui bikes que já têm uma rota em_montagem em andamento
     const { data: rotasAtivas } = await supabase
       .from('entrega_rota')
-      .select('entregador_id, entregadores(tipo_veiculo)')
+      .select('entregador_id, entregadores(pessoas_entregadoras(tipo_veiculo))')
       .eq('status', 'em_montagem');
     const ocupadas = new Set(
       (rotasAtivas || [])
-        .filter((r) => r.entregadores?.tipo_veiculo === 'bicicleta')
+        .filter((r) => r.entregadores?.pessoas_entregadoras?.tipo_veiculo === 'bicicleta')
         .map((r) => r.entregador_id)
     );
 

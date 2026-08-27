@@ -212,7 +212,7 @@ async function resolverVinculoCandidato(candidato, tenantId) {
   return entregadorId;
 }
 
-async function buscarProximoCandidato(tenantId, rotaId, tenantLat, tenantLng, raioKm, raioMaximoKm) {
+async function buscarProximoCandidato(tenantId, rotaId, tenantLat, tenantLng, raioKm, raioMaximoKm, candidatosExcluidos = new Set()) {
   const jaTentados = tentadosPorRota.get(rotaId) || new Set();
 
   const { data: candidatosData, error: erroCandidatos } = await admin.rpc('buscar_candidatos_despacho', { p_tenant_id: tenantId });
@@ -221,9 +221,12 @@ async function buscarProximoCandidato(tenantId, rotaId, tenantLat, tenantLng, ra
   // candidato do pool aberto ainda não tem entregador_id (vínculo só é
   // criado pro vencedor) — usa pessoa_id como chave de exclusão de
   // "já tentado" até esse ponto, já que entregador_id vem null pra eles.
+  // candidatosExcluidos: quem já perdeu a corrida de reivindicar a
+  // tentativa NESTA chamada de tentarDespachar (ver retry em
+  // tentarDespachar) — sempre chave por entregador_id, já resolvido.
   let elegiveis = (candidatosData || []).filter((c) => {
     const chave = c.entregador_id || `pessoa:${c.pessoa_id}`;
-    return !jaTentados.has(chave);
+    return !jaTentados.has(chave) && !candidatosExcluidos.has(c.entregador_id) && !candidatosExcluidos.has(chave);
   });
 
   let vencedor = null;
@@ -330,33 +333,56 @@ async function tentarDespachar(pedidoId) {
   }
   rotasProcessando.add(rotaId);
   try {
-    const candidato = await buscarProximoCandidato(pedido.tenant_id, rotaId, config.lat, config.lng, config.raio_chamada_motoboy_km, config.raio_chamada_maximo_km);
-    if (!candidato) {
-      console.log(
-        `[despacho] pedido ${pedidoId} (rota ${rotaId}): sem entregador disponível (todos já tentados/ocupados ou fora do raio expandido de ${config.raio_chamada_maximo_km}km). Precisa de intervenção manual da loja.`
-      );
-      limparEstadoDaRota(rotaId); // achado ultrareview: sem isso, rota esgotada vazava Map pra sempre
+    // achado real (teste de carga simultâneo, 27/08/2026, item 52): o lock
+    // `rotasProcessando` só protege duas chamadas concorrentes pra MESMA
+    // rota — não protege N pedidos DIFERENTES (rotas diferentes) que
+    // buscam candidato ao mesmo tempo e escolhem o MESMO entregador antes
+    // de qualquer um ter inserido sua tentativa (busca em
+    // buscar_candidatos_despacho() e o INSERT abaixo não são atômicos
+    // juntos). Reproduzido ao vivo: 6 pedidos simultâneos, 1 só
+    // entregador recebendo as 6 ofertas. Corrigido com um índice único
+    // parcial (`idx_tentativas_despacho_um_aberto_por_entregador`, db/schema.sql)
+    // — no máximo 1 tentativa aberta por entregador no banco inteiro,
+    // não só por rota — e retry aqui excluindo quem perdeu a corrida.
+    let candidatosExcluidos = new Set();
+    for (let tentativaNum = 0; tentativaNum < 10; tentativaNum++) {
+      const candidato = await buscarProximoCandidato(pedido.tenant_id, rotaId, config.lat, config.lng, config.raio_chamada_motoboy_km, config.raio_chamada_maximo_km, candidatosExcluidos);
+      if (!candidato) {
+        console.log(
+          `[despacho] pedido ${pedidoId} (rota ${rotaId}): sem entregador disponível (todos já tentados/ocupados ou fora do raio expandido de ${config.raio_chamada_maximo_km}km). Precisa de intervenção manual da loja.`
+        );
+        limparEstadoDaRota(rotaId); // achado ultrareview: sem isso, rota esgotada vazava Map pra sempre
+        return;
+      }
+
+      const jaTentados = tentadosPorRota.get(rotaId) || new Set();
+      jaTentados.add(candidato.id);
+      tentadosPorRota.set(rotaId, jaTentados);
+
+      const { data: tentativa, error: eTentativa } = await admin
+        .from('tentativas_despacho')
+        .insert({ rota_id: rotaId, entregador_id: candidato.id, distancia_km: Number.isFinite(candidato.distancia) ? candidato.distancia : null })
+        .select('id')
+        .single();
+      if (eTentativa) {
+        if (eTentativa.code === '23505') {
+          // perdeu a corrida pra outro tentarDespachar concorrente que
+          // pegou o MESMO entregador primeiro — exclui e tenta o próximo
+          console.log(`[despacho] pedido ${pedidoId}: entregador ${candidato.id} já foi reivindicado por outra oferta concorrente — tentando próximo candidato`);
+          candidatosExcluidos.add(candidato.id);
+          continue;
+        }
+        console.error('[despacho] falha ao criar tentativa_despacho', eTentativa.message);
+        return;
+      }
+
+      console.log(`[despacho] pedido ${pedidoId} -> oferecido ao entregador ${candidato.id} (tentativa ${tentativa.id})`);
+      enviarPushBuzinaEntregador(candidato.push_token, candidato.push_plataforma, tentativa.id); // fire-and-forget, ver comentário na função
+      agendarRepique(rotaId, candidato.push_token, candidato.push_plataforma, config.segundos_repique_notificacao, tentativa.id);
+      agendarTimeout(tentativa.id, pedidoId, rotaId, config.segundos_timeout_despacho);
       return;
     }
-
-    const jaTentados = tentadosPorRota.get(rotaId) || new Set();
-    jaTentados.add(candidato.id);
-    tentadosPorRota.set(rotaId, jaTentados);
-
-    const { data: tentativa, error: eTentativa } = await admin
-      .from('tentativas_despacho')
-      .insert({ rota_id: rotaId, entregador_id: candidato.id, distancia_km: Number.isFinite(candidato.distancia) ? candidato.distancia : null })
-      .select('id')
-      .single();
-    if (eTentativa) {
-      console.error('[despacho] falha ao criar tentativa_despacho', eTentativa.message);
-      return;
-    }
-
-    console.log(`[despacho] pedido ${pedidoId} -> oferecido ao entregador ${candidato.id} (tentativa ${tentativa.id})`);
-    enviarPushBuzinaEntregador(candidato.push_token, candidato.push_plataforma, tentativa.id); // fire-and-forget, ver comentário na função
-    agendarRepique(rotaId, candidato.push_token, candidato.push_plataforma, config.segundos_repique_notificacao, tentativa.id);
-    agendarTimeout(tentativa.id, pedidoId, rotaId, config.segundos_timeout_despacho);
+    console.error(`[despacho] pedido ${pedidoId} (rota ${rotaId}): 10 tentativas de reivindicar candidato todas colidiram — desistindo, precisa de intervenção manual`);
   } finally {
     rotasProcessando.delete(rotaId);
   }

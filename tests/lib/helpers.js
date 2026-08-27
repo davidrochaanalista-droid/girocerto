@@ -98,6 +98,21 @@ async function cleanup(pg, tenantIds, authUserIds) {
       console.error('cleanup tenant falhou:', id, e.message);
     }
   }
+  // item 52 (27/08/2026): pessoas_entregadoras não é mais alcançada pelo
+  // cascade de tenant — identidade do entregador é separada do vínculo por
+  // loja de propósito (sobrevive a qualquer 1 tenant específico). Sem isso,
+  // TODO teste que cria entregador/turno vaza pessoa+turno pra sempre
+  // (achado real: 17 pessoas de teste órfãs, algumas com turno "ativo" há
+  // dias, acumuladas de sessões anteriores a este fix). Tem que rodar
+  // DEPOIS do delete de tenants acima — antes disso, rotas_entrega (e
+  // afins) ainda referenciam o vínculo e bloqueiam o delete da pessoa.
+  for (const uid of authUserIds) {
+    try {
+      await pg.query('delete from pessoas_entregadoras where auth_user_id = $1', [uid]);
+    } catch (e) {
+      console.error('cleanup pessoa_entregadora falhou:', uid, e.message);
+    }
+  }
   for (const uid of authUserIds) {
     try {
       await admin.auth.admin.deleteUser(uid);

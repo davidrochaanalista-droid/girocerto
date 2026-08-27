@@ -5883,3 +5883,119 @@ create policy "entregador cria seu proprio cadastro" on entregadores for insert 
 create policy "entregador atualiza seu proprio cadastro" on entregadores for update using (
   pessoa_id = minha_pessoa_id());
 
+
+-- ==============================================================
+-- ITEM 53 (27/08/2026) — TRAVA ATÔMICA CONTRA DUPLA OFERTA SIMULTÂNEA
+-- Achado real de teste de carga (6 pedidos verdadeiramente simultâneos,
+-- ver CLAUDE.md item 53): o lock em memória do dispatch-engine
+-- (rotasProcessando) só protege 2 chamadas concorrentes pra MESMA rota —
+-- não protege N pedidos DIFERENTES escolhendo o mesmo candidato antes de
+-- qualquer INSERT em tentativas_despacho aterrissar. Reproduzido ao vivo
+-- (6 pedidos, 1 entregador recebendo as 6 ofertas antes desta correção).
+-- Índice único parcial garante, no nível do banco, no máximo 1 tentativa
+-- ABERTA por entregador ao mesmo tempo — dispatch-engine/index.js trata a
+-- violação (23505) como "perdi a corrida" e tenta o próximo candidato.
+-- ==============================================================
+create unique index if not exists idx_tentativas_despacho_um_aberto_por_entregador
+  on tentativas_despacho (entregador_id) where resultado is null;
+
+-- ==============================================================
+-- ITEM 54 (27/08/2026) — FASE 2: LIMITE DE ROTAS SIMULTÂNEAS
+-- Freelance até 3 rotas ao mesmo tempo (qualquer loja), fixo com o limite
+-- que a própria loja definir (entregadores.limite_rotas_simultaneas, já
+-- existia na tabela desde o item 52, sem uso até agora — default 1 se a
+-- loja não configurou nada, preserva o comportamento da Fase 1 pra quem
+-- não mexer em nada). km/peso por rota continuam exatamente como já
+-- eram (raio_coleta_km, dispatch_config.peso_max_kg) — isso só adiciona
+-- uma dimensão nova (quantas rotas de uma vez), não substitui as outras.
+-- ==============================================================
+
+create or replace function rotas_ativas_da_pessoa(p_pessoa_id uuid)
+returns integer
+language sql
+stable
+as $$
+  select
+    (select count(*) from rotas_entrega r join entregadores e on e.id = r.entregador_id
+     where e.pessoa_id = p_pessoa_id and r.status in ('a_caminho_da_loja', 'em_entrega'))
+    +
+    (select count(*) from entrega_rota er join entregadores e on e.id = er.entregador_id
+     where e.pessoa_id = p_pessoa_id and er.status in ('em_montagem', 'em_rota'));
+$$;
+
+-- pessoa com QUALQUER vínculo fixo usa o limite mais restritivo entre eles
+-- (default 1 se a loja não configurou); pessoa 100% freelance (sem nenhum
+-- vínculo fixo) tem teto de 3 — mesmo critério já usado em
+-- eh_freelance_pool_aberto().
+create or replace function capacidade_maxima_pessoa(p_pessoa_id uuid)
+returns integer
+language sql
+stable
+as $$
+  select coalesce(
+    (select min(coalesce(limite_rotas_simultaneas, 1))
+     from entregadores where pessoa_id = p_pessoa_id and tipo_vinculo = 'fixo'),
+    3
+  );
+$$;
+
+create or replace function buscar_candidatos_despacho(p_tenant_id uuid)
+returns table(
+  entregador_id uuid,
+  pessoa_id uuid,
+  lat double precision,
+  lng double precision,
+  push_token text,
+  push_plataforma text,
+  precisa_criar_vinculo boolean
+)
+language sql
+stable
+as $$
+  select e.id, p.id, p.lat, p.lng, p.push_token, p.push_plataforma, false
+  from entregadores e
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where e.tenant_id = p_tenant_id
+    and p.status not in ('offline', 'pausado')
+    and p.modo_disponibilidade in ('restaurante', 'ambos')
+    and rotas_ativas_da_pessoa(p.id) < capacidade_maxima_pessoa(p.id)
+    and not exists (select 1 from tentativas_despacho td where td.entregador_id = e.id and td.resultado is null)
+
+  union all
+
+  select null::uuid, p.id, p.lat, p.lng, p.push_token, p.push_plataforma, true
+  from pessoas_entregadoras p
+  where p.status not in ('offline', 'pausado')
+    and p.modo_disponibilidade in ('restaurante', 'ambos')
+    and exists (select 1 from turnos t where t.pessoa_id = p.id and t.status = 'ativo')
+    and eh_freelance_pool_aberto(p.id)
+    and rotas_ativas_da_pessoa(p.id) < capacidade_maxima_pessoa(p.id)
+    and not exists (select 1 from entregadores e2 where e2.pessoa_id = p.id and e2.tenant_id = p_tenant_id)
+    and not exists (
+      select 1 from tentativas_despacho td
+      join entregadores e3 on e3.id = td.entregador_id
+      where e3.pessoa_id = p.id and td.resultado is null
+    );
+$$;
+
+-- feira: mesmo critério de capacidade, km/peso da rota continuam intactos
+-- (vc.raio_coleta_km/config.peso_max_kg, inalterados).
+create or replace function buscar_entregador_mais_proximo(
+  p_latitude double precision,
+  p_longitude double precision
+)
+returns table (id uuid, latitude double precision, longitude double precision, tipo_veiculo text)
+language sql
+as $$
+  select e.id, p.lat, p.lng, p.tipo_veiculo
+  from entregadores e
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  join veiculo_config vc on vc.tipo_veiculo = p.tipo_veiculo
+  where p.status not in ('offline', 'pausado')
+    and e.aceita_feira = true
+    and p.modo_disponibilidade in ('feira', 'ambos')
+    and rotas_ativas_da_pessoa(p.id) < capacidade_maxima_pessoa(p.id)
+    and calcular_distancia_km(p.lat, p.lng, p_latitude, p_longitude) <= vc.raio_coleta_km
+  order by point(p.lng, p.lat) <-> point(p_longitude, p_latitude)
+  limit 1;
+$$;
