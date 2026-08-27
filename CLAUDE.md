@@ -2713,6 +2713,44 @@ C:\Users\Usuário\Projetos\giro certo
       `app/build/intermediates/packaged_res/` batem com os novos
       arquivos (72×72 em hdpi, etc.) — não ficou nada em cache velho.
     - 17 arquivos alterados (15 PNGs + 2 XML). Nada commitado ainda.
+50. **Estratégia de precificação — não é código, é decisão de produto/negócio,
+    registrada aqui porque muda a leitura de qualquer trabalho futuro de
+    billing/planos** (26-27/08/2026). Documento vive só como artefato
+    publicado (não faz parte do repo) — link em posse do usuário.
+    - **Correção de modelo de negócio, a pedido do usuário**: GiroCerto NÃO é
+      uma empresa de logística com frota própria — é só motor de despacho e
+      roteirização. Entregadores são freelance, atendem várias lojas, não
+      pertencem a nenhuma. "Entregador fixo" é preferência de despacho dentro
+      de qualquer plano (algumas lojas priorizam sempre os mesmos motoboys),
+      não uma cobrança à parte nem uma trava de schema. Isso invalidou a
+      métrica de preço original (nº de entregadores ativos por loja) — trocada
+      por volume de pedidos despachados/mês, a única métrica que faz sentido
+      com frota compartilhada.
+    - **Dado de mercado real do usuário, também muda a régua de preço**: a
+      maioria das lojas ESTABELECIDAS já opera na faixa de 20.000–30.000+
+      pedidos/mês, não nas centenas/poucos milhares assumidos inicialmente —
+      exemplo concreto citado: a Cartel (hamburgueria usada como piloto de
+      teste no projeto) roda ~35.000 pedidos/mês sozinha. Confirmado também:
+      o motor de despacho agrupa até 3 pedidos por rota por entregador,
+      quando as entregas estão no mesmo trajeto/próximas e dentro do
+      peso/perímetro permitido — isso reduz o custo operacional real por
+      pedido (menos corridas de motoboy que pedidos), o que sustenta manter a
+      taxa por pedido baixa no modelo híbrido.
+    - **Modelo final em dois regimes**: (1) 3 planos fixos (Essencial R$149 /
+      Profissional R$349 / Escala R$699), tetos de 300/1.000/3.000 pedidos/mês
+      — servem só de porta de entrada pra loja nova/em rampa; (2) modelo
+      híbrido (base mensal baixa + valor por pedido despachado, ex.: R$900 +
+      R$0,45/pedido) como plano PADRÃO pra loja estabelecida — não é mais
+      tratado como "conta fora da curva", é o caso comum. Nos três exemplos
+      calculados (10k/20k/35k pedidos), o custo GiroCerto fica em ~1–1,2% do
+      GMV estimado, ante 12–27% de comissão do iFood no mesmo volume.
+    - **Achado técnico que sai reforçado por essa correção, não novo em si**:
+      como 20-30k+ pedidos/mês (~1.000/dia) passa a ser o caso comum, não
+      exceção, validar se a arquitetura atual do `dispatch-engine/` (processo
+      Node único, estado de despacho em memória, Postgres LISTEN/NOTIFY)
+      aguenta esse volume sustentado deixa de ser nice-to-have e vira
+      pré-requisito antes de vender o plano híbrido em escala — nunca testado
+      de carga real nesse patamar.
 
 ## Pendências reais no momento
 - [ ] **OSRM self-hospedado bloqueado por plano do Railway** (item 43,
@@ -2888,9 +2926,20 @@ C:\Users\Usuário\Projetos\giro certo
       usuários reais em sessão anterior (script avulso, não preservado), mas a entrega
       em si não está coberta em `tests/`. Não é urgente (mecanismo já confirmado
       confiável pra `tentativas_despacho`, mesmo código de canal), mas fica registrado.
-- [ ] Freelance multi-loja (mesma pessoa em 2+ tenants) não é suportado pelo schema
-      atual (`idx_entregadores_auth_user` é único) — decisão de produto em aberto, não
-      é bug.
+- [ ] **Freelance multi-loja (mesma pessoa em 2+ tenants) não é suportado pelo schema
+      atual** (`idx_entregadores_auth_user` é único) — antes era "decisão de produto em
+      aberto"; **não é mais em aberto** (item 50, 26-27/08/2026): o usuário confirmou
+      que entregador freelance atendendo várias lojas É o modelo de negócio pretendido
+      (tipo iFood), não uma hipótese. Continua sem trava de código nova — vira trabalho
+      de engenharia real (schema + RLS + motor de despacho) quando for priorizado, não
+      está mais em aberto se DEVE acontecer, só QUANDO.
+- [ ] **Validar capacidade do `dispatch-engine/` em volume real de loja estabelecida
+      (20.000–35.000+ pedidos/mês, ~1.000/dia)** — registrado no item 50 (estratégia de
+      precificação, 26-27/08/2026): esse volume é a norma pra loja estabelecida, não
+      exceção, então isso deixou de ser nice-to-have. Arquitetura atual (processo Node
+      único, estado de despacho em memória, Postgres LISTEN/NOTIFY) nunca foi testada
+      de carga real nesse patamar — só validada com o piloto pequeno (poucas lojas,
+      volume baixo).
 - [ ] `.env` local tem as credenciais do projeto Supabase hospedado
       (`ntmxkwzhumiqspxijuln`) — nunca comitar, já está no `.gitignore`.
 - [ ] 3 nits do `/ultrareview` de 14/08/2026 ficaram de fora desta rodada (só os 6
