@@ -372,9 +372,13 @@ async function carregarAprovacao(){
   const box = document.getElementById('aprovacaoBox');
   box.innerHTML = '<div class="empty">Carregando…</div>';
 
+  // item 52 (27/08/2026): verificação virou da PESSOA, não do vínculo por
+  // loja (documentos não se repetem por loja) — entregadores(tenants(nome))
+  // é 1:N agora (uma pessoa pode ter vínculo com mais de uma loja), mostra
+  // todas separadas por vírgula.
   const { data, error } = await supabaseClient
-    .from('entregadores')
-    .select('id, nome, tipo_veiculo, verificacao_enviada_em, tenants(nome)')
+    .from('pessoas_entregadoras')
+    .select('id, nome, tipo_veiculo, verificacao_enviada_em, entregadores(tenants(nome))')
     .eq('status_verificacao', 'em_avaliacao')
     .order('verificacao_enviada_em', { ascending: true });
 
@@ -383,10 +387,11 @@ async function carregarAprovacao(){
 
   let html = '<table><thead><tr><th>Nome</th><th>Veículo</th><th>Loja</th><th>Enviado em</th><th></th></tr></thead><tbody>';
   for(const e of data){
+    const lojas = (e.entregadores || []).map(v => v.tenants && v.tenants.nome).filter(Boolean).join(', ');
     html += `<tr>
       <td>${escapeHtml(e.nome)}</td>
       <td>${e.tipo_veiculo === 'moto' ? 'Moto' : 'Bicicleta'}</td>
-      <td>${escapeHtml(e.tenants ? e.tenants.nome : '—')}</td>
+      <td>${escapeHtml(lojas || '—')}</td>
       <td>${formatarDataHora(e.verificacao_enviada_em)}</td>
       <td>
         <div class="acoes">
@@ -419,7 +424,7 @@ async function confirmarAprovacao(){
   const btn = document.getElementById('apConfirmBtn');
   btn.disabled = true;
 
-  const { error } = await supabaseClient.rpc('aprovar_entregador_teste', { p_entregador_id: entregadorParaAprovar });
+  const { error } = await supabaseClient.rpc('aprovar_entregador_teste', { p_pessoa_id: entregadorParaAprovar });
 
   btn.disabled = false;
   if(error){
@@ -454,7 +459,7 @@ async function confirmarReprovacao(){
   btn.disabled = true;
 
   const { error } = await supabaseClient.rpc('reprovar_entregador_teste', {
-    p_entregador_id: entregadorParaReprovar,
+    p_pessoa_id: entregadorParaReprovar,
     p_motivo: motivo,
   });
 

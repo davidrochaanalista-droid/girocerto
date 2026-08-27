@@ -2751,6 +2751,177 @@ C:\Users\Usuário\Projetos\giro certo
       aguenta esse volume sustentado deixa de ser nice-to-have e vira
       pré-requisito antes de vender o plano híbrido em escala — nunca testado
       de carga real nesse patamar.
+51. **App do entregador — abas de Saque e Problema com o veículo** (26-27/08/2026,
+    pedido direto do usuário: "na tela do entregador tem que ter uma aba... saque,
+    informa problemas com a moto"). Duas features novas, testadas de ponta a ponta
+    no navegador contra o Supabase hospedado real (login de verdade, não simulado)
+    — ver `tests/COBERTURA.md` não atualizado ainda pra isso (só smoke test avulso
+    de sessão, seguindo o padrão já estabelecido de script no scratchpad, não
+    commitado).
+    - **Saque**: repasse de restaurante, ambiente SEPARADO do extrato de feira
+      (QR code pro cliente pagar, já existente) — esclarecido pelo usuário que são
+      dois fluxos de Pix distintos. Pix real não existe (achado antigo, ver
+      pendência "Integração real de Pix" abaixo) — "solicitar saque"
+      (`solicitar_saque()`, RPC `security definer`) só marca
+      `repasses.saque_solicitado_em`; a loja vê em painel-loja.html (aba
+      Entregadores, novo card "Solicitações de saque") e paga por fora usando
+      `entregadores.chave_pix` (já existia, nunca tinha UI nenhuma), depois marca
+      manualmente como pago.
+    - **Achado real corrigido no caminho**: `painel-loja.html` lia `repasses` em
+      `carregarRelatorios()` desde o item 35, mas nunca existiu policy de SELECT
+      pra loja nessa tabela — a query voltava 0 linhas em silêncio (mesma classe
+      de bug do bug_013/`alertas_seguranca`). `totalRepassado` nos Relatórios
+      estava sempre R$0,00 pra qualquer loja, sem erro visível. Corrigido com a
+      policy nova "loja ve repasses dos seus entregadores" (+ "loja marca
+      repasses como pagos" pro fluxo de saque).
+    - **Problema com o veículo**: novo tipo `problema_veiculo` em
+      `alertas_seguranca` (+ coluna `descricao`) — grava DIRETO via RLS existente
+      (a policy "entregador ve e atualiza seus alertas" é `FOR ALL` sem `WITH
+      CHECK` separado, então o Postgres já usa o mesmo `USING` pro INSERT — não
+      precisou de RPC nova nem policy nova). Testado que um entregador NÃO
+      consegue inserir alerta em nome de outro (spoof de `entregador_id`
+      bloqueado pela RLS). Aparece pra loja no mesmo banner de alertas já
+      existente (`legendaAlerta()`/`renderizarAlertasBanner()`, só ganhou um
+      `case` novo).
+    - **Decisão de escopo, pedida explicitamente ao usuário via pergunta**: SEM
+      redespacho automático nessa 1ª versão — só avisa a loja e o cliente, a loja
+      decide reembolsar ou reenviar. `rastrear_pedido_publico()` (rastreio
+      público, item 42) ganhou uma coluna `incidente_ativo boolean` — só o
+      booleano, nunca a `descricao` (texto livre do entregador) nem o tipo do
+      alerta, pra não vazar detalhe nenhum numa página sem autenticação. Testado
+      que a chave `descricao` realmente não aparece no retorno da RPC.
+    - Acesso no app: botão "💰 Saque" sempre visível em `view-turno`; "🔧
+      Problema com o veículo" em `view-turno` (dentro do turno ativo), no header
+      de `view-rota`/`view-entrega` e nos 2 mapas em tela cheia — pedido
+      explícito do usuário foi "isso é importante quando está em rota", por isso
+      o acesso está espalhado em todo lugar onde o entregador pode estar em
+      trânsito, não só na tela inicial.
+    - `db/schema.sql` é a fonte de verdade, aplicado no Supabase hospedado via
+      script Node/`pg` (mesmo padrão de sempre) — `alter table`/`drop+create
+      function` pra `rastrear_pedido_publico()` porque `create or replace` não
+      permite mudar o shape de `returns table(...)`. `supabase/migrations/`
+      re-sincronizado (estava desatualizado há várias sessões — 637 linhas de
+      diff só de acúmulo, não é regressão desta sessão).
+    - **Correção do usuário sobre o modelo de pagamento, importante pra quem
+      mexer nisso depois**: o fluxo "loja paga o Pix direto no cadastro do
+      entregador" só faz sentido pra `entregadores.tipo_vinculo = 'fixo'`
+      (relação exclusiva com 1 loja). Pra `'freelance'` (o modelo confirmado
+      como padrão no item 50 — entregador atende várias lojas) isso NÃO
+      escala: não dá pra depender de cada loja separada pagar Pix manualmente
+      pro mesmo entregador. O correto pra freelance é o modelo 99/Uber —
+      pagamento centralizado pela PLATAFORMA, não por cada "cliente"
+      individual. Isso hoje não é um bug no que foi construído porque o
+      schema atual não suporta MESMO entregador em 2+ tenants (a pendência já
+      documentada de "freelance multi-loja") — cada linha de `entregadores`
+      pertence a 1 tenant só, então "a loja paga direto" continua válido
+      enquanto essa limitação existir. Mas quando a pendência de freelance
+      multi-loja for resolvida, o modelo de saque construído aqui PRECISA ser
+      revisto junto — não dá pra só destravar o multi-tenant e deixar o
+      pagamento do jeito que está. Ver pendência atualizada abaixo.
+    - Nada commitado ainda.
+52. **Separação pessoa/vínculo — resolve "freelance multi-loja" de vez +
+    pool de despacho aberto pra freelance** (27/08/2026, correção direta do
+    usuário em cima do item 51: "temos que criar um sistema que identifica
+    cada loja que o entregador atendeu, e direciona pra um único lugar pra
+    pagamento"). Maior mudança de schema desta sessão — tocou quase todo
+    subsistema de entregador. Mapeamento de impacto feito via subagente
+    antes de tocar em qualquer coisa (schema, RLS, motor de despacho,
+    3 mockups).
+    - **Modelo novo**: `pessoas_entregadoras` (identidade única — documentos,
+      verificação, MFA via Supabase Auth nativo sem mudança, `chave_pix`,
+      `status`/`lat`/`lng` em tempo real — a pessoa só pode estar fazendo 1
+      coisa de cada vez, é global, não por loja) separada de `entregadores`,
+      que virou tabela de VÍNCULO por loja (`tenant_id`, `pessoa_id`,
+      `tipo_vinculo`). `idx_entregadores_auth_user` (o índice único que
+      travava 1 pessoa = 1 linha) foi removido; `pessoa_id` ganhou índice
+      único composto com `tenant_id`. Backfill dos dados existentes
+      reaproveitou o próprio `entregadores.id` como `pessoas_entregadoras.id`
+      (correlação exata, sem heurística por nome/data).
+    - **View de conveniência `entregadores_completo`** (`security_invoker =
+      true`) junta pessoa+vínculo pra toda leitura que antes fazia `select *
+      from entregadores` — usada pelo motor de despacho, painel-loja,
+      painel-admin, `rastrear_pedido_publico()`. Escritas continuam indo
+      direto pra `pessoas_entregadoras` ou `entregadores` conforme o campo.
+    - **Correção do usuário, 2ª rodada — mudou o modelo de despacho de
+      verdade**: a 1ª versão exigia vínculo pré-existente pra QUALQUER
+      despacho (inclusive freelance). Usuário corrigiu: freelance pega rota
+      de QUALQUER loja, não só de uma com vínculo — só FIXO fica preso à
+      própria loja. Implementado como **pool aberto**:
+      `buscar_candidatos_despacho(tenant_id)` (SQL) une (a) vínculo direto
+      (fixo ou freelance já vinculado) e (b) pool aberto — pessoa com turno
+      ativo, disponível, SEM nenhum vínculo `tipo_vinculo='fixo'` em lugar
+      nenhum (regra: ter 1 vínculo fixo em qualquer loja tira a pessoa do
+      pool aberto). `get_or_criar_vinculo_freelance()` cria o vínculo SÓ pro
+      candidato que efetivamente vence a escolha (não cria linha pra quem
+      nem foi chamado) — `rotas_entrega`/`repasses`/`tentativas_despacho`
+      etc. continuam todos referenciando `entregadores.id` normalmente, sem
+      mudança de FK em lugar nenhum.
+    - **"Turno" virou por PESSOA, não por vínculo** (2ª correção do usuário,
+      consequência direta da 1ª): se o freelance pega rota de qualquer loja
+      no mesmo turno, "turno" não podia continuar amarrado a 1
+      `entregadores.id` específico. `turnos.entregador_id` →
+      `turnos.pessoa_id`. `repasses` de lojas diferentes no mesmo turno já
+      são somados certo em `finalizarTurnoDeVerdade()` (a query só filtrava
+      por `turno_id`, nunca precisou de `entregador_id` — não precisou mudar).
+    - **Modo restaurante/feira/ambos** (3º pedido do usuário, mesma sessão):
+      `pessoas_entregadoras.modo_disponibilidade`, default `'ambos'`
+      (preserva comportamento atual pra quem não mexer). Seletor novo em
+      `view-turno` (só aparece pra quem tem `aceita_feira=true`), e os dois
+      motores de despacho (restaurante em `dispatch-engine/index.js`, feira
+      em `buscar_entregador_mais_proximo()`/`redespachar_apos_recusa_feira()`)
+      agora filtram por ele.
+    - **`solicitar_saque()` reescrita pra agregar TODAS as lojas da mesma
+      pessoa** — fecha o pedido original do usuário: 1 clique marca saque
+      pendente em repasses de qualquer vínculo daquela pessoa, não só da
+      loja atual. Testado com 2 lojas diferentes simultaneamente.
+    - **Achado real, corrigido na hora**: recursão infinita de RLS (mesma
+      classe já documentada várias vezes neste arquivo, Postgres 42P17) entre
+      `entregadores` e `pessoas_entregadoras` — a policy "loja ve pessoas dos
+      seus entregadores" fazia subselect cru em `entregadores`, cujas
+      próprias policies faziam subselect de volta em `pessoas_entregadoras`.
+      Corrigido com função `SECURITY DEFINER`
+      (`pessoas_dos_meus_entregadores()`), mesmo padrão de sempre. Todas as
+      policies de `turnos`/`entregadores` que faziam subselect cru também
+      foram trocadas por `minha_pessoa_id()`/`meus_entregador_ids()`
+      (`SECURITY DEFINER`) por consistência, não só as que causavam o ciclo.
+    - **Achado colateral, não corrigido de propósito (fora de escopo)**: o
+      fluxo de restaurante NUNCA atualizava `entregadores.lat/lng` (só a
+      feira fazia isso, via `atualizar_localizacao_entregador()`) — o motor
+      de despacho do restaurante sempre rankeou por distância usando
+      posição potencialmente desatualizada. Não é regressão desta sessão
+      (comportamento preservado exatamente como estava, só realocado pra
+      `pessoas_entregadoras.lat/lng`) — mas é uma lacuna real, vale investigar
+      numa sessão futura.
+    - **Decisão de escopo — módulo feira tocado no mínimo**: `aceita_feira`
+      continua em `entregadores` (vínculo), não foi movido pra pessoa —
+      simplificação deliberada porque o motor de despacho da feira não roda
+      em produção (pendência já documentada). As 3 funções feira que liam
+      `status`/`lat`/`lng`/`tipo_veiculo` direto de `entregadores`
+      (`buscar_entregador_mais_proximo()`, a busca dentro de
+      `aceitar_proposta_consolidacao()`/`recusar_proposta_consolidacao()`, e
+      `redespachar_apos_recusa_feira()`) ganharam o join pra
+      `pessoas_entregadoras`, mas a lógica de matching em si não foi
+      re-verificada de ponta a ponta (não está em produção pra justificar
+      esse esforço agora).
+    - **`painel-dev.html` (ferramenta interna, nunca deployada) NÃO foi
+      atualizado** — lê `entregadores.nome`/`status_verificacao` direto em 2
+      lugares, vai quebrar. Decisão consciente de escopo: é ferramenta local
+      do dev, não é produto, `painel-admin.html` (que FOI atualizado) é o
+      fluxo real de aprovação hoje.
+    - **Testado de ponta a ponta contra o Supabase hospedado real** (não
+      simulado) — 2 suítes avulsas de sessão (scratchpad, não commitadas,
+      padrão já estabelecido): 12 asserts cobrindo turno por pessoa, pool
+      aberto (freelance sem vínculo aparece, vínculo é criado só pro
+      vencedor, idempotente), fixo NUNCA aparece em loja alheia, saque
+      agregando 2 lojas, filtro de `modo_disponibilidade`; mais 7 asserts de
+      regressão confirmando que `rastrear_pedido_publico()` (item 51) e o
+      alerta de `problema_veiculo` continuam funcionando com o join novo via
+      pessoa. 19/19 passou.
+    - `db/schema.sql` sincronizado (bloco novo append no final, mesmo padrão
+      já usado pelo módulo feira — não reescreve os blocos originais de
+      `entregadores`/`turnos`, adiciona por cima). `supabase/migrations/`
+      re-sincronizado junto.
+    - Nada commitado ainda.
 
 ## Pendências reais no momento
 - [ ] **OSRM self-hospedado bloqueado por plano do Railway** (item 43,
@@ -2926,13 +3097,42 @@ C:\Users\Usuário\Projetos\giro certo
       usuários reais em sessão anterior (script avulso, não preservado), mas a entrega
       em si não está coberta em `tests/`. Não é urgente (mecanismo já confirmado
       confiável pra `tentativas_despacho`, mesmo código de canal), mas fica registrado.
-- [ ] **Freelance multi-loja (mesma pessoa em 2+ tenants) não é suportado pelo schema
-      atual** (`idx_entregadores_auth_user` é único) — antes era "decisão de produto em
-      aberto"; **não é mais em aberto** (item 50, 26-27/08/2026): o usuário confirmou
-      que entregador freelance atendendo várias lojas É o modelo de negócio pretendido
-      (tipo iFood), não uma hipótese. Continua sem trava de código nova — vira trabalho
-      de engenharia real (schema + RLS + motor de despacho) quando for priorizado, não
-      está mais em aberto se DEVE acontecer, só QUANDO.
+- [x] ~~Freelance multi-loja (mesma pessoa em 2+ tenants) não é suportado pelo schema
+      atual~~ — **resolvido estruturalmente no item 52 (27/08/2026)**: schema separado
+      em `pessoas_entregadoras` (identidade) + `entregadores` (vínculo por loja),
+      `idx_entregadores_auth_user` removido, pool de despacho aberto pro freelance
+      (não precisa mais de vínculo pré-existente pra receber oferta de qualquer loja),
+      `solicitar_saque()` agrega repasses de todas as lojas da mesma pessoa (fecha
+      também a implicação de pagamento que tinha ficado registrada aqui no item 51).
+      Testado 19/19 contra o banco real. O que ainda falta, ver pendências novas
+      abaixo: Fase 2 (limite de rotas simultâneas), painel-dev.html não atualizado,
+      feira não re-verificada de ponta a ponta, staleness de lat/lng no restaurante.
+- [ ] **Fase 2 do item 52 — limite de rotas simultâneas** (freelance até 3 ao mesmo
+      tempo, fixo com o limite que a loja definir — `entregadores.limite_rotas_simultaneas`
+      já existe na tabela, sem uso ainda). Fase 1 preservou o comportamento atual (1 rota
+      ativa por vez, via `status`) de propósito — decisão consciente de não misturar
+      "abrir o pool freelance" com "mudar quantas rotas cabem ao mesmo tempo" no mesmo
+      passo. Precisa de contador de capacidade de verdade no motor de despacho (contar
+      rotas ativas da pessoa, não só checar `status='disponivel'`).
+- [ ] `painel-dev.html` (ferramenta interna, nunca deployada) não foi atualizado no item
+      52 — lê `entregadores.nome`/`status_verificacao` direto em 2 lugares, quebrado
+      desde a separação pessoa/vínculo. Decisão consciente: não é produto,
+      `painel-admin.html` é o fluxo real de aprovação.
+- [ ] Módulo feira: as 3 funções de matching (`buscar_entregador_mais_proximo()`,
+      dentro de `aceitar_proposta_consolidacao()`/`recusar_proposta_consolidacao()`, e
+      `redespachar_apos_recusa_feira()`) ganharam o join pra `pessoas_entregadoras` no
+      item 52, mas a lógica de matching da feira em si NÃO foi re-testada de ponta a
+      ponta depois disso — consistente com a decisão já registrada de não investir mais
+      no módulo enquanto ele não roda em produção (pendência antiga, ver "motor de
+      despacho da feira não roda em lugar nenhum em produção").
+- [ ] **Staleness de `lat/lng` no despacho de restaurante** (achado do item 52, não é
+      regressão desta sessão) — `app-entregador.html` nunca atualizava
+      `entregadores.lat/lng` (agora `pessoas_entregadoras.lat/lng`) pro lado restaurante,
+      só a feira fazia isso via `atualizar_localizacao_entregador()`. O motor de despacho
+      do restaurante rankeia candidato por distância usando essa coluna — pode estar
+      desatualizada. Comportamento preservado exatamente como estava (só realocado),
+      mas vale investigar numa sessão futura se o ranking por distância está mesmo
+      funcionando com dado fresco.
 - [ ] **Validar capacidade do `dispatch-engine/` em volume real de loja estabelecida
       (20.000–35.000+ pedidos/mês, ~1.000/dia)** — registrado no item 50 (estratégia de
       precificação, 26-27/08/2026): esse volume é a norma pra loja estabelecida, não

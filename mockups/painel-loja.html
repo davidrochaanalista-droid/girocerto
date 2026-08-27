@@ -176,7 +176,7 @@
     <div class="sidebar">
       <div class="nav-item active" data-view="pedidos" onclick="trocarView('pedidos')">Pedidos</div>
       <div class="nav-item" data-view="operacional" onclick="trocarView('operacional')">Painel operacional</div>
-      <div class="nav-item" data-view="entregadores" onclick="trocarView('entregadores')">Entregadores</div>
+      <div class="nav-item" data-view="entregadores" onclick="abrirEntregadores()">Entregadores</div>
       <div class="nav-item" data-view="relatorios" onclick="abrirRelatorios()">Relatórios</div>
       <div class="nav-item" id="navIntegracoes" data-view="integracoes" onclick="abrirIntegracoes()" style="display:none;">Integrações</div>
       <div class="nav-item" data-view="seguranca" onclick="abrirViewSeguranca()">Segurança</div>
@@ -285,6 +285,17 @@
           <button class="action-btn" onclick="copiarLinkCadastroEntregador()">Copiar</button>
         </div>
       </div>
+
+      <!-- item 51 (26-27/08/2026): Pix real não existe — loja paga por
+      fora usando entregadores.chave_pix e marca aqui depois. -->
+      <div class="card" style="margin-bottom:18px;">
+        <div class="card-title" style="margin-bottom:8px;">Solicitações de saque</div>
+        <p style="color:var(--gray);font-size:13px;margin:0 0 10px;">
+          Pague pelo Pix cadastrado do entregador e clique em "Marcar como pago" — o GiroCerto não transfere o dinheiro sozinho.
+        </p>
+        <div id="solicitacoesSaqueBox"><div class="empty">Carregando…</div></div>
+      </div>
+
       <div class="empty">Lista de entregadores cadastrados ainda não foi construída.</div>
     </div>
     <div class="main mainview" id="mv-relatorios" style="display:none;">
@@ -509,7 +520,7 @@ function iniciarAtualizacoesAoVivo(){
 async function carregarAlertasSeguranca(){
   const { data, error } = await supabaseClient
     .from('alertas_seguranca')
-    .select('*, entregadores(nome)')
+    .select('*, entregadores(pessoas_entregadoras(nome))')
     .eq('status', 'aguardando_confirmacao')
     .order('criado_em', { ascending: false });
 
@@ -524,6 +535,10 @@ function legendaAlerta(a){
   if(a.tipo === 'motoboy_parado') return 'Motoboy parado sem se mexer';
   if(a.tipo === 'sos_manual') return 'SOS acionado manualmente';
   if(a.tipo === 'dispositivo_trocado') return 'Entregador logou de um aparelho diferente do habitual';
+  // item 51 (26-27/08/2026): descricao já vem com o rótulo do tipo (ex:
+  // "Pneu furado — furou perto da praça") escrito pelo próprio app do
+  // entregador — ver rotulos em enviarProblemaVeiculo() lá.
+  if(a.tipo === 'problema_veiculo') return a.descricao || 'Problema com o veículo';
   return a.tipo;
 }
 
@@ -536,7 +551,8 @@ function renderizarAlertasBanner(){
     <div class="alerta-item">
       <div>
         <span class="alerta-msg">⚠ ${escapeHtml(legendaAlerta(a))}</span>
-        <span class="alerta-meta">${escapeHtml(a.entregadores ? a.entregadores.nome : 'entregador')} · ${new Date(a.criado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</span>
+        <span class="alerta-meta">${escapeHtml(a.entregadores && a.entregadores.pessoas_entregadoras ? a.entregadores.pessoas_entregadoras.nome : 'entregador')} · ${new Date(a.criado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</span>
+        ${a.tipo === 'problema_veiculo' ? '<div class="alerta-meta" style="margin-top:2px;">Cliente já vê um aviso genérico na página de rastreio do pedido.</div>' : ''}
       </div>
       <div class="alerta-acoes">
         <button class="alerta-btn" onclick="resolverAlerta('${a.id}','confirmado_ok')">Confirmar OK</button>
@@ -725,6 +741,74 @@ function copiarLinkCadastroEntregador(){
   }).catch(() => {
     alert('Não deu pra copiar automaticamente — selecione o texto e copie manualmente (Ctrl+C).');
   });
+}
+
+// ------------------------------------------------------------
+// Solicitações de saque (item 51, 26-27/08/2026) — repasse de restaurante,
+// pago por fora (Pix real não existe) e marcado aqui manualmente.
+// ------------------------------------------------------------
+function abrirEntregadores(){
+  trocarView('entregadores');
+  carregarSolicitacoesSaque();
+}
+
+async function carregarSolicitacoesSaque(){
+  const box = document.getElementById('solicitacoesSaqueBox');
+  box.innerHTML = '<div class="empty">Carregando…</div>';
+
+  // item 52 (27/08/2026): nome/chave_pix são da pessoa agora — entregadores_completo já junta.
+  const { data: entregadoresDoTenant, error: erroEntregadores } = await supabaseClient
+    .from('entregadores_completo')
+    .select('id, nome, chave_pix')
+    .eq('tenant_id', tenantId);
+
+  if(erroEntregadores){ box.innerHTML = '<div class="empty">Não deu pra carregar.</div>'; return; }
+
+  const idsEntregadores = (entregadoresDoTenant || []).map(e => e.id);
+  if(!idsEntregadores.length){ box.innerHTML = '<div class="empty">Nenhum entregador cadastrado ainda.</div>'; return; }
+
+  const { data: repasses, error: erroRepasses } = await supabaseClient
+    .from('repasses')
+    .select('entregador_id, valor')
+    .eq('status', 'pendente')
+    .not('saque_solicitado_em', 'is', null)
+    .in('entregador_id', idsEntregadores);
+
+  if(erroRepasses){ box.innerHTML = '<div class="empty">Não deu pra carregar.</div>'; return; }
+
+  const totalPorEntregador = {};
+  (repasses || []).forEach(r => {
+    totalPorEntregador[r.entregador_id] = (totalPorEntregador[r.entregador_id] || 0) + Number(r.valor);
+  });
+
+  const idsComSolicitacao = Object.keys(totalPorEntregador);
+  if(!idsComSolicitacao.length){ box.innerHTML = '<div class="empty">Nenhuma solicitação de saque no momento.</div>'; return; }
+
+  box.innerHTML = idsComSolicitacao.map(id => {
+    const entregador = entregadoresDoTenant.find(e => e.id === id);
+    const nome = entregador ? entregador.nome : 'Entregador';
+    const chavePix = entregador && entregador.chave_pix;
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);">
+        <div>
+          <div style="font-weight:700;font-size:13.5px;">${escapeHtml(nome)} — R$ ${totalPorEntregador[id].toFixed(2).replace('.', ',')}</div>
+          <div style="font-size:12px;color:var(--gray);">${chavePix ? 'Pix: ' + escapeHtml(chavePix) : 'Sem chave Pix cadastrada — fale com o entregador'}</div>
+        </div>
+        <button class="action-btn" onclick="marcarRepassePago('${id}')">Marcar como pago</button>
+      </div>
+    `;
+  }).join('');
+}
+
+async function marcarRepassePago(entregadorId){
+  if(!confirm('Confirma que já pagou esse entregador pelo Pix? Isso marca os repasses pendentes dele como pagos.')) return;
+  const { error } = await supabaseClient
+    .from('repasses')
+    .update({ status: 'pago', pago_em: new Date().toISOString() })
+    .eq('entregador_id', entregadorId)
+    .eq('status', 'pendente');
+  if(error){ alert('Não deu pra marcar como pago: ' + error.message); return; }
+  carregarSolicitacoesSaque();
 }
 
 // ------------------------------------------------------------
@@ -1091,7 +1175,7 @@ async function carregarRotas(){
 
   const { data: rotas } = await supabaseClient
     .from('rotas_entrega')
-    .select('*, entregadores(nome), pedidos(endereco, forma_pagamento, valor_troco)')
+    .select('*, entregadores(pessoas_entregadoras(nome)), pedidos(endereco, forma_pagamento, valor_troco)')
     .eq('tenant_id', tenantId)
     .in('status', ['planejada','a_caminho_da_loja','em_entrega'])
     .order('criado_em', { ascending:false });
@@ -1118,7 +1202,7 @@ async function carregarRotas(){
           <span class="card-title">Rota</span>
           <span class="pill ${r.status}">${legendaStatusRota(r.status)}</span>
         </div>
-        <div class="card-meta">${escapeHtml(r.entregadores ? r.entregadores.nome : 'aguardando motoboy')} · código ${r.codigo_retirada}</div>
+        <div class="card-meta">${escapeHtml(r.entregadores && r.entregadores.pessoas_entregadoras ? r.entregadores.pessoas_entregadoras.nome : 'aguardando motoboy')} · código ${r.codigo_retirada}</div>
       </div>
       ${(r.pedidos||[]).map(p => `
         <div class="stop-line">
@@ -1130,10 +1214,18 @@ async function carregarRotas(){
 }
 
 async function carregarMotoboys(){
+  // item 52 (27/08/2026): nome/status são da pessoa agora; turnos também
+  // virou por pessoa (não dá pra usar embed aninhado via view — PostgREST
+  // não enxerga FK em cima de view — busca turnos ativos à parte e junta em JS).
   const { data: entregadores } = await supabaseClient
-    .from('entregadores')
-    .select('id, nome, status, turnos(status, iniciado_em)')
+    .from('entregadores_completo')
+    .select('id, pessoa_id, nome, status')
     .eq('tenant_id', tenantId);
+
+  const pessoaIds = (entregadores || []).map(e => e.pessoa_id);
+  const { data: turnosAtivos } = pessoaIds.length
+    ? await supabaseClient.from('turnos').select('pessoa_id, status, iniciado_em').eq('status', 'ativo').in('pessoa_id', pessoaIds)
+    : { data: [] };
 
   document.getElementById('statMotoboys').textContent =
     (entregadores || []).filter(e => e.status !== 'offline').length + ' / ' + (entregadores ? entregadores.length : 0);
@@ -1145,7 +1237,7 @@ async function carregarMotoboys(){
   }
 
   box.innerHTML = entregadores.map(e => {
-    const turnoAtivo = (e.turnos || []).find(t => t.status === 'ativo');
+    const turnoAtivo = (turnosAtivos || []).find(t => t.pessoa_id === e.pessoa_id);
     const posicao = posicoesPorEntregador[e.id]; // B2 — atualizado ao vivo via Realtime, sem precisar recarregar a página
     return `
     <div class="card">

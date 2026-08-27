@@ -94,6 +94,9 @@
     <div class="card">
       <div id="timelineBox"></div>
       <div id="canceladoBox" style="display:none;" class="status-cancelado">Este pedido foi cancelado.</div>
+      <div id="incidenteBox" style="display:none;background:var(--error-soft);color:var(--error);border-radius:12px;padding:12px 14px;margin-top:10px;font-size:13px;font-weight:600;">
+        ⚠ Houve um imprevisto com a entrega. A loja já foi avisada e vai entrar em contato.
+      </div>
 
       <div id="mapaBox" style="display:none;">
         <div id="mapaRastreio"></div>
@@ -275,6 +278,8 @@ async function carregarPedido(){
   timelineBox.style.display = 'block';
   canceladoBox.style.display = 'none';
   renderTimeline(p.status);
+
+  document.getElementById('incidenteBox').style.display = p.incidente_ativo ? 'block' : 'none';
 
   if (p.status === 'a_caminho' && p.entregador_lat != null){
     document.getElementById('entregadorTexto').textContent =

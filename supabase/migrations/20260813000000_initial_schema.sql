@@ -65,10 +65,19 @@ create table if not exists tenants (
   valor_por_km_adicional numeric(10,2) not null default 2.00, -- cobrado só sobre o que exceder o km_minimo_incluso
 
   -- raios de despacho (seção 33) — dois conceitos diferentes:
-  -- 1) distância pra CHAMAR o motoboy até a loja (além disso não compensa pra ele)
+  -- 1) distância pra CHAMAR o motoboy até a loja
   -- 2) distância máxima confortável da ENTREGA em si, da loja até o cliente
   raio_chamada_motoboy_km numeric(4,1) not null default 1.5,
   raio_maximo_entrega_km numeric(4,1) not null default 6.0,
+
+  -- item 36 (25/08/2026): teto da busca EXPANDIDA — se ninguém disponível
+  -- dentro de raio_chamada_motoboy_km, o motor de despacho procura de novo
+  -- até este raio maior antes de desistir. Motoboy chamado de fora do
+  -- perímetro normal recebe km adicional pela distância excedente (mesma
+  -- tarifa por km de valor_por_km_adicional, ver gerar_repasse_ao_entregar())
+  -- — antes disso o comentário acima dizia "além disso não compensa pra
+  -- ele", que deixou de ser verdade com essa mudança.
+  raio_chamada_maximo_km numeric(4,1) not null default 3.0,
 
   -- LGPD (seção 37) — carimbo de quando o proprietário aceitou os termos
   -- de tratamento de dados; sem isso não tem como provar consentimento
@@ -192,6 +201,17 @@ create table if not exists entregadores (
   -- pausar durante uma entrega em andamento (seção 33): não interrompe a
   -- rota atual, só impede receber a próxima assim que essa terminar
   pausar_apos_rota_atual boolean not null default false,
+
+  -- fingerprint de dispositivo (26/08/2026, análise de mercado GiroCerto vs
+  -- Mercado — item "agora" de segurança) — UUID gerado e persistido no
+  -- localStorage do próprio app-entregador.html, não é hardware ID de
+  -- verdade, mas já resolve boa parte do problema de conta emprestada/
+  -- compartilhada: quando o mesmo login aparece com um device_id diferente
+  -- do último conhecido, gera alerta_seguranca (tipo 'dispositivo_trocado')
+  -- pra loja revisar — nunca bloqueia sozinho, mesmo princípio de
+  -- confirmação humana já usado em desvio de rota/SOS.
+  device_id_atual text,
+  device_id_atualizado_em timestamptz,
 
   -- LGPD (seção 37/38)
   consentimento_lgpd_aceito_em timestamptz,
@@ -378,8 +398,15 @@ create table if not exists rotas_entrega (
 
   tempo_total_estimado_min integer,
   despachado_em timestamptz,   -- momento em que o motoboy foi efetivamente chamado
+  chegou_loja_em timestamptz,  -- motoboy chegou na loja (item 34, antes de retirar)
   iniciada_em timestamptz,     -- motoboy saiu da loja com os pedidos
   concluida_em timestamptz,
+  -- item 36 (25/08/2026): distância até a loja no momento em que essa rota
+  -- foi oferecida e aceita (copiada de tentativas_despacho.distancia_km
+  -- quando a tentativa vira 'aceito', ver tratarRespostaDespacho() em
+  -- dispatch-engine/index.js) — usado por gerar_repasse_ao_entregar() pra
+  -- pagar km adicional quando o motoboy veio de fora do raio_chamada_motoboy_km normal.
+  distancia_chamada_km numeric(6,2),
 
   -- código de retirada (seção 24): loja e motoboy veem o mesmo número;
   -- ele fala esse código na loja pra confirmar que é quem deveria pegar
@@ -449,7 +476,13 @@ create table if not exists tentativas_despacho (
   notificado_em timestamptz not null default now(),
   resultado text
     check (resultado in ('aceito', 'recusado', 'sem_resposta')),
-  respondido_em timestamptz
+  respondido_em timestamptz,
+  -- item 36 (25/08/2026): distância do entregador até a loja no momento da
+  -- oferta (calculada em buscarProximoCandidato(), dispatch-engine/index.js)
+  -- — persistida aqui pra, se essa tentativa for aceita, virar
+  -- rotas_entrega.distancia_chamada_km e alimentar o km adicional do
+  -- repasse. Null quando o tenant ainda não tem lat/lng (sem geofiltro).
+  distancia_km numeric(6,2)
 );
 
 create index if not exists idx_tentativas_despacho_rota
@@ -498,8 +531,19 @@ create table if not exists alertas_seguranca (
   -- humana dos outros dois tipos (nunca aciona 190 sozinho) — ver
   -- avaliar_alertas_seguranca_localizacao() na seção de SEGURANÇA mais
   -- abaixo, padrão adaptado do Torre (fleet-orchestrator)
-  tipo text not null check (tipo in ('desvio_rota', 'sos_manual', 'motoboy_parado')),
+  -- 'dispositivo_trocado' (26/08/2026, análise de mercado GiroCerto vs
+  -- Mercado): mesmo fluxo de confirmação humana dos outros tipos — nunca
+  -- bloqueia sozinho, só sinaliza troca de aparelho na mesma conta (sinal
+  -- barato de conta emprestada/compartilhada, ver entregadores.device_id_atual)
+  -- 'problema_veiculo' (item 51, 26-27/08/2026): entregador reporta
+  -- manualmente pane/acidente/etc em rota — direto do app (mesma policy
+  -- "entregador ve e atualiza seus alertas", FOR ALL sem WITH CHECK
+  -- separado já cobre o INSERT). Vai pro painel da loja (mesmo fluxo dos
+  -- outros tipos) E aparece pro cliente final em rastreio-pedido.html
+  -- (rastrear_pedido_publico()) como aviso genérico, sem expor descricao.
+  tipo text not null check (tipo in ('desvio_rota', 'sos_manual', 'motoboy_parado', 'dispositivo_trocado', 'problema_veiculo')),
   distancia_desvio_km numeric(6,2),
+  descricao text,  -- só usado por 'problema_veiculo' hoje: o que o entregador relatou (nunca exposto na página pública)
   status text not null default 'aguardando_confirmacao'
     check (status in ('aguardando_confirmacao', 'confirmado_ok', 'escalado_loja', 'acionado_190', 'falso_alarme')),
   criado_em timestamptz not null default now(),
@@ -508,6 +552,8 @@ create table if not exists alertas_seguranca (
 
 create index if not exists idx_alertas_seguranca_entregador
   on alertas_seguranca (entregador_id, status);
+create index if not exists idx_alertas_seguranca_rota
+  on alertas_seguranca (rota_id, tipo, status);
 
 -- ------------------------------------------------------------
 -- PEDIDOS: cada pedido a ser entregue
@@ -577,6 +623,7 @@ create table if not exists pedidos (
 
   criado_em timestamptz not null default now(),
   pronto_em timestamptz,
+  chegou_entrega_em timestamptz,  -- motoboy chegou no destino (item 34, antes de digitar o código)
   entregue_em timestamptz,
 
   -- protocolo de "não encontrei o cliente": true enquanto as tentativas de
@@ -672,10 +719,25 @@ create table if not exists comprovantes_entrega (
 );
 
 -- ------------------------------------------------------------
--- REPASSES: valor devido a cada entregador por pedido entregue,
--- pago via API de Pix do provedor da loja (seção 16) — status muda
--- pra 'pago' automaticamente quando a transferência é confirmada,
--- sem ação manual da loja por entregador
+-- REPASSES: valor devido a cada entregador por pedido entregue.
+-- Pensado originalmente pra pagamento automático via API de Pix do
+-- provedor da loja (seção 16) — nunca implementado (Pix segue decorativo
+-- em todo o projeto, ver CLAUDE.md). Item 51 (26-27/08/2026) adicionou o
+-- fluxo manual que existe HOJE: entregador solicita o saque
+-- (saque_solicitado_em) pelo app, loja vê a solicitação em
+-- painel-loja.html e paga por fora (usando entregadores.chave_pix), depois
+-- marca manualmente como 'pago' — status não muda mais sozinho até a
+-- integração de Pix real existir.
+--
+-- CORREÇÃO DE MODELO (item 51, achado do usuário): "loja paga o Pix direto
+-- pro entregador" só é o modelo certo pra entregadores.tipo_vinculo='fixo'
+-- (relação exclusiva com 1 loja). Freelance de verdade (o modelo padrão
+-- confirmado no item 50 — mesmo entregador atende várias lojas) precisa de
+-- pagamento CENTRALIZADO pela plataforma (modelo 99/Uber), não de cada loja
+-- pagando por fora. Isso não é bug hoje porque o schema ainda não suporta 1
+-- entregador em 2+ tenants (ver pendência "freelance multi-loja" no
+-- CLAUDE.md) — mas quando essa pendência for resolvida, o modelo de
+-- pagamento AQUI precisa ser revisto junto, não isoladamente.
 -- ------------------------------------------------------------
 create table if not exists repasses (
   id uuid primary key default gen_random_uuid(),
@@ -685,13 +747,120 @@ create table if not exists repasses (
   valor numeric(10,2) not null,
   status text not null default 'pendente'
     check (status in ('pendente', 'pago')),
-  pix_txid text,      -- identificador da transferência Pix enviada (confirmação da API)
+  pix_txid text,      -- identificador da transferência Pix enviada (confirmação da API) — nunca preenchido hoje, Pix não implementado
+  saque_solicitado_em timestamptz,  -- item 51: entregador pediu o saque desse repasse, ainda não pago
   pago_em timestamptz,
   criado_em timestamptz not null default now()
 );
 
 create index if not exists idx_repasses_entregador_status
   on repasses (entregador_id, status);
+
+-- ------------------------------------------------------------
+-- MOTOR DE REPASSE (item 35, 25/08/2026, ampliado no item 36) — tarifa
+-- mínima + espera excedente + km adicional de CHAMADA (distância do
+-- motoboy até a loja, quando veio de fora do raio normal — ver
+-- raio_chamada_maximo_km em tenants). NÃO inclui km adicional da
+-- ENTREGA em si (loja -> cliente): pedidos de restaurante guardam o
+-- endereço de entrega só como texto livre (sem latitude/longitude própria,
+-- diferente de pedido_grupo da feira), não tem como medir essa distância
+-- hoje sem adicionar geocodificação do endereço do cliente — segue de fora.
+--
+-- tarifa_minima é "por rota" (ver comentário na coluna, em tenants), não
+-- por pedido — dividida igualmente entre os pedidos da mesma rota pra não
+-- pagar em dobro/triplo numa rota com mais de 1 parada. Espera na loja
+-- (chegou_loja_em -> iniciada_em, nível de ROTA, compartilhada por todas as
+-- paradas) e km de chamada (idem, nível de rota) seguem a mesma divisão;
+-- espera no cliente (chegou_entrega_em -> entregue_em, item 34) é só do
+-- próprio pedido, sem divisão. BEFORE UPDATE (não AFTER) porque também
+-- grava pedidos.tempo_espera_min na mesma linha, além de inserir em
+-- repasses.
+--
+-- SECURITY DEFINER: quem dispara é sempre o UPDATE direto de
+-- confirmarEntrega() (client, sem RPC), rodando como o próprio entregador
+-- comum — repasses não tem NENHUMA policy de INSERT client-side de
+-- propósito (geração é 100% backend). Sem checagem de posse própria aqui
+-- porque o UPDATE que dispara o trigger já passou pela RLS de pedidos
+-- (policy "entregador atualiza status dos pedidos das suas rotas") — só
+-- quem já é dono da rota chega a esse ponto.
+create or replace function gerar_repasse_ao_entregar()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_rota record;
+  v_tenant record;
+  v_qtd_pedidos integer;
+  v_espera_loja_min numeric;
+  v_espera_cliente_min numeric;
+  v_espera_total_min numeric;
+  v_excedente_min numeric;
+  v_km_chamada_excedente numeric;
+  v_valor numeric;
+  v_turno_id uuid;
+begin
+  if new.status <> 'entregue' or old.status is not distinct from 'entregue' then
+    return new;
+  end if;
+
+  select * into v_rota from rotas_entrega where id = new.rota_id;
+  if v_rota.entregador_id is null then
+    return new;
+  end if;
+
+  select * into v_tenant from tenants where id = new.tenant_id;
+
+  select count(*) into v_qtd_pedidos from pedidos where rota_id = new.rota_id;
+  v_qtd_pedidos := greatest(v_qtd_pedidos, 1);
+
+  v_espera_loja_min := 0;
+  if v_rota.chegou_loja_em is not null and v_rota.iniciada_em is not null then
+    v_espera_loja_min := extract(epoch from (v_rota.iniciada_em - v_rota.chegou_loja_em)) / 60.0 / v_qtd_pedidos;
+  end if;
+
+  v_espera_cliente_min := 0;
+  if new.chegou_entrega_em is not null and new.entregue_em is not null then
+    v_espera_cliente_min := extract(epoch from (new.entregue_em - new.chegou_entrega_em)) / 60.0;
+  end if;
+
+  v_espera_total_min := v_espera_loja_min + v_espera_cliente_min;
+  new.tempo_espera_min := round(v_espera_total_min);
+
+  v_excedente_min := greatest(0, v_espera_total_min - coalesce(v_tenant.tempo_espera_tolerado_min, 0));
+
+  -- item 36 (25/08/2026): km adicional quando o motoboy foi chamado de fora
+  -- do raio_chamada_motoboy_km normal (busca expandida em
+  -- buscarProximoCandidato(), dispatch-engine/index.js) — distância de
+  -- CHAMADA (motoboy até a loja), não a distância da entrega em si (essa
+  -- não é medida hoje, endereço do cliente não é geocodificado, ver
+  -- comentário no início desta função). Nível de rota, dividido igualmente
+  -- entre os pedidos, mesma lógica de tarifa_minima/espera na loja acima.
+  v_km_chamada_excedente := greatest(0,
+    coalesce(v_rota.distancia_chamada_km, 0) - coalesce(v_tenant.raio_chamada_motoboy_km, 0)
+  ) / v_qtd_pedidos;
+
+  v_valor := coalesce(v_tenant.tarifa_minima, 0) / v_qtd_pedidos
+    + v_excedente_min * coalesce(v_tenant.valor_por_minuto_espera_excedente, 0)
+    + v_km_chamada_excedente * coalesce(v_tenant.valor_por_km_adicional, 0);
+  v_valor := round(v_valor, 2);
+  new.valor_entrega := v_valor;
+
+  select id into v_turno_id from turnos
+  where entregador_id = v_rota.entregador_id and status = 'ativo'
+  order by iniciado_em desc limit 1;
+
+  insert into repasses (entregador_id, pedido_id, turno_id, valor, status)
+  values (v_rota.entregador_id, new.id, v_turno_id, v_valor, 'pendente');
+
+  return new;
+end;
+$$;
+
+create trigger trg_gerar_repasse_ao_entregar
+before update on pedidos
+for each row execute function gerar_repasse_ao_entregar();
 
 -- ------------------------------------------------------------
 -- AVALIACOES_LOJA: o motoboy avalia a loja ao finalizar o turno
@@ -1085,6 +1254,26 @@ as $$
   where e.auth_user_id = auth.uid();
 $$;
 
+-- item 37 (25/08/2026): mesmo padrão de config_fadiga_do_meu_tenant() acima
+-- (função estreita, SECURITY DEFINER, só os campos que o app precisa) —
+-- usuário notou que não tinha nenhum jeito de navegar até a loja no app.
+-- GiroCerto não traça mapa próprio (decisão de produto documentada na
+-- coluna entregadores.app_navegacao_preferido: navegação turn-by-turn fica
+-- por deep link pro Waze/Google Maps, que aceita endereço em texto puro,
+-- sem precisar geocodificar nada aqui).
+create or replace function endereco_loja_do_meu_tenant()
+returns table(endereco_loja text)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select t.endereco_loja
+  from tenants t
+  join entregadores e on e.tenant_id = t.id
+  where e.auth_user_id = auth.uid();
+$$;
+
 -- ------------------------------------------------------------
 -- Pausar/retomar turno preservando o status anterior (fix do achado do item
 -- 10 — ver comentário em entregadores.status_antes_pausa). Funções em vez de
@@ -1121,10 +1310,62 @@ $$;
 -- mesmo instante (ex: uma segunda oferta sendo processada). Uma função só,
 -- WHERE escopado pelo dono da rota via join com entregadores.
 -- ------------------------------------------------------------
+-- item 34 (25/08/2026): enfileira 1 notificação pro cliente do restaurante
+-- (telefone puxado do próprio pedido, nunca do chamador — evita spoofing).
+-- SECURITY DEFINER porque quem chama (confirmar_retirada_rota, abaixo) roda
+-- como o entregador comum, e notificacao_restaurante não tem policy de
+-- INSERT pra ninguém — mas se autoriza por conta própria (mesmo padrão de
+-- aprovar_entregador_teste()): exposta como RPC pública, então não pode
+-- confiar que quem chama já validou a posse antes.
+create or replace function enfileirar_notificacao_restaurante(
+  p_pedido_id uuid, p_evento text, p_payload jsonb default '{}'
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not exists (
+    select 1 from pedidos p
+    join rotas_entrega r on r.id = p.rota_id
+    join entregadores e on e.id = r.entregador_id
+    where p.id = p_pedido_id and e.auth_user_id = auth.uid()
+  ) then
+    raise exception 'acesso negado' using errcode = '42501';
+  end if;
+
+  insert into notificacao_restaurante (pedido_id, telefone, evento, payload)
+  select p_pedido_id, cliente_telefone, p_evento, p_payload
+  from pedidos
+  where id = p_pedido_id and cliente_telefone is not null and cliente_telefone <> '';
+end;
+$$;
+
+-- item 34 (25/08/2026): "cheguei na loja" — passo novo ANTES de confirmar
+-- retirada, pedido explícito do usuário testando o fluxo de ponta a ponta.
+-- Idempotente (só seta a primeira vez) e não muda rotas_entrega.status —
+-- é só um timestamp informativo pra UI saber qual botão mostrar.
+create or replace function confirmar_chegada_loja(p_rota_id uuid)
+returns void
+language plpgsql
+as $$
+begin
+  update rotas_entrega
+  set chegou_loja_em = now()
+  where id = p_rota_id
+    and status = 'a_caminho_da_loja'
+    and chegou_loja_em is null
+    and entregador_id in (select id from entregadores where auth_user_id = auth.uid());
+end;
+$$;
+
 create or replace function confirmar_retirada_rota(p_rota_id uuid)
 returns void
 language plpgsql
 as $$
+declare
+  v_pedido record;
 begin
   update rotas_entrega
   set status = 'em_entrega', iniciada_em = now()
@@ -1136,6 +1377,93 @@ begin
   set status = 'em_rota'
   where auth_user_id = auth.uid()
     and id in (select entregador_id from rotas_entrega where id = p_rota_id);
+
+  -- achado real (25/08/2026, teste de ponta a ponta via painel-loja.html):
+  -- pedidos.status tem 'a_caminho' definido no schema desde sempre ("motoboy
+  -- pegou e está entregando") e painel-loja.html já sabe exibir esse rótulo
+  -- — mas nada nunca escrevia esse valor. A loja via "Pronto" a entrega
+  -- inteira, sem diferenciar "esperando retirada" de "já saiu com o
+  -- motoboy". Mesma checagem de posse do UPDATE de rotas_entrega acima
+  -- (rota_id tem que pertencer a um entregador_id do próprio auth.uid()) —
+  -- sem isso, um entregador poderia chamar essa RPC com o p_rota_id de
+  -- OUTRO entregador e ainda assim mexer no pedidos.status alheio, mesmo
+  -- os dois UPDATEs acima corretamente não fazendo nada nesse caso.
+  --
+  -- select ... for update em vez de um UPDATE só, porque também precisa
+  -- disparar 1 notificação POR PEDIDO da rota (rota multi-parada existe,
+  -- ver "4 pedidos numa rota com ordem_na_rota 1..4" nos testes) — o
+  -- WHERE já garante posse (mesma sub-select de sempre).
+  for v_pedido in
+    update pedidos
+    set status = 'a_caminho'
+    where rota_id = p_rota_id
+      and status = 'pronto'
+      and rota_id in (
+        select id from rotas_entrega
+        where entregador_id in (select id from entregadores where auth_user_id = auth.uid())
+      )
+    returning id, codigo_entrega
+  loop
+    perform enfileirar_notificacao_restaurante(
+      v_pedido.id, 'saiu_para_entrega',
+      jsonb_build_object('codigo_entrega', v_pedido.codigo_entrega)
+    );
+  end loop;
+end;
+$$;
+
+-- item 51 (26-27/08/2026): "solicitar saque" — entregador pede pra loja
+-- pagar os repasses pendentes (Pix real não existe ainda, então isso só
+-- marca a solicitação; a loja vê em painel-loja.html e paga por fora,
+-- depois marca como pago). SECURITY DEFINER porque repasses não tem
+-- NENHUMA policy de UPDATE pro entregador de propósito (é dado financeiro
+-- — não dá pra deixar o entregador mexer em `valor`/`status`/`pix_txid`
+-- via RLS de linha, só essa coluna específica através da RPC), mesmo
+-- raciocínio de enfileirar_notificacao_restaurante() logo acima.
+create or replace function solicitar_saque()
+returns int
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_entregador_id uuid;
+  v_linhas int;
+begin
+  select id into v_entregador_id from entregadores where auth_user_id = auth.uid();
+  if v_entregador_id is null then
+    raise exception 'acesso negado' using errcode = '42501';
+  end if;
+
+  update repasses
+  set saque_solicitado_em = now()
+  where entregador_id = v_entregador_id
+    and status = 'pendente'
+    and saque_solicitado_em is null;
+
+  get diagnostics v_linhas = row_count;
+  return v_linhas;
+end;
+$$;
+
+-- item 34 (25/08/2026): "cheguei no local de entrega" — passo novo ANTES de
+-- digitar o código, mesmo princípio de confirmar_chegada_loja() acima, só
+-- que por PEDIDO (não por rota) — rota multi-parada, cada parada chega em
+-- momento diferente.
+create or replace function confirmar_chegada_entrega(p_pedido_id uuid)
+returns void
+language plpgsql
+as $$
+begin
+  update pedidos
+  set chegou_entrega_em = now()
+  where id = p_pedido_id
+    and status = 'a_caminho'
+    and chegou_entrega_em is null
+    and rota_id in (
+      select id from rotas_entrega
+      where entregador_id in (select id from entregadores where auth_user_id = auth.uid())
+    );
 end;
 $$;
 
@@ -1436,11 +1764,19 @@ create policy "entregador ve pedidos das suas rotas" on pedidos for select using
 -- não introduz recursão nova porque a função não consulta pedidos.
 create policy "entregador ve pedido de tentativa pendente" on pedidos for select using (
   rota_id in (select rotas_com_tentativa_para_mim()));
-create policy "entregador confirma entrega das suas rotas" on pedidos for update using (
+-- achado real (25/08/2026, teste de ponta a ponta): a policy original só
+-- previa o UPDATE de confirmarEntrega() (status='entregue') — quando
+-- confirmar_retirada_rota() passou a também setar pedidos.status='a_caminho'
+-- (item 33), essa policy bloqueou com "new row violates row-level security
+-- policy", porque a RPC roda como SECURITY INVOKER (o próprio entregador,
+-- sujeito a RLS normal). Ampliada pra cobrir as duas transições legítimas
+-- que o entregador faz no ciclo de vida do pedido, mesma regra de posse de
+-- sempre (rota_id tem que ser de uma rota do próprio auth.uid()).
+create policy "entregador atualiza status dos pedidos das suas rotas" on pedidos for update using (
   rota_id in (select id from rotas_entrega where entregador_id in
     (select id from entregadores where auth_user_id = auth.uid()))
 ) with check (
-  status = 'entregue'
+  status in ('a_caminho', 'entregue')
   and rota_id in (select id from rotas_entrega where entregador_id in
     (select id from entregadores where auth_user_id = auth.uid()))
 );
@@ -1475,6 +1811,20 @@ create policy "loja ve entregadores do seu tenant" on entregadores for select us
 -- repasses: só o próprio entregador vê os seus
 create policy "entregador ve seus proprios repasses" on repasses for select using (
   entregador_id in (select id from entregadores where auth_user_id = auth.uid()));
+-- item 51 (26-27/08/2026), achado real: painel-loja.html já lia repasses em
+-- carregarRelatorios() desde o item 35, mas nunca existiu policy de SELECT
+-- pra loja — a query voltava sempre 0 linhas em silêncio (mesma classe de
+-- bug já documentada em "loja resolve alertas dos seus entregadores",
+-- bug_013). Corrigido aqui, e é pré-requisito pra loja ver solicitações de
+-- saque também.
+create policy "loja ve repasses dos seus entregadores" on repasses for select using (
+  entregador_id in (select id from entregadores where tenant_id in
+    (select minhas_tenant_ids())));
+-- loja marca como pago depois de transferir o Pix por fora (chave em
+-- entregadores.chave_pix) — não é automático, Pix real não está integrado.
+create policy "loja marca repasses como pagos" on repasses for update using (
+  entregador_id in (select id from entregadores where tenant_id in
+    (select minhas_tenant_ids())));
 
 -- tenants: qualquer usuário autenticado pode criar um tenant novo no cadastro
 -- (ainda não existe usuarios_loja vinculado nesse momento — o vínculo vem
@@ -2258,17 +2608,38 @@ create trigger trg_avaliar_alertas_seguranca_localizacao
 -- ver dispatch-engine/, hospedado no Railway) — essas duas triggers são só
 -- o "campainha": avisam o backend via LISTEN/NOTIFY (testado e confirmado
 -- confiável contra a conexão direta do Supabase hospedado, não o pooler
--- transacional — ver CLAUDE.md) que algo mudou e precisa de ação. Nenhuma
--- das duas é SECURITY DEFINER porque pg_notify() não exige privilégio
--- elevado nenhum — dispara com o privilégio de quem já fez o UPDATE.
+-- transacional — ver CLAUDE.md) que algo mudou e precisa de ação.
+--
+-- ACHADO REAL (24/08/2026): a suíte de testes roda contra esse mesmo banco
+-- hospedado (não existe banco de teste separado) — sem esse filtro, o
+-- motor de PRODUÇÃO real (Railway) recebia o NOTIFY de pedido de TESTE
+-- junto com o dispatch-engine que o próprio teste sobe como child process,
+-- e os dois competiam pelo mesmo pedido (2 ofertas simultâneas, failover
+-- incerto, checagem de duplicata capturando estado já mexido pela outra
+-- sessão). Por isso agora SÃO SECURITY DEFINER: precisam ler tenants (e,
+-- pra resposta de despacho, rotas_entrega) pra decidir se é tenant de
+-- teste, com garantia de leitura independente da RLS de quem fez o UPDATE
+-- (ex: o próprio entregador respondendo a tentativa, cuja RLS não
+-- necessariamente cobre a leitura de tenants de terceiros). Pedido/tentativa
+-- de tenant de teste nunca gera pg_notify — o motor de produção nunca vê
+-- pedido de teste. Os TESTES, que dependiam do NOTIFY real pra acordar o
+-- dispatch-engine que eles mesmos spawnam, passaram a chamar a função de
+-- despacho diretamente (ver dispatch-engine/index.js, processarPedidoPronto
+-- exportado, e tests/despacho_motor.test.js).
 -- ==============================================================
 
 create or replace function notificar_pedido_pronto()
 returns trigger
 language plpgsql
+security definer
+set search_path = public, pg_temp
 as $$
 begin
-  perform pg_notify('pedido_pronto', new.id::text);
+  if not exists (
+    select 1 from tenants where id = new.tenant_id and is_teste = true
+  ) then
+    perform pg_notify('pedido_pronto', new.id::text);
+  end if;
   return new;
 end;
 $$;
@@ -2282,10 +2653,18 @@ create trigger trg_notificar_pedido_pronto
 create or replace function notificar_resposta_despacho()
 returns trigger
 language plpgsql
+security definer
+set search_path = public, pg_temp
 as $$
 begin
   if new.resultado is not null and new.resultado is distinct from old.resultado then
-    perform pg_notify('tentativa_despacho_respondida', new.id::text);
+    if not exists (
+      select 1 from rotas_entrega r
+      join tenants t on t.id = r.tenant_id
+      where r.id = new.rota_id and t.is_teste = true
+    ) then
+      perform pg_notify('tentativa_despacho_respondida', new.id::text);
+    end if;
   end if;
   return new;
 end;
@@ -2772,6 +3151,31 @@ create table if not exists notificacao (
   created_at timestamptz default now(),
   enviado_em timestamptz
 );
+
+-- ---------------------------------------------------------------------
+-- NOTIFICAÇÃO DO RESTAURANTE (item 34, 25/08/2026) — fila SEPARADA da
+-- `notificacao` acima de propósito: aquela é do módulo feira, endereçada
+-- por destinatario_tipo/destinatario_id (um "consumidor" com registro
+-- próprio e UUID). O cliente do restaurante não tem registro nenhum — só
+-- `pedidos.cliente_nome`/`cliente_telefone` em texto livre — não dá pra
+-- forçar no mesmo formato sem inventar um destinatario_id falso. Mesmo
+-- worker externo pode consumir as duas filas, só que essa aqui já vem
+-- com o telefone pronto, sem precisar resolver destinatario_id->telefone.
+-- ---------------------------------------------------------------------
+create table if not exists notificacao_restaurante (
+  id uuid primary key default gen_random_uuid(),
+  pedido_id uuid not null references pedidos(id) on delete cascade,
+  telefone text not null,
+  evento text not null,
+  payload jsonb not null default '{}',
+  status text not null default 'pendente' check (status in ('pendente','enviado','falhou')),
+  criado_em timestamptz not null default now(),
+  enviado_em timestamptz
+);
+create index if not exists idx_notificacao_restaurante_pedido
+  on notificacao_restaurante (pedido_id);
+create index if not exists idx_notificacao_restaurante_pendente
+  on notificacao_restaurante (criado_em) where status = 'pendente';
 
 create table if not exists notificacao_proximidade_config (
   id int primary key default 1,
@@ -3371,6 +3775,15 @@ create trigger trg_atualizar_peso_total_rota
 after insert or delete on entrega_rota_grupo
 for each row execute function atualizar_peso_total_rota();
 
+-- item 41 (25/08/2026): achado ao vivo, testando o painel-feirante.html
+-- pela primeira vez — "Marcar como pronto" quebrava com "new row violates
+-- row-level security policy for table 'pedido_nota'". Essa função roda
+-- DENTRO da transação de UPDATE que o feirante dispara (trigger BEFORE em
+-- pedido), então sem SECURITY DEFINER ela herda a RLS do próprio
+-- feirante — e pedido_nota não tem NENHUMA policy de INSERT pra ninguém
+-- (só "feirante ve nota dos seus pedidos", SELECT). Mesmo padrão de fix já
+-- aplicado várias vezes nesta sessão pra RPCs (aprovar_entregador_teste(),
+-- enfileirar_notificacao_restaurante()), agora numa trigger function.
 create or replace function gerar_nota_pedido()
 returns trigger as $$
 declare
@@ -3407,7 +3820,7 @@ begin
   end if;
   return new;
 end;
-$$ language plpgsql;
+$$ language plpgsql security definer set search_path = public, pg_temp;
 
 drop trigger if exists trg_gerar_nota on pedido;
 create trigger trg_gerar_nota
@@ -3736,6 +4149,25 @@ as $$
   select id from estabelecimentos where auth_user_id = auth.uid();
 $$;
 
+-- item 41 (25/08/2026): achado ao vivo, testando painel-feirante.html —
+-- "infinite recursion detected in policy for relation 'pedido'" (código
+-- 42P17). Causa: a policy de pedido_grupo abaixo fazia subquery direta em
+-- `pedido` — mas `pedido` já tem uma policy própria ("consumidor ve
+-- pedidos do seu grupo") que faz subquery em `pedido_grupo` — ciclo
+-- fechado entre as duas tabelas assim que a policy nova entrou. Função
+-- SECURITY DEFINER quebra o ciclo (roda com bypass de RLS por dentro,
+-- mesmo motivo de meu_estabelecimento_id() acima não recursar ao
+-- consultar estabelecimentos).
+create or replace function pedido_grupos_do_meu_estabelecimento()
+returns setof uuid
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select pedido_grupo_id from pedido where estabelecimento_id in (select meu_estabelecimento_id());
+$$;
+
 create or replace function meu_usuario_id()
 returns setof uuid
 language sql
@@ -3780,6 +4212,7 @@ alter table piso_regulatorio_config enable row level security;
 alter table oferta_recusada enable row level security;
 alter table entregador_flag_revisao enable row level security;
 alter table notificacao enable row level security;
+alter table notificacao_restaurante enable row level security;
 alter table notificacao_proximidade_config enable row level security;
 alter table notificacao_audio enable row level security;
 alter table avaliacao enable row level security;
@@ -3823,6 +4256,13 @@ create policy "usuario ve e edita seu proprio perfil" on usuarios for all using 
   auth_user_id = auth.uid());
 create policy "autenticado cria seu proprio perfil de usuario" on usuarios for insert with check (
   auth_user_id = auth.uid());
+-- item 41 (25/08/2026): mesmo achado da policy de pedido_grupo acima —
+-- feirante precisa ver nome/telefone do cliente dos PRÓPRIOS pedidos (pra
+-- separar o pedido certo, e falar com o cliente se precisar, ver
+-- clarificação do usuário: "cliente paga direto pro feirante via
+-- WhatsApp"). Sem policy nenhuma antes, o join sempre voltava null.
+create policy "feirante ve cliente dos seus pedidos" on usuarios for select using (
+  id in (select consumidor_id from pedido_grupo where id in (select pedido_grupos_do_meu_estabelecimento())));
 
 -- feirante_participacao / feirante_excecoes: feirante gerencia a própria
 create policy "feirante gerencia sua participacao" on feirante_participacao for all using (
@@ -3837,6 +4277,12 @@ create policy "consumidor cria seu pedido grupo" on pedido_grupo for insert with
   consumidor_id in (select meu_usuario_id()));
 create policy "entregador ve pedido grupo da sua rota" on pedido_grupo for select using (
   entregador_id in (select meu_entregador_id_feira()));
+-- item 41 (25/08/2026): achado ao vivo, testando painel-feirante.html —
+-- faltava o feirante conseguir ver o pedido_grupo (endereço/nome do
+-- cliente) dos PRÓPRIOS pedidos. Sem isso o join pedido->pedido_grupo
+-- sempre voltava null pro feirante, mesmo o pedido sendo dele.
+create policy "feirante ve pedido grupo dos seus pedidos" on pedido_grupo for select using (
+  id in (select pedido_grupos_do_meu_estabelecimento()));
 
 -- pedido: feirante vê/atualiza os do seu estabelecimento (confirma pagamento,
 -- finaliza separação); consumidor vê os do próprio grupo; entregador vê os
@@ -3997,6 +4443,14 @@ create policy "destinatario ve suas proprias notificacoes" on notificacao for se
   or (destinatario_tipo = 'entregador' and destinatario_id in (select meu_entregador_id_feira()))
 );
 
+-- notificacao_restaurante: só a loja do pedido em questão (visibilidade/
+-- debug — quem escreve é sempre enfileirar_notificacao_restaurante(),
+-- SECURITY DEFINER, não RLS de INSERT pra ninguém).
+create policy "loja ve notificacoes dos seus pedidos" on notificacao_restaurante for select using (
+  pedido_id in (select id from pedidos where tenant_id in
+    (select tenant_id from usuarios_loja where auth_user_id = auth.uid()))
+);
+
 -- avaliacao: quem avaliou e quem foi avaliado veem; só o autor cria a própria
 create policy "avaliador ve suas avaliacoes" on avaliacao for select using (
   (avaliador_tipo = 'consumidor' and avaliador_id in (select meu_usuario_id()))
@@ -4025,3 +4479,1407 @@ create policy "entregador cria avaliacao da sua rota" on avaliacao for insert wi
     where er.entregador_id in (select meu_entregador_id_feira())
   )
 );
+
+-- ------------------------------------------------------------
+-- ------------------------------------------------------------
+-- RATE LIMITING (26/08/2026, análise de mercado GiroCerto vs Mercado —
+-- item "agora" de segurança): PostgREST/Supabase não tem rate limit
+-- nativo em RPC customizada (confirmado — precisaria de Edge Function ou
+-- proxy na frente). Implementado direto no Postgres em vez disso: o
+-- PostgREST expõe o IP real do chamador via a GUC `request.headers`
+-- (`x-forwarded-for`, setado pelo proxy da Supabase a partir da conexão
+-- TCP de verdade — não é um header que o cliente possa forjar), suficiente
+-- pra um contador de janela fixa por IP sem precisar de infra nova. Fica
+-- mais saliente com rastrear_pedido_publico()/avaliar_entrega_publica()
+-- sendo chamadas SEM AUTENTICAÇÃO NENHUMA (role anon).
+-- ------------------------------------------------------------
+create table if not exists rate_limit_contador (
+  chave text not null,
+  janela timestamptz not null,
+  contador int not null default 1,
+  primary key (chave, janela)
+);
+
+create or replace function ip_do_chamador()
+returns text
+language sql
+stable
+set search_path = public, pg_temp
+as $$
+  select coalesce(
+    split_part((current_setting('request.headers', true)::json ->> 'x-forwarded-for'), ',', 1),
+    'desconhecido'
+  );
+$$;
+
+-- Janela fixa de 1 minuto por (nome da operação + IP). Limpa janelas
+-- velhas a cada chamada em vez de precisar de cron dedicado — mesmo
+-- princípio de "sem infra nova" do expurgo de localizacoes_entregador.
+create or replace function verificar_rate_limit(p_nome text, p_max_por_minuto int)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_chave text := p_nome || ':' || ip_do_chamador();
+  v_janela timestamptz := date_trunc('minute', now());
+  v_contador int;
+begin
+  insert into rate_limit_contador (chave, janela, contador)
+  values (v_chave, v_janela, 1)
+  on conflict (chave, janela) do update set contador = rate_limit_contador.contador + 1
+  returning contador into v_contador;
+
+  delete from rate_limit_contador where janela < now() - interval '10 minutes';
+
+  return v_contador <= p_max_por_minuto;
+end;
+$$;
+
+-- RASTREIO PÚBLICO (restaurante, seção 7) — link sem login enviado ao
+-- cliente por WhatsApp (pedidos.cliente_telefone já existia pra isso,
+-- nunca tinha sido usado). pedidos.id (gen_random_uuid(), aleatório de
+-- verdade) já serve de token — sem coluna nova, sem enumeração possível.
+-- RLS de "pedidos" não tem policy pra anon (bloqueia tudo por padrão);
+-- as 2 funções abaixo são SECURITY DEFINER pra bypassar isso de forma
+-- controlada, devolvendo só o que o dono do link precisa ver: nunca
+-- nome completo/telefone/CPF do entregador (só primeiro nome +
+-- veículo), nunca posição do entregador fora da janela em que ele está
+-- de fato a caminho, nunca dado de outro pedido (1 pedido por chamada,
+-- por id exato — sem listagem, sem paginação).
+-- ------------------------------------------------------------
+create or replace function rastrear_pedido_publico(p_pedido_id uuid)
+returns table(
+  status text,
+  nome_loja text,
+  endereco text,
+  destino_lat double precision,
+  destino_lng double precision,
+  criado_em timestamptz,
+  pronto_previsto_em timestamptz,
+  entregador_nome text,
+  entregador_veiculo text,
+  entregador_lat double precision,
+  entregador_lng double precision,
+  entregador_localizacao_atualizada_em timestamptz,
+  codigo_entrega text,
+  avaliacao_entrega smallint,
+  avaliacao_comentario text,
+  incidente_ativo boolean
+)
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not verificar_rate_limit('rastrear_pedido_publico', 30) then
+    raise exception 'Muitas tentativas — aguarde um momento e tente de novo.';
+  end if;
+
+  return query
+  select
+    p.status,
+    t.nome,
+    p.endereco,
+    p.lat,
+    p.lng,
+    p.criado_em,
+    p.pronto_previsto_em,
+    case when p.status = 'a_caminho' then split_part(e.nome, ' ', 1) end,
+    case when p.status = 'a_caminho' then e.tipo_veiculo end,
+    case when p.status = 'a_caminho' then e.lat end,
+    case when p.status = 'a_caminho' then e.lng end,
+    case when p.status = 'a_caminho' then e.localizacao_atualizada_em end,
+    case when p.status = 'a_caminho' then p.codigo_entrega end,
+    p.avaliacao_entrega,
+    p.avaliacao_comentario,
+    -- item 51 (26-27/08/2026): só o booleano — nunca a descricao (texto
+    -- livre do entregador) nem qual tipo de alerta, pra não vazar detalhe
+    -- nenhum numa página pública sem autenticação nenhuma.
+    exists(
+      select 1 from alertas_seguranca a
+      where a.rota_id = p.rota_id
+        and a.tipo = 'problema_veiculo'
+        and a.status in ('aguardando_confirmacao', 'escalado_loja')
+    )
+  from pedidos p
+  join tenants t on t.id = p.tenant_id
+  left join rotas_entrega r on r.id = p.rota_id
+  left join entregadores e on e.id = r.entregador_id
+  where p.id = p_pedido_id;
+end;
+$$;
+
+-- write-once (status='entregue' + avaliacao_entrega ainda null, checado
+-- pelo próprio UPDATE) — 2ª tentativa de avaliar não erra, só não afeta
+-- nenhuma linha (`found` volta false), mesmo princípio das claims
+-- atômicas já usadas em tratarRespostaDespacho()/confirmarEntrega().
+create or replace function avaliar_entrega_publica(p_pedido_id uuid, p_nota smallint, p_comentario text default null)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not verificar_rate_limit('avaliar_entrega_publica', 5) then
+    raise exception 'Muitas tentativas — aguarde um momento e tente de novo.';
+  end if;
+
+  if p_nota is null or p_nota < 1 or p_nota > 5 then
+    raise exception 'nota deve estar entre 1 e 5';
+  end if;
+
+  update pedidos
+  set avaliacao_entrega = p_nota,
+      avaliacao_comentario = p_comentario
+  where id = p_pedido_id
+    and status = 'entregue'
+    and avaliacao_entrega is null;
+
+  return found;
+end;
+$$;
+
+-- ==============================================================
+-- ITEM 52 (27/08/2026) — SEPARAÇÃO PESSOA/VÍNCULO + POOL FREELANCE ABERTO
+-- Ver CLAUDE.md item 52 pro contexto completo. Bloco único, aplicado nesta
+-- ordem exata contra o banco hospedado (mesmo padrão do módulo feira: não
+-- reescreve os blocos originais de entregadores/turnos acima, adiciona por
+-- cima via ALTER/DROP+CREATE — create or replace nas funções redefinidas
+-- mostra só a versão final).
+-- ==============================================================
+
+-- ==============================================================
+-- ITEM 52 (27/08/2026) — SEPARAÇÃO PESSOA / VÍNCULO
+-- ==============================================================
+
+create table if not exists pessoas_entregadoras (
+  id uuid primary key default gen_random_uuid(),
+  auth_user_id uuid references auth.users(id),
+  email text,
+  nome text not null,
+  telefone text,
+  status text not null default 'offline'
+    check (status in ('offline', 'disponivel', 'pausado', 'a_caminho_da_loja', 'em_rota', 'na_loja')),
+  status_antes_pausa text
+    check (status_antes_pausa is null or status_antes_pausa in ('offline', 'disponivel', 'a_caminho_da_loja', 'em_rota', 'na_loja')),
+  lat double precision,
+  lng double precision,
+  localizacao_atualizada_em timestamptz,
+  possui_maquininha boolean not null default false,
+  bloqueado_ate timestamptz,
+  pausar_apos_rota_atual boolean not null default false,
+  chave_pix text,
+  modo_disponibilidade text not null default 'ambos'
+    check (modo_disponibilidade in ('restaurante', 'feira', 'ambos')),
+  device_id_atual text,
+  device_id_atualizado_em timestamptz,
+  consentimento_lgpd_aceito_em timestamptz,
+  dados_anonimizados_em timestamptz,
+  app_navegacao_preferido text not null default 'waze'
+    check (app_navegacao_preferido in ('waze', 'google_maps')),
+  tipo_veiculo text not null default 'moto'
+    check (tipo_veiculo in ('moto', 'bicicleta')),
+  data_nascimento date,
+  cpf text,
+  rg_numero text,
+  endereco text,
+  numero_residencia text,
+  cep text,
+  cnh_numero text,
+  cnh_validade date,
+  cnh_foto_url text,
+  crlv_validade date,
+  crlv_foto_url text,
+  placa text,
+  comprovante_residencia_foto_url text,
+  cnh_alerta_enviado_em timestamptz,
+  crlv_alerta_enviado_em timestamptz,
+  foto_rg_url text,
+  foto_rg_segurando_url text,
+  foto_bicicleta_url text,
+  responsavel_nome text,
+  responsavel_documento_foto_url text,
+  status_verificacao text not null default 'em_avaliacao'
+    check (status_verificacao in ('em_avaliacao', 'aprovado', 'reprovado')),
+  motivo_reprovacao text
+    check (motivo_reprovacao in ('cnh_vencida', 'crlv_vencido', 'documento_ilegivel', 'informacao_divergente', 'outro')),
+  verificacao_enviada_em timestamptz,
+  verificacao_prazo_limite timestamptz,
+  aprovado_por uuid,
+  aprovado_em timestamptz,
+  is_teste boolean not null default false,
+  push_token text,
+  push_plataforma text check (push_plataforma in ('android', 'ios')),
+  criado_em timestamptz not null default now()
+);
+
+create unique index if not exists idx_pessoas_entregadoras_email
+  on pessoas_entregadoras (email) where email is not null;
+create unique index if not exists idx_pessoas_entregadoras_auth_user
+  on pessoas_entregadoras (auth_user_id) where auth_user_id is not null;
+create index if not exists idx_pessoas_entregadoras_status
+  on pessoas_entregadoras (status);
+create index if not exists idx_pessoas_entregadoras_status_verificacao
+  on pessoas_entregadoras (status_verificacao);
+create index if not exists idx_pessoas_entregadoras_veiculo_status
+  on pessoas_entregadoras (tipo_veiculo, status);
+
+alter table entregadores add column if not exists pessoa_id uuid references pessoas_entregadoras(id) on delete cascade;
+alter table entregadores add column if not exists limite_rotas_simultaneas integer;
+
+insert into pessoas_entregadoras (
+  id, auth_user_id, email, nome, telefone, status, status_antes_pausa, lat, lng,
+  localizacao_atualizada_em, possui_maquininha, bloqueado_ate, pausar_apos_rota_atual,
+  chave_pix, device_id_atual, device_id_atualizado_em, consentimento_lgpd_aceito_em,
+  dados_anonimizados_em, app_navegacao_preferido, tipo_veiculo, data_nascimento,
+  cpf, rg_numero, endereco, numero_residencia, cep, cnh_numero, cnh_validade,
+  cnh_foto_url, crlv_validade, crlv_foto_url, placa, comprovante_residencia_foto_url,
+  cnh_alerta_enviado_em, crlv_alerta_enviado_em, foto_rg_url, foto_rg_segurando_url,
+  foto_bicicleta_url, responsavel_nome, responsavel_documento_foto_url,
+  status_verificacao, motivo_reprovacao, verificacao_enviada_em, verificacao_prazo_limite,
+  aprovado_por, aprovado_em, is_teste, push_token, push_plataforma, criado_em
+)
+select
+  id, auth_user_id, email, nome, telefone, status, status_antes_pausa, lat, lng,
+  localizacao_atualizada_em, possui_maquininha, bloqueado_ate, pausar_apos_rota_atual,
+  chave_pix, device_id_atual, device_id_atualizado_em, consentimento_lgpd_aceito_em,
+  dados_anonimizados_em, app_navegacao_preferido, tipo_veiculo, data_nascimento,
+  cpf, rg_numero, endereco, numero_residencia, cep, cnh_numero, cnh_validade,
+  cnh_foto_url, crlv_validade, crlv_foto_url, placa, comprovante_residencia_foto_url,
+  cnh_alerta_enviado_em, crlv_alerta_enviado_em, foto_rg_url, foto_rg_segurando_url,
+  foto_bicicleta_url, responsavel_nome, responsavel_documento_foto_url,
+  status_verificacao, motivo_reprovacao, verificacao_enviada_em, verificacao_prazo_limite,
+  aprovado_por, aprovado_em, is_teste, push_token, push_plataforma, criado_em
+from entregadores
+where pessoa_id is null;
+
+update entregadores set pessoa_id = id where pessoa_id is null;
+alter table entregadores alter column pessoa_id set not null;
+
+create index if not exists idx_entregadores_pessoa on entregadores (pessoa_id);
+create unique index if not exists idx_entregadores_pessoa_tenant
+  on entregadores (pessoa_id, tenant_id) where tenant_id is not null;
+create unique index if not exists idx_entregadores_pessoa_feira_only
+  on entregadores (pessoa_id) where tenant_id is null;
+
+-- ------------------------------------------------------------
+-- DROPS PREPARATÓRIOS (dependências que travariam os DROP COLUMN abaixo:
+-- policies/views que referenciam as colunas na expressão compilada, mesmo
+-- dentro de subquery, geram dependência de catálogo real no Postgres)
+-- ------------------------------------------------------------
+drop view if exists entregadores_verificacao_vencida;
+drop view if exists entregadores_presenca;
+
+drop policy if exists "entregador ve pedidos das suas rotas" on pedidos;
+drop policy if exists "entregador atualiza status dos pedidos das suas rotas" on pedidos;
+drop policy if exists "entregador ve suas proprias rotas" on rotas_entrega;
+drop policy if exists "entregador atualiza suas proprias rotas" on rotas_entrega;
+drop policy if exists "entregador ve e edita seu cadastro" on entregadores;
+drop policy if exists "entregador cria seu proprio cadastro" on entregadores;
+drop policy if exists "entregador atualiza seu proprio cadastro" on entregadores;
+drop policy if exists "entregador ve seus proprios repasses" on repasses;
+drop policy if exists "entregador cria comprovante da propria entrega" on comprovantes_entrega;
+drop policy if exists "entregador ve e responde suas proprias tentativas" on tentativas_despacho;
+drop policy if exists "entregador ve seus proprios turnos" on turnos;
+drop policy if exists "entregador atualiza seus proprios turnos" on turnos;
+drop policy if exists "entregador deleta seus proprios turnos" on turnos;
+drop policy if exists "entregador inicia turno se nao estiver bloqueado" on turnos;
+drop policy if exists "entregador cria avaliacao da loja" on avaliacoes_loja;
+drop policy if exists "entregador ve e atualiza seus alertas" on alertas_seguranca;
+drop policy if exists "entregador gerencia sua propria localizacao" on localizacoes_entregador;
+
+drop trigger if exists trg_proteger_bloqueado_ate on entregadores;
+drop trigger if exists trg_impedir_autoaprovacao_entregador on entregadores;
+drop trigger if exists trg_resetar_alerta_documento on entregadores;
+
+drop index if exists idx_entregadores_email;
+drop index if exists idx_entregadores_auth_user;
+drop index if exists idx_entregadores_status_verificacao;
+drop index if exists idx_entregadores_tenant_status;
+drop index if exists idx_entregadores_veiculo;
+
+alter table entregadores
+  drop column if exists nome,
+  drop column if exists telefone,
+  drop column if exists status,
+  drop column if exists status_antes_pausa,
+  drop column if exists lat,
+  drop column if exists lng,
+  drop column if exists localizacao_atualizada_em,
+  drop column if exists possui_maquininha,
+  drop column if exists chave_pix,
+  drop column if exists bloqueado_ate,
+  drop column if exists pausar_apos_rota_atual,
+  drop column if exists device_id_atual,
+  drop column if exists device_id_atualizado_em,
+  drop column if exists consentimento_lgpd_aceito_em,
+  drop column if exists dados_anonimizados_em,
+  drop column if exists app_navegacao_preferido,
+  drop column if exists tipo_veiculo,
+  drop column if exists data_nascimento,
+  drop column if exists cpf,
+  drop column if exists rg_numero,
+  drop column if exists endereco,
+  drop column if exists numero_residencia,
+  drop column if exists cep,
+  drop column if exists cnh_numero,
+  drop column if exists cnh_validade,
+  drop column if exists cnh_foto_url,
+  drop column if exists crlv_validade,
+  drop column if exists crlv_foto_url,
+  drop column if exists placa,
+  drop column if exists comprovante_residencia_foto_url,
+  drop column if exists cnh_alerta_enviado_em,
+  drop column if exists crlv_alerta_enviado_em,
+  drop column if exists foto_rg_url,
+  drop column if exists foto_rg_segurando_url,
+  drop column if exists foto_bicicleta_url,
+  drop column if exists responsavel_nome,
+  drop column if exists responsavel_documento_foto_url,
+  drop column if exists status_verificacao,
+  drop column if exists motivo_reprovacao,
+  drop column if exists verificacao_enviada_em,
+  drop column if exists verificacao_prazo_limite,
+  drop column if exists aprovado_por,
+  drop column if exists aprovado_em,
+  drop column if exists is_teste,
+  drop column if exists push_token,
+  drop column if exists push_plataforma,
+  drop column if exists auth_user_id,
+  drop column if exists email;
+
+-- ------------------------------------------------------------
+-- VIEW DE CONVENIÊNCIA
+-- ------------------------------------------------------------
+create or replace view entregadores_completo
+with (security_invoker = true) as
+select
+  e.id, e.tenant_id, e.pessoa_id, e.tipo_vinculo, e.valor_fixo, e.periodicidade_fixo,
+  e.aceita_feira, e.limite_rotas_simultaneas, e.criado_em as vinculo_criado_em,
+  p.auth_user_id, p.email, p.nome, p.telefone, p.status, p.status_antes_pausa,
+  p.lat, p.lng, p.localizacao_atualizada_em, p.possui_maquininha, p.chave_pix,
+  p.bloqueado_ate, p.pausar_apos_rota_atual, p.modo_disponibilidade,
+  p.device_id_atual, p.device_id_atualizado_em,
+  p.consentimento_lgpd_aceito_em, p.dados_anonimizados_em, p.app_navegacao_preferido,
+  p.tipo_veiculo, p.data_nascimento, p.cpf, p.rg_numero, p.endereco, p.numero_residencia, p.cep,
+  p.cnh_numero, p.cnh_validade, p.cnh_foto_url, p.crlv_validade, p.crlv_foto_url, p.placa,
+  p.comprovante_residencia_foto_url, p.cnh_alerta_enviado_em, p.crlv_alerta_enviado_em,
+  p.foto_rg_url, p.foto_rg_segurando_url, p.foto_bicicleta_url, p.responsavel_nome,
+  p.responsavel_documento_foto_url, p.status_verificacao, p.motivo_reprovacao,
+  p.verificacao_enviada_em, p.verificacao_prazo_limite, p.aprovado_por, p.aprovado_em,
+  p.is_teste, p.push_token, p.push_plataforma, p.criado_em as pessoa_criado_em
+from entregadores e
+join pessoas_entregadoras p on p.id = e.pessoa_id;
+
+create or replace view entregadores_verificacao_vencida as
+select
+  e.id as entregador_id, e.tenant_id, e.nome, e.tipo_veiculo,
+  e.verificacao_enviada_em, e.verificacao_prazo_limite,
+  now() - e.verificacao_prazo_limite as tempo_vencido
+from entregadores_completo e
+where e.status_verificacao = 'em_avaliacao'
+  and e.verificacao_prazo_limite is not null
+  and e.verificacao_prazo_limite < now();
+
+create or replace view entregadores_presenca
+with (security_invoker = true) as
+select
+  e.id, e.tenant_id, e.nome, e.status, e.status_verificacao, e.is_teste,
+  le.ultima_posicao_em,
+  coalesce(le.ultima_posicao_em > now() - interval '3 minutes', false) as online
+from entregadores_completo e
+left join lateral (
+  select max(l.registrado_em) as ultima_posicao_em
+  from localizacoes_entregador l
+  where l.entregador_id = e.id
+) le on true;
+
+-- ------------------------------------------------------------
+-- HELPERS
+-- ------------------------------------------------------------
+create or replace function minha_pessoa_id()
+returns uuid
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select id from pessoas_entregadoras where auth_user_id = auth.uid();
+$$;
+
+create or replace function meus_entregador_ids()
+returns setof uuid
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select e.id from entregadores e
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where p.auth_user_id = auth.uid();
+$$;
+
+create or replace function solicitar_vinculo_loja(p_tenant_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_pessoa_id uuid;
+  v_entregador_id uuid;
+begin
+  select id into v_pessoa_id from pessoas_entregadoras where auth_user_id = auth.uid();
+  if v_pessoa_id is null then
+    raise exception 'nenhum cadastro de entregador encontrado pra este login' using errcode = '42501';
+  end if;
+
+  select id into v_entregador_id from entregadores where pessoa_id = v_pessoa_id and tenant_id = p_tenant_id;
+  if v_entregador_id is not null then
+    return v_entregador_id;
+  end if;
+
+  insert into entregadores (tenant_id, pessoa_id, tipo_vinculo)
+  values (p_tenant_id, v_pessoa_id, 'freelance')
+  returning id into v_entregador_id;
+
+  return v_entregador_id;
+end;
+$$;
+
+-- ------------------------------------------------------------
+-- RLS: recriação das policies dropadas + policies novas de pessoas_entregadoras
+-- ------------------------------------------------------------
+alter table pessoas_entregadoras enable row level security;
+
+create policy "pessoa ve e edita seu proprio cadastro" on pessoas_entregadoras for select using (
+  auth_user_id = auth.uid());
+create policy "pessoa cria seu proprio cadastro" on pessoas_entregadoras for insert with check (
+  auth_user_id = auth.uid());
+create policy "pessoa atualiza seu proprio cadastro" on pessoas_entregadoras for update using (
+  auth_user_id = auth.uid());
+create policy "loja ve pessoas dos seus entregadores" on pessoas_entregadoras for select using (
+  id in (select pessoa_id from entregadores where tenant_id in (select minhas_tenant_ids())));
+create policy "dev admin ve todas pessoas entregadoras" on pessoas_entregadoras for select using (
+  eh_desenvolvedor_admin());
+
+create policy "entregador ve pedidos das suas rotas" on pedidos for select using (
+  rota_id in (select id from rotas_entrega where entregador_id in (select meus_entregador_ids())));
+create policy "entregador atualiza status dos pedidos das suas rotas" on pedidos for update using (
+  rota_id in (select id from rotas_entrega where entregador_id in (select meus_entregador_ids()))
+) with check (
+  status in ('a_caminho', 'entregue')
+  and rota_id in (select id from rotas_entrega where entregador_id in (select meus_entregador_ids()))
+);
+
+create policy "entregador ve suas proprias rotas" on rotas_entrega for select using (
+  entregador_id in (select meus_entregador_ids()));
+create policy "entregador atualiza suas proprias rotas" on rotas_entrega for update using (
+  entregador_id in (select meus_entregador_ids()));
+
+create policy "entregador ve e edita seu cadastro" on entregadores for select using (
+  pessoa_id in (select id from pessoas_entregadoras where auth_user_id = auth.uid()));
+create policy "entregador cria seu proprio cadastro" on entregadores for insert with check (
+  pessoa_id in (select id from pessoas_entregadoras where auth_user_id = auth.uid()));
+create policy "entregador atualiza seu proprio cadastro" on entregadores for update using (
+  pessoa_id in (select id from pessoas_entregadoras where auth_user_id = auth.uid()));
+
+create policy "entregador ve seus proprios repasses" on repasses for select using (
+  entregador_id in (select meus_entregador_ids()));
+
+create policy "entregador cria comprovante da propria entrega" on comprovantes_entrega for insert with check (
+  pedido_id in (select p.id from pedidos p join rotas_entrega r on r.id = p.rota_id
+    where r.entregador_id in (select meus_entregador_ids())));
+
+create policy "entregador ve e responde suas proprias tentativas" on tentativas_despacho for all using (
+  entregador_id in (select meus_entregador_ids()));
+
+create policy "entregador ve seus proprios turnos" on turnos for select using (
+  entregador_id in (select meus_entregador_ids()));
+create policy "entregador atualiza seus proprios turnos" on turnos for update using (
+  entregador_id in (select meus_entregador_ids()));
+create policy "entregador deleta seus proprios turnos" on turnos for delete using (
+  entregador_id in (select meus_entregador_ids()));
+create policy "entregador inicia turno se nao estiver bloqueado" on turnos for insert with check (
+  entregador_id in (select meus_entregador_ids())
+  and not exists (
+    select 1 from entregadores e
+    join pessoas_entregadoras p on p.id = e.pessoa_id
+    where e.id = entregador_id and p.bloqueado_ate is not null and p.bloqueado_ate > now()
+  )
+);
+
+create policy "entregador cria avaliacao da loja" on avaliacoes_loja for insert with check (
+  entregador_id in (select meus_entregador_ids()));
+
+create policy "entregador ve e atualiza seus alertas" on alertas_seguranca for all using (
+  entregador_id in (select meus_entregador_ids()));
+
+create policy "entregador gerencia sua propria localizacao" on localizacoes_entregador for all using (
+  entregador_id in (select meus_entregador_ids()));
+
+-- ------------------------------------------------------------
+-- FUNÇÕES / TRIGGERS afetados pela migração de coluna
+-- ------------------------------------------------------------
+create or replace function pausar_entregador()
+returns void
+language sql
+as $$
+  update pessoas_entregadoras
+  set status_antes_pausa = status, status = 'pausado'
+  where auth_user_id = auth.uid() and status <> 'pausado';
+$$;
+
+create or replace function retomar_entregador()
+returns void
+language sql
+as $$
+  update pessoas_entregadoras
+  set status = coalesce(status_antes_pausa, 'disponivel'), status_antes_pausa = null
+  where auth_user_id = auth.uid() and status = 'pausado';
+$$;
+
+create or replace function enfileirar_notificacao_restaurante(
+  p_pedido_id uuid, p_evento text, p_payload jsonb default '{}'
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not exists (
+    select 1 from pedidos p
+    join rotas_entrega r on r.id = p.rota_id
+    where p.id = p_pedido_id and r.entregador_id in (select meus_entregador_ids())
+  ) then
+    raise exception 'acesso negado' using errcode = '42501';
+  end if;
+
+  insert into notificacao_restaurante (pedido_id, telefone, evento, payload)
+  select p_pedido_id, cliente_telefone, p_evento, p_payload
+  from pedidos
+  where id = p_pedido_id and cliente_telefone is not null and cliente_telefone <> '';
+end;
+$$;
+
+create or replace function confirmar_chegada_loja(p_rota_id uuid)
+returns void
+language plpgsql
+as $$
+begin
+  update rotas_entrega
+  set chegou_loja_em = now()
+  where id = p_rota_id
+    and status = 'a_caminho_da_loja'
+    and chegou_loja_em is null
+    and entregador_id in (select meus_entregador_ids());
+end;
+$$;
+
+create or replace function confirmar_retirada_rota(p_rota_id uuid)
+returns void
+language plpgsql
+as $$
+declare
+  v_pedido record;
+begin
+  update rotas_entrega
+  set status = 'em_entrega', iniciada_em = now()
+  where id = p_rota_id
+    and status = 'a_caminho_da_loja'
+    and entregador_id in (select meus_entregador_ids());
+
+  update pessoas_entregadoras
+  set status = 'em_rota'
+  where auth_user_id = auth.uid()
+    and id in (select pessoa_id from entregadores where id in (select entregador_id from rotas_entrega where id = p_rota_id));
+
+  for v_pedido in
+    update pedidos
+    set status = 'a_caminho'
+    where rota_id = p_rota_id
+      and status = 'pronto'
+      and rota_id in (select id from rotas_entrega where entregador_id in (select meus_entregador_ids()))
+    returning id, codigo_entrega
+  loop
+    perform enfileirar_notificacao_restaurante(
+      v_pedido.id, 'saiu_para_entrega',
+      jsonb_build_object('codigo_entrega', v_pedido.codigo_entrega)
+    );
+  end loop;
+end;
+$$;
+
+create or replace function confirmar_chegada_entrega(p_pedido_id uuid)
+returns void
+language plpgsql
+as $$
+begin
+  update pedidos
+  set chegou_entrega_em = now()
+  where id = p_pedido_id
+    and status = 'a_caminho'
+    and chegou_entrega_em is null
+    and rota_id in (select id from rotas_entrega where entregador_id in (select meus_entregador_ids()));
+end;
+$$;
+
+create or replace function rotas_com_tentativa_para_mim()
+returns setof uuid
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select rota_id from tentativas_despacho where entregador_id in (select meus_entregador_ids());
+$$;
+
+create or replace function config_fadiga_do_meu_tenant()
+returns table(horas_alerta_fadiga numeric, horas_descanso_obrigatorio numeric)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select t.horas_alerta_fadiga, t.horas_descanso_obrigatorio
+  from tenants t
+  join entregadores e on e.tenant_id = t.id
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where p.auth_user_id = auth.uid();
+$$;
+
+create or replace function endereco_loja_do_meu_tenant()
+returns table(endereco_loja text)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select t.endereco_loja
+  from tenants t
+  join entregadores e on e.tenant_id = t.id
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where p.auth_user_id = auth.uid();
+$$;
+
+create or replace function meu_entregador_id_feira()
+returns setof uuid
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select meus_entregador_ids();
+$$;
+
+-- item 51 (ajustado no item 52 pra agregar TODAS as lojas da mesma pessoa,
+-- não só um vínculo — essa é a mudança que fecha a correção do usuário
+-- sobre pagamento de freelance)
+create or replace function solicitar_saque()
+returns int
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_pessoa_id uuid;
+  v_linhas int;
+begin
+  select id into v_pessoa_id from pessoas_entregadoras where auth_user_id = auth.uid();
+  if v_pessoa_id is null then
+    raise exception 'acesso negado' using errcode = '42501';
+  end if;
+
+  update repasses
+  set saque_solicitado_em = now()
+  where status = 'pendente'
+    and saque_solicitado_em is null
+    and entregador_id in (select id from entregadores where pessoa_id = v_pessoa_id);
+
+  get diagnostics v_linhas = row_count;
+  return v_linhas;
+end;
+$$;
+
+drop function if exists aprovar_entregador_teste(uuid);
+create or replace function aprovar_entregador_teste(p_pessoa_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not eh_desenvolvedor_admin() then
+    raise exception 'acesso negado' using errcode = '42501';
+  end if;
+
+  update pessoas_entregadoras
+  set status_verificacao = 'aprovado', aprovado_em = now()
+  where id = p_pessoa_id and status_verificacao = 'em_avaliacao';
+end;
+$$;
+
+drop function if exists reprovar_entregador_teste(uuid, text);
+create or replace function reprovar_entregador_teste(p_pessoa_id uuid, p_motivo text)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not eh_desenvolvedor_admin() then
+    raise exception 'acesso negado' using errcode = '42501';
+  end if;
+
+  update pessoas_entregadoras
+  set status_verificacao = 'reprovado', motivo_reprovacao = p_motivo
+  where id = p_pessoa_id and status_verificacao = 'em_avaliacao';
+end;
+$$;
+
+create or replace function verificar_documentos_vencidos()
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_dias_aviso_previo constant integer := 15;
+begin
+  update pessoas_entregadoras
+  set status_verificacao = 'reprovado', motivo_reprovacao = 'cnh_vencida'
+  where tipo_veiculo = 'moto'
+    and cnh_validade is not null
+    and cnh_validade < current_date
+    and status_verificacao <> 'reprovado';
+
+  update pessoas_entregadoras
+  set status_verificacao = 'reprovado', motivo_reprovacao = 'crlv_vencido'
+  where tipo_veiculo = 'moto'
+    and crlv_validade is not null
+    and crlv_validade < current_date
+    and status_verificacao <> 'reprovado';
+
+  update pessoas_entregadoras
+  set cnh_alerta_enviado_em = now()
+  where tipo_veiculo = 'moto'
+    and cnh_validade is not null
+    and cnh_validade >= current_date
+    and cnh_validade <= current_date + v_dias_aviso_previo
+    and cnh_alerta_enviado_em is null
+    and status_verificacao <> 'reprovado';
+
+  update pessoas_entregadoras
+  set crlv_alerta_enviado_em = now()
+  where tipo_veiculo = 'moto'
+    and crlv_validade is not null
+    and crlv_validade >= current_date
+    and crlv_validade <= current_date + v_dias_aviso_previo
+    and crlv_alerta_enviado_em is null
+    and status_verificacao <> 'reprovado';
+end;
+$$;
+
+create or replace function resetar_alerta_documento_ao_renovar()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.cnh_validade is distinct from old.cnh_validade then
+    new.cnh_alerta_enviado_em := null;
+  end if;
+  if new.crlv_validade is distinct from old.crlv_validade then
+    new.crlv_alerta_enviado_em := null;
+  end if;
+  return new;
+end;
+$$;
+create trigger trg_resetar_alerta_documento
+  before update on pessoas_entregadoras
+  for each row execute function resetar_alerta_documento_ao_renovar();
+
+create or replace function proteger_bloqueado_ate()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.bloqueado_ate is not null and old.bloqueado_ate > now()
+     and new.bloqueado_ate is distinct from old.bloqueado_ate then
+    new.bloqueado_ate := old.bloqueado_ate;
+  end if;
+  return new;
+end;
+$$;
+create trigger trg_proteger_bloqueado_ate
+  before update on pessoas_entregadoras
+  for each row execute function proteger_bloqueado_ate();
+
+create or replace function impedir_autoaprovacao_entregador()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if eh_desenvolvedor_admin() or auth.uid() is null then
+    return new;
+  end if;
+
+  if new.status_verificacao is distinct from old.status_verificacao
+     or new.aprovado_por is distinct from old.aprovado_por
+     or new.aprovado_em is distinct from old.aprovado_em
+     or new.motivo_reprovacao is distinct from old.motivo_reprovacao then
+    raise exception 'entregador não pode alterar campos de aprovação do próprio cadastro' using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+create trigger trg_impedir_autoaprovacao_entregador
+  before update on pessoas_entregadoras
+  for each row execute function impedir_autoaprovacao_entregador();
+
+create or replace function proteger_reativacao_turno_bloqueado()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_bloqueado_ate timestamptz;
+begin
+  if new.status = 'ativo' and old.status is distinct from 'ativo' then
+    select p.bloqueado_ate into v_bloqueado_ate
+    from entregadores e join pessoas_entregadoras p on p.id = e.pessoa_id
+    where e.id = new.entregador_id;
+    if v_bloqueado_ate is not null and v_bloqueado_ate > now() then
+      raise exception 'Entregador está no período de descanso obrigatório até %', v_bloqueado_ate;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function concluir_rota_ao_entregar()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_entregador_id uuid;
+begin
+  if new.status = 'entregue' and old.status is distinct from 'entregue' and new.rota_id is not null then
+    update rotas_entrega
+    set status = 'concluida', concluida_em = now()
+    where id = new.rota_id and status <> 'concluida'
+    returning entregador_id into v_entregador_id;
+
+    if v_entregador_id is not null then
+      update pessoas_entregadoras
+      set status = 'disponivel'
+      where id = (select pessoa_id from entregadores where id = v_entregador_id)
+        and status <> 'pausado';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function limpar_metadata_apos_provisionamento()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if exists (select 1 from pessoas_entregadoras where auth_user_id = new.id)
+    or exists (select 1 from usuarios_loja where auth_user_id = new.id) then
+    update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
+  end if;
+  return new;
+end;
+$$;
+
+-- provisionar_cadastro_pos_signup(): ramo de entregador agora cria a
+-- PESSOA (identidade global) + o VÍNCULO com a loja do link ?loja= numa
+-- mesma transação (o próprio INSERT trigger já é atômico).
+create or replace function provisionar_cadastro_pos_signup()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  meta jsonb := new.raw_user_meta_data;
+  novo_tenant_id uuid;
+  v_pessoa_id uuid;
+begin
+  if meta ? 'tenant_id' then
+    insert into pessoas_entregadoras (
+      auth_user_id, email, nome, tipo_veiculo, data_nascimento,
+      endereco, numero_residencia, cep, chave_pix,
+      cpf, cnh_numero, cnh_validade, placa, crlv_validade,
+      rg_numero, responsavel_nome, is_teste,
+      verificacao_enviada_em, verificacao_prazo_limite, consentimento_lgpd_aceito_em
+    ) values (
+      new.id,
+      new.email,
+      meta->>'nome',
+      coalesce(nullif(meta->>'tipo_veiculo', ''), 'moto'),
+      nullif(meta->>'data_nascimento', '')::date,
+      meta->>'endereco',
+      meta->>'numero_residencia',
+      meta->>'cep',
+      meta->>'chave_pix',
+      meta->>'cpf',
+      meta->>'cnh_numero',
+      nullif(meta->>'cnh_validade', '')::date,
+      meta->>'placa',
+      nullif(meta->>'crlv_validade', '')::date,
+      meta->>'rg_numero',
+      meta->>'responsavel_nome',
+      coalesce((meta->>'is_teste')::boolean, false),
+      now(),
+      now() + interval '7 days',
+      now()
+    )
+    on conflict (auth_user_id) where auth_user_id is not null do nothing
+    returning id into v_pessoa_id;
+
+    if v_pessoa_id is null then
+      select id into v_pessoa_id from pessoas_entregadoras where auth_user_id = new.id;
+    end if;
+
+    insert into entregadores (tenant_id, pessoa_id, tipo_vinculo)
+    values ((meta->>'tenant_id')::uuid, v_pessoa_id, 'freelance')
+    on conflict (pessoa_id, tenant_id) where tenant_id is not null do nothing;
+
+    update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
+
+  elsif meta ? 'nome' then
+    novo_tenant_id := gen_random_uuid();
+    insert into tenants (
+      id, nome, proprietario_nome, proprietario_cpf, proprietario_data_nascimento,
+      proprietario_endereco, proprietario_numero_endereco, proprietario_cep,
+      cnpj, endereco_loja, numero_loja, cep_loja, segmento,
+      tempo_preparo_padrao_min, chave_pix, is_teste, consentimento_lgpd_aceito_em
+    ) values (
+      novo_tenant_id,
+      meta->>'nome',
+      meta->>'proprietario_nome',
+      meta->>'proprietario_cpf',
+      nullif(meta->>'proprietario_data_nascimento', '')::date,
+      meta->>'proprietario_endereco',
+      meta->>'proprietario_numero_endereco',
+      meta->>'proprietario_cep',
+      meta->>'cnpj',
+      meta->>'endereco_loja',
+      meta->>'numero_loja',
+      meta->>'cep_loja',
+      nullif(meta->>'segmento', ''),
+      nullif(meta->>'tempo_preparo_padrao_min', '')::integer,
+      meta->>'chave_pix',
+      coalesce((meta->>'is_teste')::boolean, false),
+      now()
+    )
+    on conflict (id) do nothing;
+
+    insert into usuarios_loja (tenant_id, auth_user_id, nome, papel)
+    values (novo_tenant_id, new.id, meta->>'proprietario_nome', 'dono')
+    on conflict (auth_user_id) do nothing;
+
+    if meta ? 'horarios' then
+      insert into horarios_funcionamento (tenant_id, dia_semana, periodo_inicio, periodo_fim)
+      select novo_tenant_id, (h->>'dia_semana')::smallint, (h->>'periodo_inicio')::time, (h->>'periodo_fim')::time
+      from jsonb_array_elements(meta->'horarios') as h;
+    end if;
+
+    update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
+  end if;
+
+  return new;
+end;
+$$;
+
+-- ------------------------------------------------------------
+-- FEIRA — só os 4 pontos que liam/escreviam colunas movidas (status, lat,
+-- lng, tipo_veiculo). aceita_feira continua em entregadores (vínculo),
+-- decisão de escopo: módulo feira não está em produção (CLAUDE.md), não
+-- expandido pra pessoa-level nesta rodada. Ganharam o filtro de
+-- modo_disponibilidade também (pedido do usuário, item 52).
+-- ------------------------------------------------------------
+create or replace function buscar_entregador_mais_proximo(
+  p_latitude double precision,
+  p_longitude double precision
+)
+returns table (id uuid, latitude double precision, longitude double precision, tipo_veiculo text)
+language sql
+as $$
+  select e.id, p.lat, p.lng, p.tipo_veiculo
+  from entregadores e
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  join veiculo_config vc on vc.tipo_veiculo = p.tipo_veiculo
+  where p.status = 'disponivel'
+    and e.aceita_feira = true
+    and p.modo_disponibilidade in ('feira', 'ambos')
+    and calcular_distancia_km(p.lat, p.lng, p_latitude, p_longitude) <= vc.raio_coleta_km
+  order by point(p.lng, p.lat) <-> point(p_longitude, p_latitude)
+  limit 1;
+$$;
+
+create or replace function atualizar_localizacao_entregador(
+  p_entregador_id uuid,
+  p_latitude double precision,
+  p_longitude double precision
+) returns void as $$
+begin
+  update pessoas_entregadoras
+    set lat = p_latitude,
+        lng = p_longitude,
+        localizacao_atualizada_em = now()
+    where id = (select pessoa_id from entregadores where id = p_entregador_id);
+end;
+$$ language plpgsql;
+
+create or replace function verificar_proximidade_entregas(p_entregador_id uuid)
+returns table(pedido_grupo_id uuid, distancia_km numeric) as $$
+declare
+  v_entregador record;
+  v_cfg record;
+  v_parada record;
+  v_dist numeric;
+  v_consumidor_id uuid;
+  v_canal text;
+begin
+  select p.lat as latitude, p.lng as longitude into v_entregador
+  from entregadores e join pessoas_entregadoras p on p.id = e.pessoa_id
+  where e.id = p_entregador_id;
+  select * into v_cfg from notificacao_proximidade_config where id = 1;
+
+  for v_parada in
+    select rp.id, rp.latitude, rp.longitude, rp.pedido_grupo_id
+    from rota_parada rp
+    join entrega_rota er on er.id = rp.entrega_rota_id
+    where er.entregador_id = p_entregador_id
+      and er.status = 'em_rota'
+      and rp.tipo = 'entrega'
+      and rp.status = 'pendente'
+      and rp.notificado_proximidade = false
+      and rp.notificado_a_caminho = true
+  loop
+    v_dist := calcular_distancia_km(v_entregador.latitude, v_entregador.longitude, v_parada.latitude, v_parada.longitude);
+
+    if v_dist <= v_cfg.distancia_aviso_km then
+      update rota_parada set notificado_proximidade = true where id = v_parada.id;
+
+      select consumidor_id into v_consumidor_id from pedido_grupo where id = v_parada.pedido_grupo_id;
+      v_canal := escolher_canal_notificacao(v_consumidor_id, 'proximidade_chegada');
+
+      insert into notificacao (destinatario_tipo, destinatario_id, evento, canal, payload)
+      values ('consumidor', v_consumidor_id, 'proximidade_chegada', v_canal,
+        jsonb_build_object('pedido_grupo_id', v_parada.pedido_grupo_id, 'distancia_km', v_dist));
+
+      pedido_grupo_id := v_parada.pedido_grupo_id;
+      distancia_km := v_dist;
+      return next;
+    end if;
+  end loop;
+end;
+$$ language plpgsql;
+
+create or replace function rastrear_pedido_publico(p_pedido_id uuid)
+returns table(
+  status text,
+  nome_loja text,
+  endereco text,
+  destino_lat double precision,
+  destino_lng double precision,
+  criado_em timestamptz,
+  pronto_previsto_em timestamptz,
+  entregador_nome text,
+  entregador_veiculo text,
+  entregador_lat double precision,
+  entregador_lng double precision,
+  entregador_localizacao_atualizada_em timestamptz,
+  codigo_entrega text,
+  avaliacao_entrega smallint,
+  avaliacao_comentario text,
+  incidente_ativo boolean
+)
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not verificar_rate_limit('rastrear_pedido_publico', 30) then
+    raise exception 'Muitas tentativas — aguarde um momento e tente de novo.';
+  end if;
+
+  return query
+  select
+    p.status,
+    t.nome,
+    p.endereco,
+    p.lat,
+    p.lng,
+    p.criado_em,
+    p.pronto_previsto_em,
+    case when p.status = 'a_caminho' then split_part(pe.nome, ' ', 1) end,
+    case when p.status = 'a_caminho' then pe.tipo_veiculo end,
+    case when p.status = 'a_caminho' then pe.lat end,
+    case when p.status = 'a_caminho' then pe.lng end,
+    case when p.status = 'a_caminho' then pe.localizacao_atualizada_em end,
+    case when p.status = 'a_caminho' then p.codigo_entrega end,
+    p.avaliacao_entrega,
+    p.avaliacao_comentario,
+    exists(
+      select 1 from alertas_seguranca a
+      where a.rota_id = p.rota_id
+        and a.tipo = 'problema_veiculo'
+        and a.status in ('aguardando_confirmacao', 'escalado_loja')
+    )
+  from pedidos p
+  join tenants t on t.id = p.tenant_id
+  left join rotas_entrega r on r.id = p.rota_id
+  left join entregadores e on e.id = r.entregador_id
+  left join pessoas_entregadoras pe on pe.id = e.pessoa_id
+  where p.id = p_pedido_id;
+end;
+$$;
+grant execute on function rastrear_pedido_publico(uuid) to anon, authenticated;
+
+
+-- ==============================================================
+-- ITEM 52 (parte 2, 27/08/2026) — TURNO VIRA POR PESSOA
+-- Correção do usuário: freelance pega rota de QUALQUER loja (não só da
+-- que tem vínculo), desde que tenha turno ativo + esteja disponível +
+-- dentro do limite de rota/peso/km. "Turno" não pode continuar amarrado a
+-- 1 loja específica (entregadores.id) se cobre várias lojas na prática.
+-- ==============================================================
+
+alter table turnos add column if not exists pessoa_id uuid references pessoas_entregadoras(id) on delete cascade;
+
+update turnos t
+set pessoa_id = e.pessoa_id
+from entregadores e
+where t.pessoa_id is null and t.entregador_id = e.id;
+
+alter table turnos alter column pessoa_id set not null;
+
+drop policy if exists "entregador ve seus proprios turnos" on turnos;
+drop policy if exists "entregador atualiza seus proprios turnos" on turnos;
+drop policy if exists "entregador deleta seus proprios turnos" on turnos;
+drop policy if exists "entregador inicia turno se nao estiver bloqueado" on turnos;
+drop policy if exists "loja ve turnos dos seus entregadores" on turnos;
+drop trigger if exists trg_proteger_reativacao_turno_bloqueado on turnos;
+
+drop index if exists idx_turnos_entregador_status;
+alter table turnos drop column if exists entregador_id;
+
+create index if not exists idx_turnos_pessoa_status on turnos (pessoa_id, status);
+
+create policy "entregador ve seus proprios turnos" on turnos for select using (
+  pessoa_id = (select id from pessoas_entregadoras where auth_user_id = auth.uid()));
+create policy "entregador atualiza seus proprios turnos" on turnos for update using (
+  pessoa_id = (select id from pessoas_entregadoras where auth_user_id = auth.uid()));
+create policy "entregador deleta seus proprios turnos" on turnos for delete using (
+  pessoa_id = (select id from pessoas_entregadoras where auth_user_id = auth.uid()));
+create policy "entregador inicia turno se nao estiver bloqueado" on turnos for insert with check (
+  pessoa_id = (select id from pessoas_entregadoras where auth_user_id = auth.uid())
+  and not exists (
+    select 1 from pessoas_entregadoras p
+    where p.id = pessoa_id and p.bloqueado_ate is not null and p.bloqueado_ate > now()
+  )
+);
+-- loja vê turnos de quem tem/teve vínculo com ela (mesmo que o turno cubra
+-- outras lojas também — a loja só enxerga que ESSA pessoa trabalhou pra
+-- ela, não o turno inteiro de outras lojas)
+create policy "loja ve turnos de quem tem vinculo com ela" on turnos for select using (
+  pessoa_id in (select pessoa_id from entregadores where tenant_id in (select minhas_tenant_ids())));
+
+create or replace function proteger_reativacao_turno_bloqueado()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_bloqueado_ate timestamptz;
+begin
+  if new.status = 'ativo' and old.status is distinct from 'ativo' then
+    select bloqueado_ate into v_bloqueado_ate from pessoas_entregadoras where id = new.pessoa_id;
+    if v_bloqueado_ate is not null and v_bloqueado_ate > now() then
+      raise exception 'Entregador está no período de descanso obrigatório até %', v_bloqueado_ate;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+create trigger trg_proteger_reativacao_turno_bloqueado
+  before update on turnos
+  for each row execute function proteger_reativacao_turno_bloqueado();
+
+-- ------------------------------------------------------------
+-- FREELANCE = POOL ABERTO (correção do usuário, 27/08/2026): elegível pra
+-- QUALQUER loja, não só a de um vínculo pré-existente — regra: pessoa NÃO
+-- tem nenhum vínculo 'fixo' em lugar nenhum (fixo = comprometido só com a
+-- própria loja, não faz bico em outras). Vínculo é criado (ou reaproveitado)
+-- na hora do match, via get_or_criar_vinculo_freelance() — rotas_entrega/
+-- repasses/etc continuam todos referenciando entregadores.id normalmente.
+-- ------------------------------------------------------------
+create or replace function get_or_criar_vinculo_freelance(p_pessoa_id uuid, p_tenant_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_entregador_id uuid;
+begin
+  select id into v_entregador_id from entregadores where pessoa_id = p_pessoa_id and tenant_id = p_tenant_id;
+  if v_entregador_id is not null then
+    return v_entregador_id;
+  end if;
+
+  insert into entregadores (tenant_id, pessoa_id, tipo_vinculo)
+  values (p_tenant_id, p_pessoa_id, 'freelance')
+  on conflict (pessoa_id, tenant_id) where tenant_id is not null do nothing
+  returning id into v_entregador_id;
+
+  if v_entregador_id is null then
+    select id into v_entregador_id from entregadores where pessoa_id = p_pessoa_id and tenant_id = p_tenant_id;
+  end if;
+
+  return v_entregador_id;
+end;
+$$;
+
+-- pessoa é "fixo" se tiver QUALQUER vínculo tipo_vinculo='fixo' — nesse
+-- caso não entra no pool aberto de freelance, só recebe oferta da(s)
+-- loja(s) onde tem vínculo mesmo (função separada, ver dispatch-engine).
+create or replace function eh_freelance_pool_aberto(p_pessoa_id uuid)
+returns boolean
+language sql
+stable
+as $$
+  select not exists (
+    select 1 from entregadores where pessoa_id = p_pessoa_id and tipo_vinculo = 'fixo'
+  );
+$$;
+
+
+-- item 52 (parte 3, 27/08/2026): candidatos de despacho unificados (vínculo
+-- + pool aberto freelance) — usado pelo dispatch-engine (service role,
+-- bypassa RLS, então essa função roda como invoker mesmo mas isso não
+-- importa aqui: sem RLS relevante bloqueando a leitura de service role).
+create or replace function buscar_candidatos_despacho(p_tenant_id uuid)
+returns table(
+  entregador_id uuid,
+  pessoa_id uuid,
+  lat double precision,
+  lng double precision,
+  push_token text,
+  push_plataforma text,
+  precisa_criar_vinculo boolean
+)
+language sql
+stable
+as $$
+  select e.id, p.id, p.lat, p.lng, p.push_token, p.push_plataforma, false
+  from entregadores e
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where e.tenant_id = p_tenant_id
+    and p.status = 'disponivel'
+    and p.modo_disponibilidade in ('restaurante', 'ambos')
+    and not exists (select 1 from tentativas_despacho td where td.entregador_id = e.id and td.resultado is null)
+
+  union all
+
+  select null::uuid, p.id, p.lat, p.lng, p.push_token, p.push_plataforma, true
+  from pessoas_entregadoras p
+  where p.status = 'disponivel'
+    and p.modo_disponibilidade in ('restaurante', 'ambos')
+    and exists (select 1 from turnos t where t.pessoa_id = p.id and t.status = 'ativo')
+    and eh_freelance_pool_aberto(p.id)
+    and not exists (select 1 from entregadores e2 where e2.pessoa_id = p.id and e2.tenant_id = p_tenant_id)
+    and not exists (
+      select 1 from tentativas_despacho td
+      join entregadores e3 on e3.id = td.entregador_id
+      where e3.pessoa_id = p.id and td.resultado is null
+    );
+$$;
+
+
+-- ==============================================================
+-- ITEM 52 (parte 4, 27/08/2026) — FIX: recursão infinita de RLS entre
+-- entregadores <-> pessoas_entregadoras. Mesmo padrão já documentado no
+-- projeto pra usuarios_loja e rotas_entrega/tentativas_despacho: qualquer
+-- policy que subselect numa tabela que TAMBÉM subselect de volta pra
+-- primeira precisa de função SECURITY DEFINER, não subselect cru.
+-- "loja ve pessoas dos seus entregadores" (pessoas_entregadoras) subselect
+-- crua em entregadores, cujas próprias policies subselect de volta em
+-- pessoas_entregadoras — ciclo. Corrigido com pessoas_dos_meus_entregadores().
+-- ==============================================================
+
+create or replace function pessoas_dos_meus_entregadores()
+returns setof uuid
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select pessoa_id from entregadores where tenant_id in (select minhas_tenant_ids());
+$$;
+
+drop policy if exists "loja ve pessoas dos seus entregadores" on pessoas_entregadoras;
+create policy "loja ve pessoas dos seus entregadores" on pessoas_entregadoras for select using (
+  id in (select pessoas_dos_meus_entregadores()));
+
+-- turnos: troca subselect cru por minha_pessoa_id() (já SECURITY DEFINER),
+-- mesmo raciocínio, evita reavaliar RLS de pessoas_entregadoras por linha
+create or replace function meu_bloqueado_ate()
+returns timestamptz
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select bloqueado_ate from pessoas_entregadoras where auth_user_id = auth.uid();
+$$;
+
+drop policy if exists "entregador ve seus proprios turnos" on turnos;
+drop policy if exists "entregador atualiza seus proprios turnos" on turnos;
+drop policy if exists "entregador deleta seus proprios turnos" on turnos;
+drop policy if exists "entregador inicia turno se nao estiver bloqueado" on turnos;
+drop policy if exists "loja ve turnos de quem tem vinculo com ela" on turnos;
+
+create policy "entregador ve seus proprios turnos" on turnos for select using (
+  pessoa_id = minha_pessoa_id());
+create policy "entregador atualiza seus proprios turnos" on turnos for update using (
+  pessoa_id = minha_pessoa_id());
+create policy "entregador deleta seus proprios turnos" on turnos for delete using (
+  pessoa_id = minha_pessoa_id());
+create policy "entregador inicia turno se nao estiver bloqueado" on turnos for insert with check (
+  pessoa_id = minha_pessoa_id()
+  and (meu_bloqueado_ate() is null or meu_bloqueado_ate() <= now())
+);
+create policy "loja ve turnos de quem tem vinculo com ela" on turnos for select using (
+  pessoa_id in (select pessoas_dos_meus_entregadores()));
+
+
+-- endurece as policies de entregadores também (usa minha_pessoa_id() em vez
+-- de subselect cru) — não é o lado que causava o ciclo, mas fica no mesmo
+-- padrão de todo o resto do schema e evita reavaliação de RLS desnecessária.
+drop policy if exists "entregador ve e edita seu cadastro" on entregadores;
+drop policy if exists "entregador cria seu proprio cadastro" on entregadores;
+drop policy if exists "entregador atualiza seu proprio cadastro" on entregadores;
+
+create policy "entregador ve e edita seu cadastro" on entregadores for select using (
+  pessoa_id = minha_pessoa_id());
+create policy "entregador cria seu proprio cadastro" on entregadores for insert with check (
+  pessoa_id = minha_pessoa_id());
+create policy "entregador atualiza seu proprio cadastro" on entregadores for update using (
+  pessoa_id = minha_pessoa_id());
+

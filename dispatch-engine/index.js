@@ -196,41 +196,65 @@ async function buscarConfigTenant(tenantId) {
 // db/schema.sql) — por isso o candidato retornado carrega .distancia
 // mesmo quando achado na primeira passada (mais barato reaproveitar o
 // valor já calculado do que o trigger recalcular sem essa informação).
+// item 52 (27/08/2026), correção do usuário: freelance pega rota de
+// QUALQUER loja (não só de uma com vínculo pré-existente), desde que tenha
+// turno ativo + esteja disponível — só fixo fica preso à própria loja.
+// buscar_candidatos_despacho() (db/schema.sql) já une os dois grupos
+// (vínculo direto + pool aberto) e devolve `precisa_criar_vinculo` pro 2º
+// grupo — o vínculo só é criado de fato pra quem VENCE a escolha (evita
+// criar linha em entregadores pra candidato que nem foi chamado).
+async function resolverVinculoCandidato(candidato, tenantId) {
+  if (!candidato.precisa_criar_vinculo) return candidato.entregador_id;
+  const { data: entregadorId, error } = await admin.rpc('get_or_criar_vinculo_freelance', {
+    p_pessoa_id: candidato.pessoa_id, p_tenant_id: tenantId,
+  });
+  if (error) throw new Error(`resolverVinculoCandidato: ${error.message}`);
+  return entregadorId;
+}
+
 async function buscarProximoCandidato(tenantId, rotaId, tenantLat, tenantLng, raioKm, raioMaximoKm) {
   const jaTentados = tentadosPorRota.get(rotaId) || new Set();
 
-  const [candidatosRes, ocupadosRes] = await Promise.all([
-    admin.from('entregadores').select('id, lat, lng, push_token, push_plataforma').eq('tenant_id', tenantId).eq('status', 'disponivel'),
-    admin.from('tentativas_despacho').select('entregador_id').is('resultado', null),
-  ]);
-  if (candidatosRes.error) throw new Error(`buscarProximoCandidato (candidatos): ${candidatosRes.error.message}`);
-  if (ocupadosRes.error) throw new Error(`buscarProximoCandidato (ocupados): ${ocupadosRes.error.message}`);
+  const { data: candidatosData, error: erroCandidatos } = await admin.rpc('buscar_candidatos_despacho', { p_tenant_id: tenantId });
+  if (erroCandidatos) throw new Error(`buscarProximoCandidato (candidatos): ${erroCandidatos.message}`);
 
-  const ocupados = new Set((ocupadosRes.data || []).map((o) => o.entregador_id));
-  let elegiveis = (candidatosRes.data || []).filter((e) => !jaTentados.has(e.id) && !ocupados.has(e.id));
+  // candidato do pool aberto ainda não tem entregador_id (vínculo só é
+  // criado pro vencedor) — usa pessoa_id como chave de exclusão de
+  // "já tentado" até esse ponto, já que entregador_id vem null pra eles.
+  let elegiveis = (candidatosData || []).filter((c) => {
+    const chave = c.entregador_id || `pessoa:${c.pessoa_id}`;
+    return !jaTentados.has(chave);
+  });
 
+  let vencedor = null;
   if (tenantLat != null && tenantLng != null) {
     elegiveis = elegiveis
-      .map((e) => ({
-        ...e,
-        distancia: e.lat != null && e.lng != null ? haversineKm(tenantLat, tenantLng, e.lat, e.lng) : Infinity,
+      .map((c) => ({
+        ...c,
+        distancia: c.lat != null && c.lng != null ? haversineKm(tenantLat, tenantLng, c.lat, c.lng) : Infinity,
       }))
       .sort((a, b) => a.distancia - b.distancia);
 
-    const dentroDoRaioNormal = elegiveis.filter((e) => e.distancia <= raioKm);
-    if (dentroDoRaioNormal.length > 0) return dentroDoRaioNormal[0];
-
-    const dentroDoRaioExpandido = elegiveis.filter((e) => e.distancia <= raioMaximoKm);
-    if (dentroDoRaioExpandido.length > 0) {
-      console.log(`[despacho] rota ${rotaId}: ninguém dentro de ${raioKm}km, chamando de fora do raio normal (${dentroDoRaioExpandido[0].distancia.toFixed(2)}km, dentro do teto de ${raioMaximoKm}km) — vai gerar km adicional`);
-      return dentroDoRaioExpandido[0];
+    const dentroDoRaioNormal = elegiveis.filter((c) => c.distancia <= raioKm);
+    if (dentroDoRaioNormal.length > 0) {
+      vencedor = dentroDoRaioNormal[0];
+    } else {
+      const dentroDoRaioExpandido = elegiveis.filter((c) => c.distancia <= raioMaximoKm);
+      if (dentroDoRaioExpandido.length > 0) {
+        console.log(`[despacho] rota ${rotaId}: ninguém dentro de ${raioKm}km, chamando de fora do raio normal (${dentroDoRaioExpandido[0].distancia.toFixed(2)}km, dentro do teto de ${raioMaximoKm}km) — vai gerar km adicional`);
+        vencedor = dentroDoRaioExpandido[0];
+      }
     }
-    return null;
+  } else {
+    // sem lat/lng do tenant: sem geofiltro (loja ainda não definiu
+    // localização em painel-loja.html) — pega qualquer disponível.
+    vencedor = elegiveis[0] || null;
   }
-  // sem lat/lng do tenant: sem geofiltro (loja ainda não definiu localização
-  // em painel-loja.html) — pega qualquer disponível, não bloqueia despacho.
 
-  return elegiveis[0] || null;
+  if (!vencedor) return null;
+
+  const entregadorId = await resolverVinculoCandidato(vencedor, tenantId);
+  return { ...vencedor, id: entregadorId };
 }
 
 async function tentarDespachar(pedidoId) {
@@ -419,7 +443,12 @@ async function tratarRespostaDespacho(tentativaId) {
       console.log(`[despacho] tentativa ${tentativaId} aceita, mas rota ${tentativa.rota_id} já tinha entregador atribuído — late accept ignorado`);
       return;
     }
-    await admin.from('entregadores').update({ status: 'a_caminho_da_loja' }).eq('id', tentativa.entregador_id);
+    // item 52: status é da pessoa agora, não do vínculo — resolve pessoa_id
+    // primeiro (mesmo padrão de concluir_rota_ao_entregar() no schema).
+    const { data: vinculoAtribuido } = await admin.from('entregadores').select('pessoa_id').eq('id', tentativa.entregador_id).single();
+    if (vinculoAtribuido) {
+      await admin.from('pessoas_entregadoras').update({ status: 'a_caminho_da_loja' }).eq('id', vinculoAtribuido.pessoa_id);
+    }
     limparEstadoDaRota(tentativa.rota_id);
     console.log(`[despacho] rota ${tentativa.rota_id} atribuída ao entregador ${tentativa.entregador_id}`);
   }
@@ -472,7 +501,9 @@ async function reconciliarNaSubida() {
 
   const { data: tentativasAbertas } = await admin
     .from('tentativas_despacho')
-    .select('id, rota_id, notificado_em, entregadores(push_token, push_plataforma), rotas_entrega(tenant_id, pedidos(id))')
+    // item 52: push_token/push_plataforma moveram pra pessoas_entregadoras
+    // — join encadeado via entregadores (vínculo) até a pessoa.
+    .select('id, rota_id, notificado_em, entregadores(pessoas_entregadoras(push_token, push_plataforma)), rotas_entrega(tenant_id, pedidos(id))')
     .is('resultado', null);
   for (const t of tentativasAbertas || []) {
     const tenantId = t.rotas_entrega && t.rotas_entrega.tenant_id;
@@ -506,8 +537,9 @@ async function reconciliarNaSubida() {
       if (pedido) {
         const restante = Math.max(1, Math.round((expiraEm - Date.now()) / 1000));
         agendarTimeout(t.id, pedido.id, t.rota_id, restante);
-        if (t.entregadores) {
-          agendarRepique(t.rota_id, t.entregadores.push_token, t.entregadores.push_plataforma, config.segundos_repique_notificacao, t.id);
+        const pessoaDaTentativa = t.entregadores && t.entregadores.pessoas_entregadoras;
+        if (pessoaDaTentativa) {
+          agendarRepique(t.rota_id, pessoaDaTentativa.push_token, pessoaDaTentativa.push_plataforma, config.segundos_repique_notificacao, t.id);
         }
       }
     }
