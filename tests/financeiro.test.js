@@ -16,7 +16,7 @@
 // próprio entregador) — geração de repasse é 100% backend/service role,
 // consistente com o padrão já visto em tentativas_contato/aprovação.
 const crypto = require('crypto');
-const { newPgClient, admin, createAuthUser, signInAs, makeReporter, cleanup } = require('./lib/helpers');
+const { newPgClient, admin, createAuthUser, signInAs, makeReporter, cleanup, criarEntregador, abrirTurno } = require('./lib/helpers');
 
 async function run() {
   const r = makeReporter('financeiro');
@@ -38,15 +38,8 @@ async function run() {
     for (const freq of ['por_entrega', 'fim_de_turno']) {
       const u = await createAuthUser(`entregador.${freq}`);
       authUserIds.push(u.id);
-      const { rows: eRows } = await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'Entregador Repasse','disponivel') returning id`,
-        [tenantId, u.id]
-      );
-      const entregadorId = eRows[0].id;
-      const { rows: tRows } = await pg.query(
-        `insert into turnos (entregador_id, status) values ($1,'ativo') returning id`, [entregadorId]
-      );
-      const turnoId = tRows[0].id;
+      const { pessoaId, entregadorId } = await criarEntregador(pg, tenantId, u.id, { nome: 'Entregador Repasse', status: 'disponivel' });
+      const turnoId = await abrirTurno(pg, pessoaId, { status: 'ativo' });
       const { rows: pRows } = await pg.query(
         `insert into pedidos (tenant_id, endereco, valor_pedido, status) values ($1,'Rua Repasse',30,'entregue') returning id`,
         [tenantId]
@@ -74,11 +67,20 @@ async function run() {
     for (const periodicidade of ['diaria', 'mensal']) {
       const u = await createAuthUser(`fixo.${periodicidade}`);
       authUserIds.push(u.id);
-      const { error, data } = await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, status, tipo_vinculo, valor_fixo, periodicidade_fixo)
-         values ($1,$2,'Entregador Fixo',$3,'fixo',150.00,$4) returning tipo_vinculo, valor_fixo, periodicidade_fixo`,
-        [tenantId, u.id, 'disponivel', periodicidade]
-      ).then((res) => ({ data: res.rows[0], error: null })).catch((e) => ({ error: e, data: null }));
+      // item 52: tipo_vinculo/valor_fixo/periodicidade_fixo são do VÍNCULO agora, não da pessoa
+      const { error, data } = await (async () => {
+        try {
+          const { entregadorId: vinculoId } = await criarEntregador(
+            pg, tenantId, u.id,
+            { nome: 'Entregador Fixo', status: 'disponivel' },
+            { tipo_vinculo: 'fixo', valor_fixo: 150.00, periodicidade_fixo: periodicidade }
+          );
+          const { rows } = await pg.query(
+            'select tipo_vinculo, valor_fixo, periodicidade_fixo from entregadores where id = $1', [vinculoId]
+          );
+          return { data: rows[0], error: null };
+        } catch (e) { return { error: e, data: null }; }
+      })();
       r.check(
         `tipo_vinculo='fixo' periodicidade='${periodicidade}' com valor_fixo=150.00 salva certo (pagamento "independente de volume" é lógica de motor de repasse, não existe ainda — não testável)`,
         !error && data && data.tipo_vinculo === 'fixo' && Number(data.valor_fixo) === 150 && data.periodicidade_fixo === periodicidade,

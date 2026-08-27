@@ -9,7 +9,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const crypto = require('crypto');
-const { env, newPgClient, admin, createAuthUser, signInAs, makeReporter, cleanup } = require('./lib/helpers');
+const { env, newPgClient, admin, createAuthUser, signInAs, makeReporter, cleanup, criarEntregador } = require('./lib/helpers');
 
 const PORT = 3012;
 const HEALTH_URL = `http://localhost:${PORT}/health`;
@@ -123,11 +123,11 @@ async function run() {
     const u3 = await createAuthUser('motor.longe');
     authUserIds.push(u1.id, u2.id, u3.id);
 
-    const { rows: e1 } = await pg.query(`insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng) values ($1,$2,'Perto 1','disponivel',-23.5635,-46.6560) returning id`, [tenantId, u1.id]);
-    const { rows: e2 } = await pg.query(`insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng) values ($1,$2,'Perto 2','disponivel',-23.5600,-46.6540) returning id`, [tenantId, u2.id]);
-    await pg.query(`insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng) values ($1,$2,'Longe','disponivel',-23.7000,-46.9000) returning id`, [tenantId, u3.id]);
-    const entregador1Id = e1[0].id;
-    const entregador2Id = e2[0].id;
+    // item 52: status/lat/lng são da PESSOA agora — entregadorXId continua sendo o
+    // vínculo (FK usada por rotas_entrega/tentativas_despacho), pessoaXId é novo.
+    const { pessoaId: pessoa1Id, entregadorId: entregador1Id } = await criarEntregador(pg, tenantId, u1.id, { nome: 'Perto 1', status: 'disponivel', lat: -23.5635, lng: -46.6560 });
+    const { pessoaId: pessoa2Id, entregadorId: entregador2Id } = await criarEntregador(pg, tenantId, u2.id, { nome: 'Perto 2', status: 'disponivel', lat: -23.5600, lng: -46.6540 });
+    await criarEntregador(pg, tenantId, u3.id, { nome: 'Longe', status: 'disponivel', lat: -23.7000, lng: -46.9000 });
     const sess1 = await signInAs(u1.email);
 
     console.log('\n=== Ciclo completo: pronto -> oferta -> aceite -> retirada -> entrega -> conclusão ===');
@@ -192,18 +192,18 @@ async function run() {
     // de corrida que pausar_entregador()/retomar_entregador() evitam).
     const { error: eConfirmaRetirada } = await sess1.rpc('confirmar_retirada_rota', { p_rota_id: rotaId });
     const { rows: rotaCheck2 } = await pg.query(`select status, iniciada_em from rotas_entrega where id = $1`, [rotaId]);
-    const { rows: entregadorEmRota } = await pg.query(`select status from entregadores where id = $1`, [entregador1Id]);
+    const { rows: entregadorEmRota } = await pg.query(`select status from pessoas_entregadoras where id = $1`, [pessoa1Id]);
     r.check('confirmar_retirada_rota() via RPC popula iniciada_em e status=em_rota atomicamente', !eConfirmaRetirada && rotaCheck2[0].status === 'em_entrega' && rotaCheck2[0].iniciada_em !== null && entregadorEmRota[0].status === 'em_rota', { eConfirmaRetirada, rotaCheck2: rotaCheck2[0], entregadorEmRota: entregadorEmRota[0] });
 
     await sess1.from('pedidos').update({ status: 'entregue', entregue_em: new Date().toISOString() }).eq('id', pedidoId);
     const { rows: rotaCheck3 } = await pg.query(`select status from rotas_entrega where id = $1`, [rotaId]);
-    const { rows: entregadorCheck } = await pg.query(`select status from entregadores where id = $1`, [entregador1Id]);
+    const { rows: entregadorCheck } = await pg.query(`select status from pessoas_entregadoras where id = $1`, [pessoa1Id]);
     r.check('rota concluída e entregador liberado ao final do ciclo real', rotaCheck3[0].status === 'concluida' && entregadorCheck[0].status === 'disponivel', { rotaCheck3, entregadorCheck });
 
     console.log('\n=== Failover real: recusa explícita ===');
     const { rows: pRows2 } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Motor Real, 2','em_preparo',20) returning id`, [tenantId]);
     const pedido2Id = pRows2[0].id;
-    await pg.query(`update entregadores set status='disponivel' where tenant_id = $1`, [tenantId]);
+    await pg.query(`update pessoas_entregadoras set status='disponivel' where id in (select pessoa_id from entregadores where tenant_id = $1)`, [tenantId]);
     await pg.query(`update pedidos set status = 'pronto' where id = $1`, [pedido2Id]);
     await despacharDireto(pedido2Id);
     const { rows: tent2a } = await pg.query(`select * from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedido2Id]);
@@ -232,17 +232,17 @@ async function run() {
     // service role direto — não é assertion, só arrumar a casa)
     await pg.query(`delete from tentativas_despacho where rota_id in (select rota_id from pedidos where id in ($1, $2))`, [pedido2Id, pedido3despachoId]);
     await pg.query(`update pedidos set status = 'cancelado' where id in ($1, $2)`, [pedido2Id, pedido3despachoId]);
-    await pg.query(`update entregadores set status = 'disponivel' where tenant_id = $1`, [tenantId]);
+    await pg.query(`update pessoas_entregadoras set status = 'disponivel' where id in (select pessoa_id from entregadores where tenant_id = $1)`, [tenantId]);
 
     console.log('\n=== Fix do achado item 10: pausar em rota não deixa o motor oferecer 2ª entrega ===');
     // simula entregador1 no meio de uma entrega (em_rota), sem usar RPC pra
     // forçar esse estado direto (o teste quer validar o comportamento a
     // partir desse estado real, não como ele foi alcançado)
-    await pg.query(`update entregadores set status = 'em_rota', status_antes_pausa = null where id = $1`, [entregador1Id]);
+    await pg.query(`update pessoas_entregadoras set status = 'em_rota', status_antes_pausa = null where id = $1`, [pessoa1Id]);
 
     const { error: ePausar } = await sess1.rpc('pausar_entregador');
     r.check('pausar_entregador() via RLS não dá erro', !ePausar, ePausar);
-    const { rows: pausadoCheck } = await pg.query(`select status, status_antes_pausa from entregadores where id = $1`, [entregador1Id]);
+    const { rows: pausadoCheck } = await pg.query(`select status, status_antes_pausa from pessoas_entregadoras where id = $1`, [pessoa1Id]);
     r.check('pausar preserva em_rota em status_antes_pausa, status vira pausado', pausadoCheck[0].status === 'pausado' && pausadoCheck[0].status_antes_pausa === 'em_rota', pausadoCheck[0]);
 
     // novo pedido pronto pro mesmo tenant, enquanto entregador1 está pausado
@@ -258,11 +258,11 @@ async function run() {
 
     const { error: eRetomar } = await sess1.rpc('retomar_entregador');
     r.check('retomar_entregador() via RLS não dá erro', !eRetomar);
-    const { rows: retomadoCheck } = await pg.query(`select status, status_antes_pausa from entregadores where id = $1`, [entregador1Id]);
+    const { rows: retomadoCheck } = await pg.query(`select status, status_antes_pausa from pessoas_entregadoras where id = $1`, [pessoa1Id]);
     r.check('retomar volta pro status de ANTES da pausa (em_rota), não sempre disponivel, e limpa status_antes_pausa', retomadoCheck[0].status === 'em_rota' && retomadoCheck[0].status_antes_pausa === null, retomadoCheck[0]);
 
     // limpeza pro resto do teste não herdar esse estado
-    await pg.query(`update entregadores set status = 'disponivel' where id = $1`, [entregador1Id]);
+    await pg.query(`update pessoas_entregadoras set status = 'disponivel' where id = $1`, [pessoa1Id]);
     await pg.query(`delete from tentativas_despacho where rota_id = (select rota_id from pedidos where id = $1)`, [pedidoPausaId]);
     await pg.query(`delete from pedidos where id = $1`, [pedidoPausaId]);
 
@@ -276,16 +276,23 @@ async function run() {
     const uR1 = await createAuthUser('motor.repique1');
     const uR2 = await createAuthUser('motor.repique2');
     authUserIds.push(uR1.id, uR2.id);
-    const { rows: er1 } = await pg.query(
-      `insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng, push_token, push_plataforma) values ($1,$2,'Repique 1','disponivel',-23.5635,-46.6560,'token-teste-repique-1','android') returning id`,
-      [tenantRepiqueId, uR1.id]
+    // item 54 (Fase 2, achado desta rodada de correção da suíte): freelance
+    // aceita até 3 rotas simultâneas agora — o resto deste teste depende de
+    // R1 ficar indisponível pro resto do arquivo assim que aceita 1 rota e
+    // nunca a finaliza (nunca finalizava antes de propósito, só pra forçar
+    // as ofertas seguintes pro R2). Sem isso, R1 continuaria elegível
+    // (1 rota ativa < 3 de teto freelance) e roubaria as ofertas que os
+    // testes abaixo esperam que caiam no R2. R1 fixo com limite=1 restaura
+    // o comportamento "ocupado = indisponível" que o resto do arquivo
+    // pressupõe, sem mexer no motor de despacho.
+    const { entregadorId: entregadorR1Id } = await criarEntregador(
+      pg, tenantRepiqueId, uR1.id,
+      { nome: 'Repique 1', status: 'disponivel', lat: -23.5635, lng: -46.6560, push_token: 'token-teste-repique-1', push_plataforma: 'android' },
+      { tipo_vinculo: 'fixo', limite_rotas_simultaneas: 1 }
     );
-    const { rows: er2 } = await pg.query(
-      `insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng, push_token, push_plataforma) values ($1,$2,'Repique 2','disponivel',-23.5600,-46.6540,'token-teste-repique-2','android') returning id`,
-      [tenantRepiqueId, uR2.id]
-    );
-    const entregadorR1Id = er1[0].id;
-    const entregadorR2Id = er2[0].id;
+    const { entregadorId: entregadorR2Id } = await criarEntregador(pg, tenantRepiqueId, uR2.id, {
+      nome: 'Repique 2', status: 'disponivel', lat: -23.5600, lng: -46.6540, push_token: 'token-teste-repique-2', push_plataforma: 'android',
+    });
 
     console.log('\n=== Repique real: dispara mais de uma vez enquanto a oferta está pendente ===');
     const { rows: pRowsRepique } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Repique, 1','em_preparo',30) returning id`, [tenantRepiqueId]);
@@ -382,7 +389,7 @@ async function run() {
     await sleep(500);
     const { rows: pRows3 } = await pg.query(`insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Motor Real, 3','pronto',15) returning id`, [tenantId]);
     const pedido3Id = pRows3[0].id;
-    await pg.query(`update entregadores set status='disponivel' where tenant_id = $1`, [tenantId]);
+    await pg.query(`update pessoas_entregadoras set status='disponivel' where id in (select pessoa_id from entregadores where tenant_id = $1)`, [tenantId]);
 
     child = subirDispatchEngine();
     const subiu2 = await esperarServicoSubir();
@@ -414,14 +421,19 @@ async function run() {
     const uKm1 = await createAuthUser('motor.expandido');
     authUserIds.push(uKm1.id);
     // ~2,5km do tenant (fora do raio normal de 1,5km, dentro do teto de 5km)
-    const { rows: eKm1 } = await pg.query(
-      `insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng, tipo_vinculo) values ($1,$2,'Expandido','disponivel',-23.5388,-46.6565,'freelance') returning id`,
-      [tenantKmId, uKm1.id]
+    // item 52: tipo_vinculo é do VÍNCULO agora, status/lat/lng são da pessoa.
+    // Sem turno de propósito: esse entregador já tem vínculo direto com
+    // tenantKmId (1ª branch de buscar_candidatos_despacho, sem exigir turno
+    // ativo) — abrir um turno aqui só o deixaria elegível pro pool freelance
+    // ABERTO (2ª branch, item 52) de QUALQUER outro tenant pelo resto do
+    // arquivo, o que vazou pro teste "MuitoLonge" abaixo (achado desta
+    // rodada de correção da suíte).
+    const { entregadorId: entregadorKmId } = await criarEntregador(
+      pg, tenantKmId, uKm1.id,
+      { nome: 'Expandido', status: 'disponivel', lat: -23.5388, lng: -46.6565 },
+      { tipo_vinculo: 'freelance' }
     );
-    const entregadorKmId = eKm1[0].id;
     const sessKm1 = await signInAs(uKm1.email);
-    const turnoKmId = crypto.randomUUID();
-    await pg.query(`insert into turnos (id, entregador_id, status, iniciado_em) values ($1,$2,'ativo', now())`, [turnoKmId, entregadorKmId]);
 
     const { rows: pedidoKmRows } = await pg.query(
       `insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Km Adicional, 1','em_preparo',30) returning id`,
@@ -479,10 +491,7 @@ async function run() {
     const uForaLonge = await createAuthUser('motor.foradoteto');
     authUserIds.push(uForaLonge.id);
     // ~11km do tenant — além até do teto expandido de 5km
-    await pg.query(
-      `insert into entregadores (tenant_id, auth_user_id, nome, status, lat, lng) values ($1,$2,'MuitoLonge','disponivel',-23.4613,-46.6565)`,
-      [tenantForaId, uForaLonge.id]
-    );
+    await criarEntregador(pg, tenantForaId, uForaLonge.id, { nome: 'MuitoLonge', status: 'disponivel', lat: -23.4613, lng: -46.6565 });
     const { rows: pedidoForaRows } = await pg.query(
       `insert into pedidos (tenant_id, endereco, status, valor_pedido) values ($1,'Rua Fora do Teto, 1','em_preparo',30) returning id`,
       [tenantForaId]

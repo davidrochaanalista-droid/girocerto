@@ -10,7 +10,7 @@
 // nenhuma anonimização automática (a coluna é puramente decorativa por
 // enquanto), o que é exatamente a limitação que precisa ficar documentada.
 const crypto = require('crypto');
-const { newPgClient, createAuthUser, makeReporter, cleanup } = require('./lib/helpers');
+const { newPgClient, createAuthUser, makeReporter, cleanup, criarEntregador } = require('./lib/helpers');
 
 async function run() {
   const r = makeReporter('lgpd');
@@ -26,19 +26,17 @@ async function run() {
 
     const u = await createAuthUser('entregador.lgpd');
     authUserIds.push(u.id);
-    const { rows: eRows } = await pg.query(
-      `insert into entregadores (tenant_id, auth_user_id, nome, status, cpf, rg_numero, endereco, cnh_foto_url)
-       values ($1,$2,'Entregador LGPD','offline','12345678900','98765432','Rua Original, 100','https://exemplo/cnh.jpg')
-       returning id`,
-      [tenantId, u.id]
-    );
-    const entregadorId = eRows[0].id;
+    // item 52: cpf/rg_numero/endereco/cnh_foto_url/dados_anonimizados_em são da PESSOA agora, não do vínculo
+    const { pessoaId, entregadorId } = await criarEntregador(pg, tenantId, u.id, {
+      nome: 'Entregador LGPD', status: 'offline', cpf: '12345678900', rg_numero: '98765432',
+      endereco: 'Rua Original, 100', cnh_foto_url: 'https://exemplo/cnh.jpg',
+    });
 
     console.log('\n=== Pedido de exclusão: marcar dados_anonimizados_em ===');
     {
       const { rows } = await pg.query(
-        `update entregadores set dados_anonimizados_em = now() where id = $1 returning dados_anonimizados_em, cpf, rg_numero, endereco, cnh_foto_url`,
-        [entregadorId]
+        `update pessoas_entregadoras set dados_anonimizados_em = now() where id = $1 returning dados_anonimizados_em, cpf, rg_numero, endereco, cnh_foto_url`,
+        [pessoaId]
       );
       const depois = rows[0];
       r.check('dados_anonimizados_em é gravado com sucesso quando marcado manualmente', depois.dados_anonimizados_em !== null, depois);

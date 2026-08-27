@@ -3074,7 +3074,7 @@ C:\Users\Usuário\Projetos\giro certo
       cada entrega, todos os 10 entregadores voltaram a 0 rotas ativas ao
       final (nenhum ficou "preso"), nenhum excedeu a própria capacidade em
       nenhum momento. 9/9 asserts.
-    - Nada commitado ainda.
+    - Commitado junto com o item 56 (`bd745a6`).
 56. **Correção dos 2 achados que ficaram pendentes dos itens 54/55**
     (27/08/2026, pedido direto do usuário: "faça toda a correção dos
     achados").
@@ -3099,6 +3099,66 @@ C:\Users\Usuário\Projetos\giro certo
       rotas simultâneas do entregador, não só a que está aberta na tela.
     - Testado: 4/4 asserts contra o banco real (notificação enfileirada +
       idempotência + posição gravada em 2 rotas simultâneas).
+    - Commitado junto com o item 55 (`bd745a6`).
+57. **Suíte de testes versionada (`tests/`) atualizada pro schema
+    pessoa/vínculo do item 52 — voltou a 100%** (27/08/2026, pedido direto
+    do usuário: "fecha a suíte de testes pra ver se ainda tá 100%").
+    Rodar `tests/run-all.js` revelou 8 das 10 áreas quebradas, todas com o
+    mesmo erro fatal (`column "auth_user_id" of relation "entregadores"
+    does not exist") — as fixtures desses arquivos nunca tinham sido
+    atualizadas pra separação pessoa/vínculo do item 52, só o código de
+    produção (mockups/schema/dispatch-engine) tinha sido corrigido até
+    aqui.
+    - **Helpers novos em `tests/lib/helpers.js`**: `criarEntregador(pg,
+      tenantId, authUserId, pessoaCampos, vinculoCampos)` (2 inserts —
+      `pessoas_entregadoras` depois `entregadores` — retorna `{pessoaId,
+      entregadorId}`) e `abrirTurno(pg, pessoaId, extra)` (turno agora é
+      por pessoa, não por vínculo). Substituem o padrão de 1 insert só que
+      todo teste antigo usava.
+    - **8 arquivos corrigidos** (`despacho`, `financeiro`, `reputacao`,
+      `lgpd`, `admin`, `seguranca`, `onboarding`, `despacho_motor`):
+      inserts diretos de `entregadores`/`turnos` migrados pros helpers
+      novos ou pro insert de 2 passos equivalente; toda leitura/escrita de
+      campos que mudaram de tabela (`status`, `lat`/`lng`, `bloqueado_ate`,
+      `status_verificacao`, `aprovado_por`, documentos, etc. — todos foram
+      pra `pessoas_entregadoras`) retargetada; RPCs
+      `aprovar_entregador_teste`/`reprovar_entregador_teste` chamadas com
+      `p_pessoa_id` (renomeado no item 52, `onboarding.test.js` ainda
+      chamava com o nome antigo `p_entregador_id`); reconfirmação estática
+      de XSS em `seguranca.test.js` tinha 2 trechos esperados que ficaram
+      desatualizados depois que `painel-loja.html` passou a exibir nome via
+      `entregadores.pessoas_entregadoras.nome` (join), não mais
+      `entregadores.nome` direto.
+    - **2 achados reais em `despacho_motor.test.js`, não só renomeação de
+      coluna** — expostos porque este arquivo sobe o motor de despacho de
+      verdade como subprocesso, e só foi rodado nesta sessão pela primeira
+      vez desde os itens 53/54 (capacidade Fase 2):
+      - Um entregador fixo (`R1`, cenário de repique) que aceitava 1 rota e
+        nunca a finalizava ficava, de propósito, permanentemente
+        "ocupado" pro resto do arquivo sob o modelo antigo (qualquer status
+        != disponível excluía). Sob o modelo de capacidade do item 54
+        (freelance aceita até 3 rotas simultâneas), esse mesmo R1 continuava
+        elegível (1 rota ativa < 3) e roubava ofertas que os testes
+        seguintes esperavam que fossem pro R2 — 2 tentativas de despacho
+        onde o teste esperava 1. Corrigido dando a esse vínculo
+        `tipo_vinculo='fixo', limite_rotas_simultaneas=1` na criação, que
+        restaura o "ocupado = indisponível" que o resto do arquivo já
+        pressupunha, sem tocar no motor de despacho.
+      - Um entregador freelance com turno ativo (`Expandido`, cenário de km
+        adicional) vazava pro pool freelance ABERTO (2ª branch de
+        `buscar_candidatos_despacho`, item 52 — freelance sem vínculo fixo
+        em lugar nenhum e com turno ativo fica disponível pra QUALQUER
+        loja) e roubava a oferta de um teste completamente não relacionado
+        mais adiante no mesmo arquivo (`tenantForaId`, "ninguém dentro do
+        raio expandido"), porque as coordenadas de ambos os tenants de
+        teste são as mesmas e o `Expandido` ficava a ~2,5km — dentro do
+        raio expandido do outro tenant. O turno nem era necessário pro
+        próprio teste (o vínculo direto com o tenant já bastava, 1ª branch
+        de `buscar_candidatos_despacho`, que não exige turno). Corrigido
+        removendo o `abrirTurno()` desnecessário.
+    - `cd tests && node run-all.js`: **160/160 passou, 10/10 áreas**.
+      Protocolo de sempre seguido (`railway down -y` antes, `railway up -y
+      -c` depois, confirmado saudável via `railway status`/`railway logs`).
     - Nada commitado ainda.
 
 ## Pendências reais no momento

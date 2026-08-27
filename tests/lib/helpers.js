@@ -122,6 +122,45 @@ async function cleanup(pg, tenantIds, authUserIds) {
   }
 }
 
+// item 57 (27/08/2026): item 52 separou entregadores (vínculo por loja) de
+// pessoas_entregadoras (identidade) — quase todo teste antigo criava um
+// entregador com 1 insert só. `pessoaCampos` vai pra pessoas_entregadoras
+// (nome/status/lat/lng/documentos/tipo_veiculo/etc — tudo que não é
+// "relação com 1 loja específica"); `vinculoCampos` vai pra entregadores
+// (tenant_id/pessoa_id já entram sozinhos; passe só tipo_vinculo,
+// aceita_feira, limite_rotas_simultaneas se precisar mudar do default).
+async function criarEntregador(pg, tenantId, authUserId, pessoaCampos = {}, vinculoCampos = {}) {
+  const pCols = ['auth_user_id', ...Object.keys(pessoaCampos)];
+  const pVals = [authUserId, ...Object.values(pessoaCampos)];
+  const pPlaceholders = pCols.map((_, i) => `$${i + 1}`).join(',');
+  const { rows: [pessoa] } = await pg.query(
+    `insert into pessoas_entregadoras (${pCols.join(',')}) values (${pPlaceholders}) returning id`,
+    pVals
+  );
+
+  const vCols = ['tenant_id', 'pessoa_id', ...Object.keys(vinculoCampos)];
+  const vVals = [tenantId, pessoa.id, ...Object.values(vinculoCampos)];
+  const vPlaceholders = vCols.map((_, i) => `$${i + 1}`).join(',');
+  const { rows: [vinculo] } = await pg.query(
+    `insert into entregadores (${vCols.join(',')}) values (${vPlaceholders}) returning id`,
+    vVals
+  );
+
+  return { pessoaId: pessoa.id, entregadorId: vinculo.id };
+}
+
+// turno agora é por pessoa (item 52), não por vínculo.
+async function abrirTurno(pg, pessoaId, extra = {}) {
+  const cols = ['pessoa_id', ...Object.keys(extra)];
+  const vals = [pessoaId, ...Object.values(extra)];
+  const placeholders = cols.map((_, i) => `$${i + 1}`).join(',');
+  const { rows: [turno] } = await pg.query(
+    `insert into turnos (${cols.join(',')}) values (${placeholders}) returning id`,
+    vals
+  );
+  return turno.id;
+}
+
 module.exports = {
   env,
   admin,
@@ -131,4 +170,6 @@ module.exports = {
   signInAs,
   makeReporter,
   cleanup,
+  criarEntregador,
+  abrirTurno,
 };

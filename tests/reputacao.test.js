@@ -23,7 +23,7 @@
 // produto em aberto, não uma correção óbvia. Documentado como achado real,
 // não corrigido nesta rodada (ver tests/COBERTURA.md).
 const crypto = require('crypto');
-const { newPgClient, admin, createAuthUser, signInAs, makeReporter, cleanup } = require('./lib/helpers');
+const { newPgClient, admin, createAuthUser, signInAs, makeReporter, cleanup, criarEntregador } = require('./lib/helpers');
 
 async function popularAvaliacoes(pg, tenantId, entregadorId, quantidade, nota) {
   for (let i = 0; i < quantidade; i++) {
@@ -53,11 +53,11 @@ async function run() {
       const u9 = await createAuthUser('entregador.9aval');
       const u10 = await createAuthUser('entregador.10aval');
       authUserIds.push(u9.id, u10.id);
-      const { rows: e9 } = await pg.query(`insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'E9','disponivel') returning id`, [tenant9, u9.id]);
-      const { rows: e10 } = await pg.query(`insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'E10','disponivel') returning id`, [tenant10, u10.id]);
+      const { entregadorId: e9Id } = await criarEntregador(pg, tenant9, u9.id, { nome: 'E9', status: 'disponivel' });
+      const { entregadorId: e10Id } = await criarEntregador(pg, tenant10, u10.id, { nome: 'E10', status: 'disponivel' });
 
-      await popularAvaliacoes(pg, tenant9, e9[0].id, 9, 5);
-      await popularAvaliacoes(pg, tenant10, e10[0].id, 10, 5);
+      await popularAvaliacoes(pg, tenant9, e9Id, 9, 5);
+      await popularAvaliacoes(pg, tenant10, e10Id, 10, 5);
 
       const { rows: selo9 } = await pg.query(`select * from selo_entrega_justa where tenant_id = $1`, [tenant9]);
       const { rows: selo10 } = await pg.query(`select * from selo_entrega_justa where tenant_id = $1`, [tenant10]);
@@ -78,14 +78,14 @@ async function run() {
       const uB = await createAuthUser('entregador.media39');
       const uA = await createAuthUser('entregador.media40');
       authUserIds.push(uB.id, uA.id);
-      const { rows: eB } = await pg.query(`insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'EB','disponivel') returning id`, [tenantBaixa, uB.id]);
-      const { rows: eA } = await pg.query(`insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'EA','disponivel') returning id`, [tenantAlta, uA.id]);
+      const { entregadorId: eBId } = await criarEntregador(pg, tenantBaixa, uB.id, { nome: 'EB', status: 'disponivel' });
+      const { entregadorId: eAId } = await criarEntregador(pg, tenantAlta, uA.id, { nome: 'EA', status: 'disponivel' });
 
       // 9 notas 4 + 1 nota 3 = média 3.9 (39/10)
-      await popularAvaliacoes(pg, tenantBaixa, eB[0].id, 9, 4);
-      await popularAvaliacoes(pg, tenantBaixa, eB[0].id, 1, 3);
+      await popularAvaliacoes(pg, tenantBaixa, eBId, 9, 4);
+      await popularAvaliacoes(pg, tenantBaixa, eBId, 1, 3);
       // 10 notas 4 = média exatamente 4.0
-      await popularAvaliacoes(pg, tenantAlta, eA[0].id, 10, 4);
+      await popularAvaliacoes(pg, tenantAlta, eAId, 10, 4);
 
       const { rows: seloBaixa } = await pg.query(`select * from selo_entrega_justa where tenant_id = $1`, [tenantBaixa]);
       const { rows: seloAlta } = await pg.query(`select * from selo_entrega_justa where tenant_id = $1`, [tenantAlta]);
@@ -109,8 +109,7 @@ async function run() {
 
       const entregadorUser = await createAuthUser('entregador.selo');
       authUserIds.push(entregadorUser.id);
-      const { rows: eRows } = await pg.query(`insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'Entregador Selo','disponivel') returning id`, [tenantId, entregadorUser.id]);
-      const entregadorId = eRows[0].id;
+      const { entregadorId } = await criarEntregador(pg, tenantId, entregadorUser.id, { nome: 'Entregador Selo', status: 'disponivel' });
       const sessEntregador = await signInAs(entregadorUser.email);
 
       // confirma que o INSERT via RLS do entregador funciona (a policy que existe está OK)

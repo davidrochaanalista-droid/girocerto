@@ -16,7 +16,7 @@
 // consistente com "não existe fluxo de criação de rota em nenhum mockup
 // ainda" (CLAUDE.md). Não é um bug novo, é o mesmo estado documentado.
 const crypto = require('crypto');
-const { newPgClient, admin, createAuthUser, signInAs, makeReporter, cleanup } = require('./lib/helpers');
+const { newPgClient, admin, createAuthUser, signInAs, makeReporter, cleanup, criarEntregador } = require('./lib/helpers');
 
 async function run() {
   const r = makeReporter('despacho');
@@ -38,11 +38,8 @@ async function run() {
     for (const nome of ['E1', 'E2', 'E3']) {
       const u = await createAuthUser(`${nome.toLowerCase()}.despacho`);
       authUserIds.push(u.id);
-      const { rows } = await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,$3,'disponivel') returning id`,
-        [tenantId, u.id, nome]
-      );
-      entregadores.push({ nome, id: rows[0].id, authId: u.id, email: u.email });
+      const { entregadorId } = await criarEntregador(pg, tenantId, u.id, { nome, status: 'disponivel' });
+      entregadores.push({ nome, id: entregadorId, authId: u.id, email: u.email });
     }
 
     console.log('\n=== tentativas_despacho: failover simulado (recusado -> sem_resposta -> aceito) ===');

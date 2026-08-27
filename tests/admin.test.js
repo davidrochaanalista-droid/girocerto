@@ -5,7 +5,7 @@
 // loja comum vê só o que já via antes através das próprias policies
 // existentes, nunca dado de outro tenant).
 const crypto = require('crypto');
-const { newPgClient, createAuthUser, signInAs, makeReporter, cleanup } = require('./lib/helpers');
+const { newPgClient, createAuthUser, signInAs, makeReporter, cleanup, criarEntregador } = require('./lib/helpers');
 
 async function run() {
   const r = makeReporter('admin');
@@ -66,11 +66,7 @@ async function run() {
       tenantIds.push(outroTenantId);
       const outroEntUser = await createAuthUser('ent.alheio.admin');
       authUserIds.push(outroEntUser.id);
-      await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, status_verificacao)
-         values ($1,$2,'Entregador Alheio','moto','aprovado')`,
-        [outroTenantId, outroEntUser.id]
-      );
+      await criarEntregador(pg, outroTenantId, outroEntUser.id, { nome: 'Entregador Alheio', tipo_veiculo: 'moto', status_verificacao: 'aprovado' });
 
       const { data: dLojaEnt, error: eLojaEnt } = await sessDono.from('entregadores_presenca').select('*');
       r.check(
@@ -99,22 +95,16 @@ async function run() {
     {
       const entOnlineUser = await createAuthUser('ent.online.admin');
       authUserIds.push(entOnlineUser.id);
-      const { rows: entOnlineRows } = await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, status_verificacao, status)
-         values ($1,$2,'Entregador Online','moto','aprovado','disponivel') returning id`,
-        [tenantId, entOnlineUser.id]
-      );
-      const entOnlineId = entOnlineRows[0].id;
+      const { entregadorId: entOnlineId } = await criarEntregador(pg, tenantId, entOnlineUser.id, {
+        nome: 'Entregador Online', tipo_veiculo: 'moto', status_verificacao: 'aprovado', status: 'disponivel',
+      });
       await pg.query(`insert into localizacoes_entregador (entregador_id, lat, lng, registrado_em) values ($1, -23.5, -46.6, now())`, [entOnlineId]);
 
       const entOfflineUser = await createAuthUser('ent.offline.admin');
       authUserIds.push(entOfflineUser.id);
-      const { rows: entOfflineRows } = await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, status_verificacao, status)
-         values ($1,$2,'Entregador Offline','moto','aprovado','disponivel') returning id`,
-        [tenantId, entOfflineUser.id]
-      );
-      const entOfflineId = entOfflineRows[0].id;
+      const { entregadorId: entOfflineId } = await criarEntregador(pg, tenantId, entOfflineUser.id, {
+        nome: 'Entregador Offline', tipo_veiculo: 'moto', status_verificacao: 'aprovado', status: 'disponivel',
+      });
       await pg.query(
         `insert into localizacoes_entregador (entregador_id, lat, lng, registrado_em) values ($1, -23.5, -46.6, now() - interval '10 minutes')`,
         [entOfflineId]
@@ -122,11 +112,9 @@ async function run() {
 
       const entSemPosicaoUser = await createAuthUser('ent.semposicao.admin');
       authUserIds.push(entSemPosicaoUser.id);
-      await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, tipo_veiculo, status_verificacao, status)
-         values ($1,$2,'Entregador Sem Posicao','moto','aprovado','pausado')`,
-        [tenantId, entSemPosicaoUser.id]
-      );
+      await criarEntregador(pg, tenantId, entSemPosicaoUser.id, {
+        nome: 'Entregador Sem Posicao', tipo_veiculo: 'moto', status_verificacao: 'aprovado', status: 'pausado',
+      });
 
       const { data: presenca, error: ePresenca } = await sessAdmin.from('entregadores_presenca').select('*').eq('tenant_id', tenantId).order('nome');
       r.check('admin lê entregadores_presenca sem erro', !ePresenca, ePresenca);

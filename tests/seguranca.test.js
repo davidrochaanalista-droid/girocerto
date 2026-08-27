@@ -14,7 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { newPgClient, admin, createAuthUser, signInAs, makeReporter, cleanup } = require('./lib/helpers');
+const { newPgClient, admin, createAuthUser, signInAs, makeReporter, cleanup, criarEntregador } = require('./lib/helpers');
 
 function escapeHtmlRef(str) {
   return String(str ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -40,10 +40,10 @@ async function run() {
 
       const pontosPainel = [
         'escapeHtml(legendaAlerta(a))',
-        'escapeHtml(a.entregadores ? a.entregadores.nome',
+        'escapeHtml(a.entregadores && a.entregadores.pessoas_entregadoras ? a.entregadores.pessoas_entregadoras.nome',
         "escapeHtml(p.cliente_nome || 'Cliente não identificado')",
         'escapeHtml(p.endereco)',
-        'escapeHtml(r.entregadores ? r.entregadores.nome',
+        'escapeHtml(r.entregadores && r.entregadores.pessoas_entregadoras ? r.entregadores.pessoas_entregadoras.nome',
         'escapeHtml(e.nome)',
       ];
       for (const trecho of pontosPainel) {
@@ -72,11 +72,7 @@ async function run() {
 
     const eUser = await createAuthUser('entregador.seguranca');
     authUserIds.push(eUser.id);
-    const { rows: eRows } = await pg.query(
-      `insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'Entregador Seg','em_rota') returning id`,
-      [tenantId, eUser.id]
-    );
-    const entregadorId = eRows[0].id;
+    const { entregadorId } = await criarEntregador(pg, tenantId, eUser.id, { nome: 'Entregador Seg', status: 'em_rota' });
     const sessEntregador = await signInAs(eUser.email);
     const { rows: rotaRows } = await pg.query(
       `insert into rotas_entrega (tenant_id, entregador_id, status) values ($1,$2,'em_entrega') returning id`,
@@ -148,13 +144,9 @@ async function run() {
       const bloqUser = await createAuthUser('bloqueado.seguranca');
       authUserIds.push(bloqUser.id);
       const amanha = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
-      const { rows } = await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, status, bloqueado_ate) values ($1,$2,'Bloqueado','offline',$3) returning id`,
-        [tenantId, bloqUser.id, amanha]
-      );
-      const bloqEntregadorId = rows[0].id;
+      const { pessoaId: bloqPessoaId } = await criarEntregador(pg, tenantId, bloqUser.id, { nome: 'Bloqueado', status: 'offline', bloqueado_ate: amanha });
       const sessBloq = await signInAs(bloqUser.email);
-      const { error, data } = await sessBloq.from('turnos').insert({ entregador_id: bloqEntregadorId }).select('id');
+      const { error, data } = await sessBloq.from('turnos').insert({ pessoa_id: bloqPessoaId }).select('id');
       r.check(
         'insert direto em turnos via PostgREST (fora da UI) É bloqueado quando bloqueado_ate está no futuro — policy dedicada de INSERT em turnos',
         (!data || data.length === 0),
@@ -164,7 +156,7 @@ async function run() {
       // confirma que o bloqueio não vaza pra UPDATE (pausar/finalizar um turno já em
       // andamento não deveria travar por bloqueado_ate futuro, só abrir turno NOVO)
       const { rows: turnoAtivoRows } = await pg.query(
-        `insert into turnos (entregador_id, status) values ($1,'ativo') returning id`, [bloqEntregadorId]
+        `insert into turnos (pessoa_id, status) values ($1,'ativo') returning id`, [bloqPessoaId]
       );
       const { error: eUpdate } = await sessBloq.from('turnos').update({ status: 'finalizado', finalizado_em: new Date().toISOString() }).eq('id', turnoAtivoRows[0].id);
       const { data: checkUpdate } = await admin.from('turnos').select('status').eq('id', turnoAtivoRows[0].id).single();
@@ -180,23 +172,18 @@ async function run() {
       const livreUser = await createAuthUser('livre.seguranca');
       authUserIds.push(livreUser.id);
       const ontem = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-      const { rows } = await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, status, bloqueado_ate) values ($1,$2,'Livre','offline',$3) returning id`,
-        [tenantId, livreUser.id, ontem] // bloqueado_ate NO PASSADO — bloqueio já expirou
-      );
-      const livreEntregadorId = rows[0].id;
+      // bloqueado_ate NO PASSADO — bloqueio já expirou
+      const { pessoaId: livrePessoaId } = await criarEntregador(pg, tenantId, livreUser.id, { nome: 'Livre', status: 'offline', bloqueado_ate: ontem });
       const sessLivre = await signInAs(livreUser.email);
-      const { error, data } = await sessLivre.from('turnos').insert({ entregador_id: livreEntregadorId }).select('id');
+      const { error, data } = await sessLivre.from('turnos').insert({ pessoa_id: livrePessoaId }).select('id');
       r.check('entregador com bloqueado_ate no PASSADO (bloqueio já expirado) consegue iniciar turno normalmente', !error && data && data.length === 1, { error, data });
 
       const semBloqueioUser = await createAuthUser('sembloqueio.seguranca');
       authUserIds.push(semBloqueioUser.id);
-      const { rows: rows2 } = await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'Sem Bloqueio','offline') returning id`,
-        [tenantId, semBloqueioUser.id] // bloqueado_ate NULL
-      );
+      // bloqueado_ate NULL
+      const { pessoaId: semBloqueioPessoaId } = await criarEntregador(pg, tenantId, semBloqueioUser.id, { nome: 'Sem Bloqueio', status: 'offline' });
       const sessSemBloqueio = await signInAs(semBloqueioUser.email);
-      const { error: e2, data: d2 } = await sessSemBloqueio.from('turnos').insert({ entregador_id: rows2[0].id }).select('id');
+      const { error: e2, data: d2 } = await sessSemBloqueio.from('turnos').insert({ pessoa_id: semBloqueioPessoaId }).select('id');
       r.check('entregador com bloqueado_ate NULL (nunca foi bloqueado) consegue iniciar turno normalmente', !e2 && d2 && d2.length === 1, { e2, d2 });
     }
 
@@ -208,19 +195,15 @@ async function run() {
     {
       const pausaUser = await createAuthUser('pausa.seguranca');
       authUserIds.push(pausaUser.id);
-      const { rows } = await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'Pausa Teste','disponivel') returning id`,
-        [tenantId, pausaUser.id]
-      );
-      const pausaEntregadorId = rows[0].id;
-      const { rows: turnoRows } = await pg.query(`insert into turnos (entregador_id, status) values ($1,'ativo') returning id`, [pausaEntregadorId]);
+      const { pessoaId: pausaPessoaId } = await criarEntregador(pg, tenantId, pausaUser.id, { nome: 'Pausa Teste', status: 'disponivel' });
+      const { rows: turnoRows } = await pg.query(`insert into turnos (pessoa_id, status) values ($1,'ativo') returning id`, [pausaPessoaId]);
       const turnoId = turnoRows[0].id;
       const sessPausa = await signInAs(pausaUser.email);
 
       // clicarPausar() de verdade: rpc('pausar_entregador') + update de teve_pausa
       const { error: ePausar } = await sessPausa.rpc('pausar_entregador');
       await sessPausa.from('turnos').update({ teve_pausa: true }).eq('id', turnoId);
-      const { data: pausado } = await admin.from('entregadores').select('status, status_antes_pausa').eq('id', pausaEntregadorId).single();
+      const { data: pausado } = await admin.from('pessoas_entregadoras').select('status, status_antes_pausa').eq('id', pausaPessoaId).single();
       const { data: turnoPausado } = await admin.from('turnos').select('teve_pausa').eq('id', turnoId).single();
       r.check(
         'pausar_entregador() via RLS grava status=pausado, status_antes_pausa=disponivel (estado anterior), E turnos.teve_pausa=true',
@@ -230,15 +213,15 @@ async function run() {
 
       // clicarContinuar() de verdade: rpc('retomar_entregador')
       const { error: eRetomar } = await sessPausa.rpc('retomar_entregador');
-      const { data: retomado } = await admin.from('entregadores').select('status, status_antes_pausa').eq('id', pausaEntregadorId).single();
+      const { data: retomado } = await admin.from('pessoas_entregadoras').select('status, status_antes_pausa').eq('id', pausaPessoaId).single();
       r.check('retomar_entregador() volta status=disponivel (era esse antes) e limpa status_antes_pausa', !eRetomar && retomado.status === 'disponivel' && retomado.status_antes_pausa === null, { eRetomar, retomado });
 
       // cenário do achado original: pausar em em_rota (não disponivel) deve
       // preservar em_rota, não sempre disponivel
-      await pg.query(`update entregadores set status = 'em_rota' where id = $1`, [pausaEntregadorId]);
+      await pg.query(`update pessoas_entregadoras set status = 'em_rota' where id = $1`, [pausaPessoaId]);
       await sessPausa.rpc('pausar_entregador');
       await sessPausa.rpc('retomar_entregador');
-      const { data: retomadoEmRota } = await admin.from('entregadores').select('status').eq('id', pausaEntregadorId).single();
+      const { data: retomadoEmRota } = await admin.from('pessoas_entregadoras').select('status').eq('id', pausaPessoaId).single();
       r.check('pausar/retomar em em_rota preserva em_rota (não reseta pra disponivel)', retomadoEmRota.status === 'em_rota', retomadoEmRota);
     }
 
@@ -247,30 +230,26 @@ async function run() {
       const bypassUser = await createAuthUser('bypass.bloqueio');
       authUserIds.push(bypassUser.id);
       const futuro = new Date(Date.now() + 8 * 3600 * 1000).toISOString();
-      const { rows: bRows } = await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, status, bloqueado_ate) values ($1,$2,'Bypass Teste','offline',$3) returning id`,
-        [tenantId, bypassUser.id, futuro]
-      );
-      const bypassEntregadorId = bRows[0].id;
+      const { pessoaId: bypassPessoaId } = await criarEntregador(pg, tenantId, bypassUser.id, { nome: 'Bypass Teste', status: 'offline', bloqueado_ate: futuro });
       const sessBypass = await signInAs(bypassUser.email);
 
       // achado #1: limpar o próprio bloqueado_ate via update direto
-      await sessBypass.from('entregadores').update({ bloqueado_ate: null }).eq('id', bypassEntregadorId);
-      const { rows: checkBypass1 } = await pg.query(`select bloqueado_ate from entregadores where id = $1`, [bypassEntregadorId]);
+      await sessBypass.from('pessoas_entregadoras').update({ bloqueado_ate: null }).eq('id', bypassPessoaId);
+      const { rows: checkBypass1 } = await pg.query(`select bloqueado_ate from pessoas_entregadoras where id = $1`, [bypassPessoaId]);
       r.check('ACHADO CORRIGIDO: entregador NÃO consegue limpar o próprio bloqueado_ate via update direto (trigger reverte)', checkBypass1[0].bloqueado_ate !== null, checkBypass1[0]);
 
       // achado #2: reviver um turno finalizado pra 'ativo' via update direto
       const { rows: tRows } = await pg.query(
-        `insert into turnos (entregador_id, status, finalizado_em) values ($1,'finalizado', now()) returning id`,
-        [bypassEntregadorId]
+        `insert into turnos (pessoa_id, status, finalizado_em) values ($1,'finalizado', now()) returning id`,
+        [bypassPessoaId]
       );
       const { error: eReativa } = await sessBypass.from('turnos').update({ status: 'ativo' }).eq('id', tRows[0].id);
       const { rows: checkBypass2 } = await pg.query(`select status from turnos where id = $1`, [tRows[0].id]);
       r.check('ACHADO CORRIGIDO: entregador bloqueado NÃO consegue reviver turno finalizado pra ativo via update direto', !!eReativa && checkBypass2[0].status === 'finalizado', { eReativa: eReativa && eReativa.message, checkBypass2: checkBypass2[0] });
 
       // confirma que o trigger não atrapalha updates legítimos de OUTROS campos
-      const { error: eLegitimo } = await sessBypass.from('entregadores').update({ lat: -23.5, lng: -46.6 }).eq('id', bypassEntregadorId);
-      const { rows: checkLegitimo } = await pg.query(`select lat, lng, bloqueado_ate from entregadores where id = $1`, [bypassEntregadorId]);
+      const { error: eLegitimo } = await sessBypass.from('pessoas_entregadoras').update({ lat: -23.5, lng: -46.6 }).eq('id', bypassPessoaId);
+      const { rows: checkLegitimo } = await pg.query(`select lat, lng, bloqueado_ate from pessoas_entregadoras where id = $1`, [bypassPessoaId]);
       r.check('update de campo NÃO relacionado (lat/lng) continua funcionando normalmente mesmo bloqueado', !eLegitimo && checkLegitimo[0].lat === -23.5 && checkLegitimo[0].bloqueado_ate !== null, checkLegitimo[0]);
     }
 
@@ -291,10 +270,7 @@ async function run() {
       );
       const fadigaUser = await createAuthUser('fadiga.rpc');
       authUserIds.push(fadigaUser.id);
-      await pg.query(
-        `insert into entregadores (tenant_id, auth_user_id, nome, status) values ($1,$2,'Entregador Fadiga','disponivel')`,
-        [fadigaTenantId, fadigaUser.id]
-      );
+      await criarEntregador(pg, fadigaTenantId, fadigaUser.id, { nome: 'Entregador Fadiga', status: 'disponivel' });
       const sessFadiga = await signInAs(fadigaUser.email);
       const { data: fadiga, error: eFadiga } = await sessFadiga.rpc('config_fadiga_do_meu_tenant');
       r.check(
