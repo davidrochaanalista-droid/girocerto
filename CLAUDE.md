@@ -3328,6 +3328,68 @@ C:\Users\Usuário\Projetos\giro certo
       (`railway status`/`railway logs`). Nada commitado ainda (os fixes
       do item 59 já estão aplicados ao vivo e no `db/schema.sql`, prontos
       pra commit junto com o resto).
+61. **Teste de capacidade do `dispatch-engine/` em volume de loja
+    estabelecida** (28/08/2026, pedido direto do usuário: "como
+    especialista, faça o melhor" — em resposta a "o que mais está
+    pendente?", escolhi essa pendência por ser a que mais moveria o
+    ponteiro pro piloto). Diferente do item 60 (que testava AMPLITUDE —
+    todas as funções, restaurante+feira): este testou PRESSÃO — quanto o
+    motor de despacho aguenta antes de degradar, já que ~1.000
+    pedidos/dia é a norma pra loja estabelecida (item 50), não exceção.
+    - **Setup**: 15 lojas "estabelecidas" (`segundos_timeout_despacho=15`,
+      `segundos_repique_notificacao=5` — mais agressivo que o padrão, de
+      propósito, pra caber mais ciclos de timeout/repique no mesmo tempo
+      real de teste), 30 entregadores fixos (21 responsivos + 9
+      "fantasma" — nunca respondem, forçando timeout+repique+failover
+      repetidamente sob carga real, não só no caminho feliz). Lojas
+      criando pedidos em ritmo agressivo (a cada 4-9s cada, não a média
+      diária — simula pico sustentado) por 5 minutos reais.
+    - **Achado de infraestrutura do PRÓPRIO teste** (não é bug do
+      produto): a conexão Postgres DIRETA (`pg.Client`, usada por todo
+      teste desta sessão via `tests/lib/helpers.js`) morreu 2 de 3 vezes
+      no meio de uma sessão de script longa (5-8min) rodando desta
+      máquina — "Client has encountered a connection error and is not
+      queryable", sem reconexão automática, perdendo a rodada inteira
+      (inclusive o cleanup, deixando dados presos que precisaram de
+      limpeza manual depois). Reescrito pra usar só o client Supabase-JS
+      via PostgREST/HTTPS (`admin`, o mesmo que o próprio
+      `dispatch-engine/` usa) — sem conexão Postgres direta nenhuma. 4ª
+      tentativa rodou limpa, 0 erros. **Lição pra scripts de teste
+      futuros que rodam mais que ~2-3 minutos: preferir PostgREST
+      (`admin.from(...)`) a uma conexão `pg` direta segurada por muito
+      tempo** — o caminho que o próprio dispatch-engine usa em produção
+      é comprovadamente mais estável nesta máquina/rede do que a conexão
+      direta que os testes têm usado até agora.
+    - **Resultado (4ª rodada, limpa)**: 279 pedidos criados em 5min (15
+      lojas), 191 entregues, 28 recusas explícitas, 79 timeouts
+      ("expirou sem resposta" — os fantasmas fazendo efeito), 56
+      esgotamentos totais ("sem entregador disponível" — esperado, com
+      9/30 entregadores nunca respondendo). **Latência de despacho
+      (`pedidos.pronto_em` até a 1ª `tentativas_despacho.notificado_em`),
+      n=260: mínimo 0,82s, p50 0,96s, p95 1,43s, máximo 2,03s** — sem
+      cauda longa, sem degradação visível ao longo dos 5 minutos.
+      **Memória do processo** (amostrada a cada 15s via PowerShell
+      externo): cresceu de 24MB pra ~215MB nos primeiros ~3 minutos,
+      depois oscilou nessa faixa (211-217MB) pelo resto do teste — padrão
+      consistente com GC normal (não crescimento descontrolado), mas 5
+      minutos não é tempo suficiente pra descartar 100% um vazamento
+      lento que só apareceria em horas/dias.
+    - **1 achado real, não explicado ainda**: 2 dos 279 pedidos (0,7%)
+      ficaram com `status='pronto'` mas **nunca receberam `rota_id`
+      nenhum** — diferente de "esgotado" (que teria pelo menos 1
+      tentativa registrada antes de desistir), esses dois nunca tiveram
+      NENHUMA tentativa criada. Os dois marcaram `pronto_em` a 32ms um do
+      outro (lojas diferentes, praticamente simultâneas). Zero erro
+      correspondente no log do motor. Não deu pra investigar mais fundo
+      porque os dados já tinham sido limpos antes do achado ser notado
+      no relatório — **não bloqueia o piloto atual** (taxa de 0,7%, sem
+      repetição confirmada), mas fica registrado como hipótese de "NOTIFY
+      raramente perdido sob concorrência real" pra investigar se
+      reaparecer — idealmente com um teste dedicado que preserva os dados
+      brutos em vez de limpar antes de analisar a fundo.
+    - Railway confirmado saudável no fim. Script de teste (scratchpad,
+      deletado depois). Nada commitado (CLAUDE.md é a única mudança desta
+      rodada).
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -3538,13 +3600,13 @@ C:\Users\Usuário\Projetos\giro certo
       desatualizada. Comportamento preservado exatamente como estava (só realocado),
       mas vale investigar numa sessão futura se o ranking por distância está mesmo
       funcionando com dado fresco.
-- [ ] **Validar capacidade do `dispatch-engine/` em volume real de loja estabelecida
-      (20.000–35.000+ pedidos/mês, ~1.000/dia)** — registrado no item 50 (estratégia de
-      precificação, 26-27/08/2026): esse volume é a norma pra loja estabelecida, não
-      exceção, então isso deixou de ser nice-to-have. Arquitetura atual (processo Node
-      único, estado de despacho em memória, Postgres LISTEN/NOTIFY) nunca foi testada
-      de carga real nesse patamar — só validada com o piloto pequeno (poucas lojas,
-      volume baixo).
+- [x] ~~Validar capacidade do `dispatch-engine/` em volume real de loja estabelecida
+      (20.000–35.000+ pedidos/mês, ~1.000/dia)~~ — **testado no item 61 (28/08/2026)**.
+      Resultado: latência de despacho excelente sob pressão sustentada (p50 0,96s,
+      p95 1,43s, máx 2,03s), memória do processo estável (~215MB, sem sinal de
+      vazamento em 5min). 1 achado real, raro (2/279 pedidos, 0,7%): ver item 61
+      pro detalhe — não bloqueia o piloto, mas fica registrado pra investigar se
+      reaparecer em volume maior.
 - [ ] `.env` local tem as credenciais do projeto Supabase hospedado
       (`ntmxkwzhumiqspxijuln`) — nunca comitar, já está no `.gitignore`.
 - [ ] 3 nits do `/ultrareview` de 14/08/2026 ficaram de fora desta rodada (só os 6
@@ -3652,6 +3714,18 @@ C:\Users\Usuário\Projetos\giro certo
   100% orientado a RPC/service role, sem UI de cliente ainda — era o
   caso do lado entregador do módulo feira), pular `signInAs()` pra esse
   grupo também ajuda a ficar longe do limite.
+- **Scripts de teste avulsos que rodam mais que ~2-3 minutos: preferir o
+  client Supabase-JS via PostgREST (`admin.from(...)`) a uma conexão
+  `pg.Client` direta segurada por muito tempo** (achado no teste de
+  capacidade do item 61, 28/08/2026) — a conexão direta morreu 2 de 3
+  vezes nesta máquina no meio de uma rodada de 5-8min ("Client has
+  encountered a connection error and is not queryable", sem reconexão
+  automática, perdendo a rodada inteira incluindo o cleanup). O caminho
+  PostgREST/HTTPS (o mesmo que o próprio `dispatch-engine/` usa em
+  produção) ficou estável por HORAS na mesma máquina/sessão. Pra setup
+  rápido (poucos segundos, muitas inserções em sequência) a conexão
+  direta continua rápida e prática — o risco é especificamente em
+  scripts que mantêm a MESMA conexão aberta por vários minutos.
 
 ## REGRA DE ATUALIZAÇÃO
 
