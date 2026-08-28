@@ -6114,3 +6114,281 @@ begin
   end if;
 end;
 $$;
+
+-- ==============================================================
+-- ITEM 58 (27/08/2026) — APP DO ENTREGADOR: FALAR COM CLIENTE/LOJA +
+-- "PROBLEMAS COM A ENTREGA" (pedido direto do usuário)
+-- ==============================================================
+
+-- tenants não tinha NENHUM telefone de contato — cadastro-loja.html só
+-- coleta chave Pix (que pode ser CPF/CNPJ/e-mail/aleatória, não confiável
+-- como telefone de verdade). Sem isso o entregador não tinha como ligar
+-- pra loja direto do app.
+alter table tenants add column if not exists telefone text;
+
+-- 'problema_entrega' (achado do usuário testando o app: faltava um jeito
+-- de reportar um problema ESPECÍFICO de uma entrega — cliente não
+-- atende, endereço não encontrado, local fechado — diferente de
+-- 'problema_veiculo' (item 51), que é sobre o veículo/a rota inteira, não
+-- uma parada específica. Mesmo mecanismo (alertas_seguranca, confirmação
+-- humana da loja, nunca aciona nada sozinho automaticamente) — só mais
+-- um tipo. Nome exato do constraint confirmado contra o banco hospedado
+-- antes de aplicar (drop/add, já que CHECK não tem "adiciona valor" direto).
+alter table alertas_seguranca drop constraint if exists alertas_seguranca_tipo_check;
+alter table alertas_seguranca add constraint alertas_seguranca_tipo_check
+  check (tipo in ('desvio_rota', 'sos_manual', 'motoboy_parado', 'dispositivo_trocado', 'problema_veiculo', 'problema_entrega'));
+
+-- endereco_loja_do_meu_tenant() ganha telefone_loja junto (mesma RPC,
+-- mesmo motivo de existir: policy de select em tenants não cobre
+-- entregador, precisa de SECURITY DEFINER pra ler o telefone da loja).
+create or replace function endereco_loja_do_meu_tenant()
+returns table(endereco_loja text, telefone_loja text)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select t.endereco_loja, t.telefone
+  from tenants t
+  join entregadores e on e.tenant_id = t.id
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where p.auth_user_id = auth.uid();
+$$;
+
+-- rastrear_pedido_publico(): incidente_ativo agora também considera
+-- 'problema_entrega', mesmo critério de 'problema_veiculo' (aviso
+-- genérico pro cliente, sem expor descricao).
+create or replace function rastrear_pedido_publico(p_pedido_id uuid)
+returns table(
+  status text,
+  nome_loja text,
+  endereco text,
+  destino_lat double precision,
+  destino_lng double precision,
+  criado_em timestamptz,
+  pronto_previsto_em timestamptz,
+  entregador_nome text,
+  entregador_veiculo text,
+  entregador_lat double precision,
+  entregador_lng double precision,
+  entregador_localizacao_atualizada_em timestamptz,
+  codigo_entrega text,
+  avaliacao_entrega smallint,
+  avaliacao_comentario text,
+  incidente_ativo boolean
+)
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not verificar_rate_limit('rastrear_pedido_publico', 30) then
+    raise exception 'Muitas tentativas — aguarde um momento e tente de novo.';
+  end if;
+
+  return query
+  select
+    p.status,
+    t.nome,
+    p.endereco,
+    p.lat,
+    p.lng,
+    p.criado_em,
+    p.pronto_previsto_em,
+    case when p.status = 'a_caminho' then split_part(pe.nome, ' ', 1) end,
+    case when p.status = 'a_caminho' then pe.tipo_veiculo end,
+    case when p.status = 'a_caminho' then pe.lat end,
+    case when p.status = 'a_caminho' then pe.lng end,
+    case when p.status = 'a_caminho' then pe.localizacao_atualizada_em end,
+    case when p.status = 'a_caminho' then p.codigo_entrega end,
+    p.avaliacao_entrega,
+    p.avaliacao_comentario,
+    exists(
+      select 1 from alertas_seguranca a
+      where a.rota_id = p.rota_id
+        and a.tipo in ('problema_veiculo', 'problema_entrega')
+        and a.status in ('aguardando_confirmacao', 'escalado_loja')
+    )
+  from pedidos p
+  join tenants t on t.id = p.tenant_id
+  left join rotas_entrega r on r.id = p.rota_id
+  left join entregadores e on e.id = r.entregador_id
+  left join pessoas_entregadoras pe on pe.id = e.pessoa_id
+  where p.id = p_pedido_id;
+end;
+$$;
+grant execute on function rastrear_pedido_publico(uuid) to anon, authenticated;
+
+-- provisionar_cadastro_pos_signup(): ramo de loja agora grava tenants.telefone
+-- também, vindo de cadastro-loja.html (novo campo "Telefone da loja").
+create or replace function provisionar_cadastro_pos_signup()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  meta jsonb := new.raw_user_meta_data;
+  novo_tenant_id uuid;
+  v_pessoa_id uuid;
+begin
+  if meta ? 'tenant_id' then
+    insert into pessoas_entregadoras (
+      auth_user_id, email, nome, tipo_veiculo, data_nascimento,
+      endereco, numero_residencia, cep, chave_pix,
+      cpf, cnh_numero, cnh_validade, placa, crlv_validade,
+      rg_numero, responsavel_nome, is_teste,
+      verificacao_enviada_em, verificacao_prazo_limite, consentimento_lgpd_aceito_em
+    ) values (
+      new.id,
+      new.email,
+      meta->>'nome',
+      coalesce(nullif(meta->>'tipo_veiculo', ''), 'moto'),
+      nullif(meta->>'data_nascimento', '')::date,
+      meta->>'endereco',
+      meta->>'numero_residencia',
+      meta->>'cep',
+      meta->>'chave_pix',
+      meta->>'cpf',
+      meta->>'cnh_numero',
+      nullif(meta->>'cnh_validade', '')::date,
+      meta->>'placa',
+      nullif(meta->>'crlv_validade', '')::date,
+      meta->>'rg_numero',
+      meta->>'responsavel_nome',
+      coalesce((meta->>'is_teste')::boolean, false),
+      now(),
+      now() + interval '7 days',
+      now()
+    )
+    on conflict (auth_user_id) where auth_user_id is not null do nothing
+    returning id into v_pessoa_id;
+
+    if v_pessoa_id is null then
+      select id into v_pessoa_id from pessoas_entregadoras where auth_user_id = new.id;
+    end if;
+
+    insert into entregadores (tenant_id, pessoa_id, tipo_vinculo)
+    values ((meta->>'tenant_id')::uuid, v_pessoa_id, 'freelance')
+    on conflict (pessoa_id, tenant_id) where tenant_id is not null do nothing;
+
+    update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
+
+  elsif meta ? 'nome' then
+    novo_tenant_id := gen_random_uuid();
+    insert into tenants (
+      id, nome, telefone, proprietario_nome, proprietario_cpf, proprietario_data_nascimento,
+      proprietario_endereco, proprietario_numero_endereco, proprietario_cep,
+      cnpj, endereco_loja, numero_loja, cep_loja, segmento,
+      tempo_preparo_padrao_min, chave_pix, is_teste, consentimento_lgpd_aceito_em
+    ) values (
+      novo_tenant_id,
+      meta->>'nome',
+      meta->>'telefone',
+      meta->>'proprietario_nome',
+      meta->>'proprietario_cpf',
+      nullif(meta->>'proprietario_data_nascimento', '')::date,
+      meta->>'proprietario_endereco',
+      meta->>'proprietario_numero_endereco',
+      meta->>'proprietario_cep',
+      meta->>'cnpj',
+      meta->>'endereco_loja',
+      meta->>'numero_loja',
+      meta->>'cep_loja',
+      nullif(meta->>'segmento', ''),
+      nullif(meta->>'tempo_preparo_padrao_min', '')::integer,
+      meta->>'chave_pix',
+      coalesce((meta->>'is_teste')::boolean, false),
+      now()
+    )
+    on conflict (id) do nothing;
+
+    insert into usuarios_loja (tenant_id, auth_user_id, nome, papel)
+    values (novo_tenant_id, new.id, meta->>'proprietario_nome', 'dono')
+    on conflict (auth_user_id) do nothing;
+
+    if meta ? 'horarios' then
+      insert into horarios_funcionamento (tenant_id, dia_semana, periodo_inicio, periodo_fim)
+      select novo_tenant_id, (h->>'dia_semana')::smallint, (h->>'periodo_inicio')::time, (h->>'periodo_fim')::time
+      from jsonb_array_elements(meta->'horarios') as h;
+    end if;
+
+    update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
+  end if;
+
+  return new;
+end;
+$$;
+
+-- ==============================================================
+-- ITEM 59 (27/08/2026) — FIX: aceitar_rota()/finalizar_rota_se_completa()
+-- (módulo feira) quebradas desde o item 52 — achado do teste de carga
+-- real (50 entregadores, 27 lojas, 15 bancas, pedido direto do usuário).
+-- A nota do item 52 ("FEIRA — só os 4 pontos que liam/escreviam colunas
+-- movidas") cobriu buscar_entregador_mais_proximo/
+-- atualizar_localizacao_entregador/verificar_proximidade_entregas (leitura),
+-- mas passou batido em 2 pontos de ESCRITA que também tocavam
+-- entregadores.status (coluna removida no item 52, movida pra
+-- pessoas_entregadoras): aceitar_rota() (RPC — entregador aceita a rota)
+-- e finalizar_rota_se_completa() (trigger — fecha a rota quando a última
+-- parada é concluída). Como o módulo feira nunca rodou em produção (sem
+-- serviço vivo, CLAUDE.md), isso nunca tinha sido pego — 100% das ofertas
+-- de feira quebravam em "column status does not exist" assim que o
+-- entregador tentava aceitar. Mesmo fix de sempre: update em
+-- pessoas_entregadoras via pessoa_id resolvido a partir do vínculo.
+-- ==============================================================
+
+create or replace function aceitar_rota(
+  p_entrega_rota_id uuid,
+  p_distancia_ate_feira_km numeric default null,
+  p_bonus_deslocamento numeric default null
+)
+returns void as $$
+declare
+  v_entregador_id uuid;
+begin
+  update entrega_rota
+    set aceita_em = now(),
+        status = 'em_rota',
+        distancia_ate_feira_km = p_distancia_ate_feira_km,
+        bonus_deslocamento = p_bonus_deslocamento
+    where id = p_entrega_rota_id and status = 'em_montagem'
+    returning entregador_id into v_entregador_id;
+
+  if v_entregador_id is not null then
+    update pessoas_entregadoras
+    set status = 'em_rota'
+    where id = (select pessoa_id from entregadores where id = v_entregador_id)
+      and status <> 'pausado';
+  end if;
+end;
+$$ language plpgsql;
+
+create or replace function finalizar_rota_se_completa()
+returns trigger as $$
+declare
+  pendentes int;
+  v_entregador_id uuid;
+begin
+  if new.status = 'concluida' and old.status is distinct from 'concluida' then
+    select count(*) into pendentes
+      from rota_parada
+      where entrega_rota_id = new.entrega_rota_id and status = 'pendente';
+
+    if pendentes = 0 then
+      update entrega_rota
+        set status = 'finalizada', fechada_em = now()
+        where id = new.entrega_rota_id
+        returning entregador_id into v_entregador_id;
+
+      if v_entregador_id is not null then
+        update pessoas_entregadoras
+        set status = 'disponivel'
+        where id = (select pessoa_id from entregadores where id = v_entregador_id)
+          and status <> 'pausado';
+      end if;
+    end if;
+  end if;
+  return new;
+end;
+$$ language plpgsql;

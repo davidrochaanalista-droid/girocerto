@@ -3159,7 +3159,155 @@ C:\Users\Usuário\Projetos\giro certo
     - `cd tests && node run-all.js`: **160/160 passou, 10/10 áreas**.
       Protocolo de sempre seguido (`railway down -y` antes, `railway up -y
       -c` depois, confirmado saudável via `railway status`/`railway logs`).
+    - Commitado (`2e9d601`).
+58. **App do entregador — "falar com o cliente", "falar com a loja" e
+    "problemas com a entrega"** (27/08/2026, pedido direto do usuário: "na
+    tela do entregador, quando estiver em rota, tem que ter uma opção
+    para falar com o cliente e com a loja, uma opção 'problemas com a
+    entrega'").
+    - **`tenants.telefone`** — coluna nova. `tenants` não tinha NENHUM
+      telefone de contato até agora; `cadastro-loja.html` só coletava
+      chave Pix (que pode ser CPF/CNPJ/e-mail/chave aleatória, não
+      confiável como telefone de verdade). Campo obrigatório novo em
+      "Dados da loja" (passo 3 do cadastro), gravado via
+      `provisionar_cadastro_pos_signup()` (mesmo mecanismo de sempre —
+      RLS não libera insert direto em `tenants` antes da confirmação de
+      e-mail, então o trigger lê de `raw_user_meta_data`).
+    - **"Falar com a loja"** — `tel:` link no header de `view-rota`
+      (rota inteira, não por parada), lido via
+      `endereco_loja_do_meu_tenant()` (ganhou `telefone_loja` no retorno,
+      mesma RPC que já buscava o endereço). Some sozinho se a loja não
+      tiver telefone cadastrado (lojas antigas, de antes desse campo
+      existir) — não bloqueia nada, só não mostra o botão.
+    - **"Falar com o cliente"** — `tel:` link no header de `view-entrega`,
+      por PARADA (`pedidos.cliente_telefone`, já existia, só não estava
+      sendo usado no client). Mesmo "some se não tiver telefone".
+    - **"Problemas com a entrega"** — novo `alertas_seguranca.tipo =
+      'problema_entrega'` (constraint CHECK estendida via drop/add — nome
+      real confirmado contra o banco hospedado antes de aplicar, não
+      chutado). Mesmo mecanismo exato de `problema_veiculo` (item 51):
+      tela com 4 opções (endereço não encontrado / cliente não atende /
+      local fechado / outro) + descrição livre opcional, grava em
+      `alertas_seguranca` (mesma policy `FOR ALL` que já cobria o insert
+      de `problema_veiculo`, sem mudança de RLS), aparece no banner de
+      `painel-loja.html` (`legendaAlerta()`/`renderizarAlertasBanner()`
+      estendidos) e ativa `incidente_ativo` em `rastreio-pedido.html`
+      (mesmo aviso genérico sem expor descrição, `rastrear_pedido_publico()`
+      redefinida pra checar os 2 tipos). Diferença de propósito do
+      `problema_veiculo`: esse é sobre a rota/veículo inteiro; o novo é
+      sobre UMA parada específica (por isso só aparece em `view-entrega`,
+      não em `view-rota`).
+    - **Fora de escopo desta rodada, de propósito**: `painel-loja.html`
+      não ganhou tela de edição de `tenants.telefone` pra lojas
+      EXISTENTES (só cadastro novo grava o campo) — pedido do usuário foi
+      especificamente sobre o app do entregador. Lojas antigas simplesmente
+      não mostram o botão "falar com a loja" até alguém preencher esse
+      campo por algum outro caminho (ex: SQL direto, ou uma tela de
+      configurações futura).
+    - Migração aplicada ao vivo contra o banco hospedado (coluna, CHECK
+      estendida, 2 funções redefinidas) + `db/schema.sql`/migrations
+      sincronizados. Smoke test rodado contra o banco real (5/5 OK:
+      coluna grava/lê, RPC devolve a coluna nova, CHECK aceita o tipo
+      novo e continua bloqueando tipo inválido, `incidente_ativo` reflete
+      o alerta novo) — verificação de UI real num navegador NÃO foi feita
+      nesta rodada (ficou em paralelo com um teste de carga grande rodando
+      na mesma sessão); recomendo testar visualmente antes de considerar
+      pronto pra uso real.
     - Nada commitado ainda.
+59. **FIX crítico: `aceitar_rota()`/`finalizar_rota_se_completa()` (módulo
+    feira) quebradas desde o item 52 — 100% das ofertas de feira
+    falhavam** (27/08/2026, achado do item 60 abaixo). Ver detalhe no
+    item 59 embutido em `db/schema.sql` — resumo: as duas funções ainda
+    escreviam em `entregadores.status` (coluna removida no item 52,
+    movida pra `pessoas_entregadoras`), e a nota do item 52
+    ("FEIRA — só os 4 pontos que liam/escreviam colunas movidas") só
+    cobriu os pontos de LEITURA, não esses 2 de escrita. Como o módulo
+    feira nunca rodou em produção, isso só foi descoberto agora, no
+    primeiro teste real que levou uma oferta de feira até o aceite.
+    Corrigido com o mesmo padrão de sempre (update em
+    `pessoas_entregadoras` via `pessoa_id` resolvido a partir do
+    vínculo). Aplicado ao vivo + `db/schema.sql`/migrations
+    sincronizados. Nada commitado ainda.
+60. **Teste real de carga completo — 50 entregadores, 27 lojas, 15 bancas
+    de feira, todas as funções** (27-28/08/2026, pedido direto do
+    usuário: "faça o teste real, com todas as funçoes, 50 entregadores,
+    27 lojas, 15 banca de feiras"). Maior teste real já rodado nesta
+    sessão — primeira vez que o módulo feira é exercitado de ponta a
+    ponta com o motor de despacho de verdade.
+    - **Setup**: 27 tenants (restaurante), 2 feiras com 15 bancas (8+7),
+      15 consumidores da feira, 50 entregadores em 4 perfis — 18 fixos
+      (1:1 com lojas), 14 freelance (pool aberto, turno ativo), 10
+      feira-only (`tenant_id` null, `aceita_feira=true`), 8 mistos
+      (restaurante + feira na mesma conta). `dispatch-engine/` local
+      como subprocesso real (protocolo de sempre: `railway down -y`
+      antes, `up -y -c` depois) reagindo a NOTIFY de verdade (tenants
+      SEM `is_teste=true`, diferente de `despacho_motor.test.js` —
+      Railway já estava fora do ar o tempo todo, então não tinha risco
+      de disputa com produção). Lado feira chamado DIRETO via
+      `feira-dispatch/src/routeManager.js`/`checkout.js`/
+      `feeCalculator.js`/`notifications.js` (mesmo padrão documentado no
+      próprio README do módulo — sem serviço vivo em lugar nenhum).
+      4 minutos de carga real sustentada.
+    - **Achado #1 (crítico, virou item 59)**: `aceitar_rota()` quebrada
+      — 105 falhas na 1ª rodada, bloqueando TODA aceitação de rota de
+      feira. Corrigido, testado isoladamente (smoke test dedicado, ciclo
+      completo: despachar → aceitar → todas as paradas → trigger fecha a
+      rota automaticamente → entregador libera) e reconfirmado na
+      re-rodada completa.
+    - **Achado #2 (achado no cleanup do PRÓPRIO teste, não do produto)**:
+      o script de limpeza do teste não conhecia 3 tabelas do módulo feira
+      sem NENHUM `on delete cascade` — `proposta_consolidacao`
+      (`despacharPedido()` gera quando consolida num grupo já aberto),
+      `entrega_metrica` (populada por `finalizar_rota_se_completa()` ao
+      fechar uma rota — só apareceu depois de corrigir o achado #1,
+      porque antes nenhuma rota chegava a fechar de verdade) e
+      `pedido_nota` (populada só se `pedido.status_coleta` virar
+      `'finalizado'`, não usado neste teste, mas limpo defensivamente).
+      Sem esses 3, o cleanup ficava preso em cascata: bloqueava
+      `entrega_rota` → bloqueava até 3 tenants inteiros (os que tinham
+      entregador misto com rota presa) → bloqueava a limpeza de outros
+      entregadores que tinham `rotas_entrega` nesses mesmos tenants. Achado
+      via `git status`-style investigação direta no banco (contagem de
+      linhas remanescentes por padrão de nome, comparado contra os 2
+      órfãos PRÉ-EXISTENTES de 2 dias atrás — `Banca Teste Hortifruti`/
+      `Cliente Feira Teste` — que foram deliberadamente NÃO tocados,
+      mesma disciplina já registrada antes nesta sessão). Script de
+      limpeza corrigido; re-rodada final confirmou 0 linhas remanescentes
+      em todas as tabelas envolvidas (tenants, pessoas_entregadoras,
+      feira, estabelecimentos, usuarios, entrega_rota, auth users).
+    - **Achado #3 (rate limit, não é bug do produto)**: 50
+      `signInAs()` (password grant real) em sequência rápida bate no
+      rate limit de auth do Supabase por volta do 49º. Corrigido com
+      pacing (400ms entre chamadas) + retry com backoff, e pulando
+      `signInAs()` de propósito pro grupo feira-only (10 entregadores)
+      já que `entregadorFeiraLoop` só usa `admin`/RPC, nunca sessão RLS
+      (não existe UI de entregador pro lado feira ainda).
+    - **Resultado final (rodada limpa, com todos os fixes)**: restaurante
+      — 193 pedidos criados, 136 entregues, 27 recusas (failover
+      exercitado de verdade), 23 pausas/retomadas, 136 repasses gerados
+      (1:1 com entregas, confere). Feira — 32 `pedido_grupo` criados, 27
+      despachados, **22 entregues de ponta a ponta** (0 antes do fix do
+      item 59), 3 carrinhos abaixo do mínimo corretamente bloqueados por
+      `validarValorMinimo()`. Crons: 2 rotas de feira fechadas por
+      expiração, 109 notificações processadas. 18 entregadores com 1
+      rota ainda ativa ao final (natural — o teste corta no meio do
+      ciclo de quem estava no meio de uma entrega, não indica ninguém
+      "preso" de verdade). **0 erros capturados na rodada final.**
+    - Funções reais exercitadas de ponta a ponta nesta rodada: despacho
+      restaurante (oferta/aceite/recusa/failover/retirada/entrega/
+      repasse), pausar/retomar turno, `despacharPedido()` (rota nova e
+      consolidação), `aceitar_rota()`, `registrar_chegada_parada()`,
+      conclusão de parada com `calcular_divergencia_m()`, fechamento
+      automático de rota via trigger, `avaliacao` de entregador,
+      `validarValorMinimo()` (bloqueio real, não só o caminho feliz),
+      `fecharRotasExpiradas()`, `expirar_pedidos_pendentes()`,
+      `processarLote()` de notificações (com stubs no-op de
+      WhatsApp/push, sem disparo real).
+    - Script de teste (scratchpad, deletado depois, convenção de sempre)
+      + Railway confirmado saudável no fim
+      (`railway status`/`railway logs`). Nada commitado ainda (os fixes
+      do item 59 já estão aplicados ao vivo e no `db/schema.sql`, prontos
+      pra commit junto com o resto).
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -3453,6 +3601,37 @@ C:\Users\Usuário\Projetos\giro certo
   SQL pra simular cenários que não precisam do e-mail de verdade, reservando
   `signUp()` real pros casos que realmente exigem provar o fluxo ponta a
   ponta).
+- **Migração de schema que MOVE uma coluna (ex: de `entregadores` pra
+  `pessoas_entregadoras`, item 52) precisa de um grep pela coluna em TODO
+  o `db/schema.sql`, não só nos pontos que a própria migração já sabe que
+  toca.** Achado real, 2 vezes na mesma migração: `gerar_repasse_ao_entregar()`
+  (item 55) e depois `aceitar_rota()`/`finalizar_rota_se_completa()` (item
+  59) continuaram escrevendo na coluna antiga — `entregadores.status` —
+  meses depois de ela deixar de existir, e nenhuma delas apareceu na nota
+  do item 52 que listava "os pontos afetados" (a lista foi montada de
+  memória/contexto, não por busca exaustiva). As duas só foram achadas
+  porque um teste real EXERCITOU o caminho de código específico (o item
+  55 só apareceu num teste sustentado que chegava até confirmar entrega
+  de verdade; o item 59 só apareceu no primeiro teste real que levava uma
+  oferta de feira até o aceite — o módulo feira nunca tinha rodado em
+  produção). Lição: depois de qualquer `alter table ... drop column`/
+  renomeação, rodar `grep -n "nome_da_coluna" db/schema.sql` (ou
+  equivalente) contra o arquivo INTEIRO antes de considerar a migração
+  completa, não confiar só na lista de "pontos afetados" que a sessão
+  lembra de cabeça — módulos pouco exercitados (sem CI, sem uso em
+  produção, como o de feira) são exatamente onde esse tipo de breakage
+  fica invisível por mais tempo.
+- **`signInAs()` (password grant real) em sequência rápida bate no rate
+  limit de auth do Supabase por volta da 49ª chamada** (achado no teste
+  de carga de 50 entregadores, item 60) — limite diferente do rate limit
+  de e-mail do `signUp()` já documentado acima. Ao criar muitos
+  entregadores/usuários de teste que precisam de sessão RLS de verdade,
+  espaçar as chamadas (ex: ~400ms entre elas) e ter retry com backoff
+  pronto pro erro "Request rate limit reached". Se parte dos
+  entregadores nunca vai precisar de sessão própria (ex: um fluxo
+  100% orientado a RPC/service role, sem UI de cliente ainda — era o
+  caso do lado entregador do módulo feira), pular `signInAs()` pra esse
+  grupo também ajuda a ficar longe do limite.
 
 ## REGRA DE ATUALIZAÇÃO
 

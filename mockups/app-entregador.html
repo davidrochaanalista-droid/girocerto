@@ -472,6 +472,33 @@ complementar). -->
     <button class="btn-danger" onclick="enviarProblemaVeiculo()">Avisar a loja agora</button>
   </div>
 
+  <!-- ===================== VIEW: PROBLEMA COM A ENTREGA ===================== -->
+  <!-- item 58 (27/08/2026, pedido direto do usuário): mesmo padrão de
+  view-problema-veiculo (item 51), mas pra imprevistos DESTA parada
+  específica (não do veículo/rota inteira) — sempre volta pra view-entrega,
+  a única tela de onde essa opção aparece. -->
+  <div class="view" id="view-problema-entrega">
+    <button class="link-btn" onclick="mostrar('view-entrega')" style="margin-bottom:14px;">← Voltar</button>
+    <h2 style="margin-bottom:4px;">Problemas com a entrega</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 18px;">Isso avisa a loja na hora sobre esta parada — ela decide o que fazer com o pedido.</p>
+
+    <div class="toggle-tipo" style="flex-wrap:wrap;">
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pe-opt-endereco" onclick="selecionarProblemaEntrega('endereco_nao_encontrado')">📍 Não achei o endereço</div>
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pe-opt-cliente" onclick="selecionarProblemaEntrega('cliente_nao_atende')">📵 Cliente não atende</div>
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pe-opt-local" onclick="selecionarProblemaEntrega('local_fechado')">🚪 Local fechado/inacessível</div>
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pe-opt-outro" onclick="selecionarProblemaEntrega('outro')">✏️ Outro</div>
+    </div>
+
+    <div class="field">
+      <label>Quer contar mais detalhe? (opcional)</label>
+      <textarea id="pe_descricao" rows="3" style="width:100%;padding:12px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;resize:vertical;" placeholder="Ex: toquei o interfone 3x, ninguém atendeu"></textarea>
+    </div>
+
+    <div id="pe_msg" class="msg"></div>
+
+    <button class="btn-danger" onclick="enviarProblemaEntrega()">Avisar a loja agora</button>
+  </div>
+
   <!-- ===================== VIEW: ROTA (paradas) ===================== -->
   <div class="view" id="view-rota">
     <!-- item 39 (25/08/2026): mapa em tela cheia (referência real que o
@@ -495,9 +522,16 @@ complementar). -->
     </div>
 
     <div id="rotaHeaderNormal">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
       <button class="link-btn" onclick="mostrar('view-turno')">← Voltar</button>
       <button class="link-btn" style="color:var(--red);" onclick="abrirProblemaVeiculo()">🔧 Problema com o veículo</button>
+    </div>
+    <!-- item 58 (27/08/2026, pedido direto do usuário): ligar pra loja
+    direto do app, sem precisar sair da tela e procurar o número. Some
+    sozinho se a loja não tiver telefone cadastrado (lojas antigas, de
+    antes desse campo existir). -->
+    <div id="r_ligarLojaBox" style="display:none;margin-bottom:14px;">
+      <a class="btn-outline" id="r_ligarLoja" style="display:block;text-align:center;text-decoration:none;">📞 Falar com a loja</a>
     </div>
     <h2 style="margin-bottom:4px;">Rota ativa</h2>
     <p style="color:var(--gray);font-size:13px;margin:0 0 18px;" id="r_resumo">—</p>
@@ -536,9 +570,20 @@ complementar). -->
     </div>
 
     <div id="entregaHeaderNormal">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
       <button class="link-btn" onclick="mostrar('view-rota')">← Voltar pra rota</button>
       <button class="link-btn" style="color:var(--red);" onclick="abrirProblemaVeiculo()">🔧 Problema com o veículo</button>
+    </div>
+    <!-- item 58 (27/08/2026, pedido direto do usuário): "falar com o
+    cliente" (por parada, some se o pedido não tiver telefone cadastrado)
+    e "problemas com a entrega" (endereço não encontrado, cliente não
+    atende etc — diferente de problema_veiculo, que é sobre a rota
+    inteira/o veículo). -->
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+      <div id="e_ligarClienteBox" style="display:none;flex:1;">
+        <a class="btn-outline" id="e_ligarCliente" style="display:block;text-align:center;text-decoration:none;">📞 Falar com o cliente</a>
+      </div>
+      <button class="btn-outline" style="flex:1;color:var(--red);border-color:var(--red);" onclick="abrirProblemaEntrega()">⚠️ Problemas com a entrega</button>
     </div>
     <p style="color:var(--gray);font-size:13px;">Parada <span id="e_indice">1</span></p>
     <h2 id="e_endereco" style="margin-bottom:16px;">—</h2>
@@ -722,6 +767,8 @@ let entregadorId = null;
 let pessoaId = null; // item 52 (27/08/2026): identidade da pessoa, separada do vínculo (entregadorId) com a loja atual
 let appNavegacaoPreferido = 'waze';
 let enderecoLojaAtual = null;
+let telefoneLojaAtual = null; // item 58 (27/08/2026): "Falar com a loja"
+let clienteTelefoneAtual = null; // item 58: "Falar com o cliente" (por parada, muda a cada abrirEntrega())
 let minhaPosicaoAtual = null; // item 38 — última posição conhecida, pro mapa embutido
 let statusEntregadorCanalAtivo = false;
 let pollStatusEntregadorTimer = null;
@@ -1786,6 +1833,7 @@ async function garantirEnderecoLoja(){
   if(enderecoLojaAtual !== null) return;
   const { data } = await supabaseClient.rpc('endereco_loja_do_meu_tenant');
   enderecoLojaAtual = (data && data[0] && data[0].endereco_loja) || '';
+  telefoneLojaAtual = (data && data[0] && data[0].telefone_loja) || '';
 }
 
 // item 54 (27/08/2026, Fase 2 — limite de rotas simultâneas): freelance
@@ -1849,6 +1897,14 @@ function montarRota(rota){
 
   document.getElementById('r_enderecoLoja').textContent = enderecoLojaAtual || 'Endereço da loja não cadastrado';
 
+  const ligarLojaBox = document.getElementById('r_ligarLojaBox');
+  if(telefoneLojaAtual){
+    document.getElementById('r_ligarLoja').href = 'tel:' + telefoneLojaAtual;
+    ligarLojaBox.style.display = 'block';
+  } else {
+    ligarLojaBox.style.display = 'none';
+  }
+
   // item 34 (25/08/2026, pedido explícito do usuário testando de ponta a
   // ponta): passo novo "cheguei na loja" ANTES da confirmação de retirada
   // — antes o botão de retirada aparecia direto, sem essa etapa.
@@ -1894,7 +1950,7 @@ function montarRota(rota){
       <div class="pay-pill ${p.pago_antecipado ? 'pix' : 'qrcode'}">
         ${p.pago_antecipado ? 'Pix · já pago' : 'Pix QR Code · a cobrar'}
       </div>
-      <button class="btn-primary" style="margin-top:12px;" data-pedido-id="${escapeHtml(p.id)}" data-endereco="${escapeHtml(p.endereco)}" data-valor="${p.valor_pedido}" data-indice="${i+1}" data-chegou="${p.chegou_entrega_em ? '1' : ''}">
+      <button class="btn-primary" style="margin-top:12px;" data-pedido-id="${escapeHtml(p.id)}" data-endereco="${escapeHtml(p.endereco)}" data-valor="${p.valor_pedido}" data-indice="${i+1}" data-chegou="${p.chegou_entrega_em ? '1' : ''}" data-cliente-telefone="${escapeHtml(p.cliente_telefone || '')}">
         ${p.status === 'entregue' ? 'Entregue ✓' : 'Ir pra essa parada'}
       </button>
     </div>
@@ -1902,7 +1958,7 @@ function montarRota(rota){
 
   paradasBox.querySelectorAll('button[data-pedido-id]').forEach(btn => {
     btn.addEventListener('click', () => {
-      abrirEntrega(btn.dataset.pedidoId, btn.dataset.endereco, Number(btn.dataset.valor), Number(btn.dataset.indice), !!btn.dataset.chegou);
+      abrirEntrega(btn.dataset.pedidoId, btn.dataset.endereco, Number(btn.dataset.valor), Number(btn.dataset.indice), !!btn.dataset.chegou, btn.dataset.clienteTelefone);
     });
   });
 }
@@ -2800,11 +2856,75 @@ async function enviarProblemaVeiculo(){
   mostrar(viewAntesDoProblemaVeiculo);
 }
 
+// item 58 (27/08/2026, pedido direto do usuário): mesmo mecanismo de
+// enviarProblemaVeiculo() (alertas_seguranca, confirmação humana da
+// loja), tipo diferente ('problema_entrega') — sempre parte de
+// view-entrega, então não precisa rastrear "view antes" como o de veículo.
+let problemaEntregaTipo = null;
+
+function abrirProblemaEntrega(){
+  problemaEntregaTipo = null;
+  document.querySelectorAll('#view-problema-entrega .tipo-opt').forEach(el => el.classList.remove('sel'));
+  document.getElementById('pe_descricao').value = '';
+  document.getElementById('pe_msg').className = 'msg';
+  mostrar('view-problema-entrega');
+}
+
+function selecionarProblemaEntrega(tipo){
+  problemaEntregaTipo = tipo;
+  document.querySelectorAll('#view-problema-entrega .tipo-opt').forEach(el => el.classList.remove('sel'));
+  document.getElementById('pe-opt-' + tipo.split('_')[0]).classList.add('sel');
+}
+
+async function enviarProblemaEntrega(){
+  const msg = document.getElementById('pe_msg');
+  msg.className = 'msg';
+
+  if(!problemaEntregaTipo){
+    msg.textContent = 'Escolhe o que aconteceu antes de enviar.';
+    msg.className = 'msg error';
+    return;
+  }
+  if(!paradaAtualPedidoId){
+    msg.textContent = 'Nenhuma parada em foco no momento.';
+    msg.className = 'msg error';
+    return;
+  }
+
+  const rotulos = { endereco_nao_encontrado: 'Não achei o endereço', cliente_nao_atende: 'Cliente não atende', local_fechado: 'Local fechado/inacessível', outro: 'Outro' };
+  const detalhe = document.getElementById('pe_descricao').value.trim();
+  const descricao = rotulos[problemaEntregaTipo] + (detalhe ? ' — ' + detalhe : '');
+
+  const { error } = await supabaseClient.from('alertas_seguranca').insert({
+    entregador_id: entregadorId,
+    rota_id: rotaAtivaId,
+    tipo: 'problema_entrega',
+    descricao,
+  });
+
+  if(error){
+    msg.textContent = 'Não deu pra avisar a loja: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+
+  alert('Loja avisada sobre esta entrega. O cliente também vai ver o aviso na página de rastreio.');
+  mostrar('view-entrega');
+}
+
 // ------------------------------------------------------------
 // ENTREGA / PAGAMENTO
 // ------------------------------------------------------------
-function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou){
+function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou, clienteTelefone){
   paradaAtualPedidoId = pedidoId;
+  clienteTelefoneAtual = clienteTelefone || '';
+  const ligarClienteBox = document.getElementById('e_ligarClienteBox');
+  if(clienteTelefoneAtual){
+    document.getElementById('e_ligarCliente').href = 'tel:' + clienteTelefoneAtual;
+    ligarClienteBox.style.display = 'block';
+  } else {
+    ligarClienteBox.style.display = 'none';
+  }
   document.getElementById('e_endereco').textContent = endereco;
   document.getElementById('e_enderecoEntregaFlutuante').textContent = endereco;
   document.getElementById('e_valor').textContent = formatarReal(Number(valor));

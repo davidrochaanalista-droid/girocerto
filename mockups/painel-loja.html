@@ -539,6 +539,10 @@ function legendaAlerta(a){
   // "Pneu furado — furou perto da praça") escrito pelo próprio app do
   // entregador — ver rotulos em enviarProblemaVeiculo() lá.
   if(a.tipo === 'problema_veiculo') return a.descricao || 'Problema com o veículo';
+  // item 58 (27/08/2026): mesmo padrão de problema_veiculo — descricao já
+  // vem com o rótulo do tipo, escrito pelo próprio app do entregador (ver
+  // rotulos em enviarProblemaEntrega() lá).
+  if(a.tipo === 'problema_entrega') return a.descricao || 'Problema na entrega';
   return a.tipo;
 }
 
@@ -552,7 +556,7 @@ function renderizarAlertasBanner(){
       <div>
         <span class="alerta-msg">⚠ ${escapeHtml(legendaAlerta(a))}</span>
         <span class="alerta-meta">${escapeHtml(a.entregadores && a.entregadores.pessoas_entregadoras ? a.entregadores.pessoas_entregadoras.nome : 'entregador')} · ${new Date(a.criado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}</span>
-        ${a.tipo === 'problema_veiculo' ? '<div class="alerta-meta" style="margin-top:2px;">Cliente já vê um aviso genérico na página de rastreio do pedido.</div>' : ''}
+        ${a.tipo === 'problema_veiculo' || a.tipo === 'problema_entrega' ? '<div class="alerta-meta" style="margin-top:2px;">Cliente já vê um aviso genérico na página de rastreio do pedido.</div>' : ''}
       </div>
       <div class="alerta-acoes">
         <button class="alerta-btn" onclick="resolverAlerta('${a.id}','confirmado_ok')">Confirmar OK</button>

@@ -216,6 +216,11 @@
       <input type="text" id="f_loja_nome" placeholder="Ex: Cartel Burguer">
     </div>
     <div class="field">
+      <label>Telefone da loja <span class="required">*</span></label>
+      <input type="text" id="f_loja_telefone" placeholder="(11) 98765-4321" inputmode="tel">
+      <div class="hint">É pra esse número que o motoboy liga direto do app se precisar falar com você.</div>
+    </div>
+    <div class="field">
       <label>Segmento <span class="required">*</span></label>
       <select id="f_loja_segmento">
         <option value="">Selecione</option>
@@ -370,7 +375,7 @@ function validarPasso(i){
   const req = {
     0: ['f_email','f_senha'],
     1: ['f_prop_nome','f_prop_cpf','f_prop_nasc','f_prop_end','f_prop_num','f_prop_cep'],
-    2: ['f_loja_nome','f_loja_segmento','f_loja_cnpj','f_loja_end','f_loja_num','f_loja_cep','f_loja_preparo'],
+    2: ['f_loja_nome','f_loja_telefone','f_loja_segmento','f_loja_cnpj','f_loja_end','f_loja_num','f_loja_cep','f_loja_preparo'],
     4: ['f_pix'],
   }[i] || [];
   for(const id of req){
@@ -478,6 +483,7 @@ function montarRevisao(){
     ['Proprietário', document.getElementById('f_prop_nome').value],
     ['CPF', document.getElementById('f_prop_cpf').value],
     ['Loja', document.getElementById('f_loja_nome').value],
+    ['Telefone da loja', document.getElementById('f_loja_telefone').value],
     ['Segmento', document.getElementById('f_loja_segmento').selectedOptions[0]?.textContent || ''],
     ['CNPJ', document.getElementById('f_loja_cnpj').value],
     ['Tempo de preparo padrão', document.getElementById('f_loja_preparo').value+' min'],
@@ -521,6 +527,7 @@ async function enviarCadastro(){
         emailRedirectTo: window.location.origin + '/painel-loja.html',
         data: {
           nome: document.getElementById('f_loja_nome').value,
+          telefone: document.getElementById('f_loja_telefone').value,
           proprietario_nome: document.getElementById('f_prop_nome').value,
           proprietario_cpf: document.getElementById('f_prop_cpf').value,
           proprietario_data_nascimento: document.getElementById('f_prop_nasc').value,
