@@ -3209,10 +3209,30 @@ C:\Users\Usuário\Projetos\giro certo
       sincronizados. Smoke test rodado contra o banco real (5/5 OK:
       coluna grava/lê, RPC devolve a coluna nova, CHECK aceita o tipo
       novo e continua bloqueando tipo inválido, `incidente_ativo` reflete
-      o alerta novo) — verificação de UI real num navegador NÃO foi feita
-      nesta rodada (ficou em paralelo com um teste de carga grande rodando
-      na mesma sessão); recomendo testar visualmente antes de considerar
-      pronto pra uso real.
+      o alerta novo).
+    - **Verificação visual completa no navegador** (28/08/2026, pedido
+      direto do usuário: "testa a tela do entregador no navegador").
+      Fixture real (loja com telefone + entregador aprovado + rota ativa
+      `em_entrega` + pedido com `cliente_telefone`), servido via
+      `npx serve` em `mockups/`, testado ponta a ponta:
+      "Falar com a loja" (`tel:` correto em `view-rota`), "Falar com o
+      cliente" (`tel:` correto em `view-entrega`), fluxo completo de
+      "Problemas com a entrega" (as 4 opções, seleção visual, descrição
+      livre, `alert()` de confirmação — dispensa `Return` pra não travar
+      o browser automation) gravando certo em `alertas_seguranca`.
+      Confirmado também do lado da loja (`painel-loja.html`: banner
+      mostra "Cliente não atende — Toquei o interfone 3x, ninguém
+      atendeu" + nota de que o cliente já vê aviso genérico, e
+      "Confirmar OK" resolve o alerta de verdade) e do lado do cliente
+      (`rastreio-pedido.html`: "Houve um imprevisto com a entrega. A
+      loja já foi avisada e vai entrar em contato.", sem vazar a
+      descrição). Achado à parte, não é bug do produto: `npx serve`
+      (clean URLs) descarta query strings em redirects de
+      `arquivo.html` → `arquivo` — passar `?loja=`/`?id=` direto na URL
+      não funciona sob esse servidor local, precisa navegar pra URL sem
+      extensão desde o início ou setar via `localStorage`/JS. Fixture
+      de teste toda removida depois (tenant, pessoa, entregador, dono,
+      auth users).
     - Nada commitado ainda.
 59. **FIX crítico: `aceitar_rota()`/`finalizar_rota_se_completa()` (módulo
     feira) quebradas desde o item 52 — 100% das ofertas de feira
