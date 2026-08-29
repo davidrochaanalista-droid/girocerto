@@ -3390,6 +3390,146 @@ C:\Users\Usuário\Projetos\giro certo
     - Railway confirmado saudável no fim. Script de teste (scratchpad,
       deletado depois). Nada commitado (CLAUDE.md é a única mudança desta
       rodada).
+62. **Investigação do achado do item 61 (0,7% de pedidos órfãos) — causa raiz
+    encontrada e corrigida** (28/08/2026, pedido direto do usuário: "opção 1,
+    opção 2, opção 3, a ordem fica seu critério, como especialista, faça o
+    melhor"). Achei uma sessão anterior (mesmo dia, sessão/scratchpad
+    diferente) que já tinha tentado reproduzir o achado com rajadas de
+    pedidos quase simultâneos entre lojas diferentes — não reproduziu o
+    padrão específico (0 órfãos em 86 pedidos/15 rajadas), mas no meio do
+    teste uma queda de DNS real desta máquina (`getaddrinfo ENOTFOUND
+    db.<ref>.supabase.co`) **derrubou o processo inteiro do
+    `dispatch-engine`** com uma exceção não tratada — não só perdeu 1
+    notificação.
+    - **Causa raiz**: em `iniciarListener()` (`dispatch-engine/index.js`), a
+      reconexão automática do listener de NOTIFY (`agendarReconexao`, existe
+      desde a sessão de 15/08) reagenda a si mesma dentro de um
+      `setTimeout(() => { ...; iniciarListener(); }, 5000)` **sem
+      `.catch()`**. Se essa nova tentativa de reconexão falhar de novo (ex:
+      rede/DNS ainda instável), a promise rejeitada vira unhandled rejection
+      e derruba o processo Node inteiro (comportamento padrão do Node
+      moderno) — não só a conexão do listener.
+    - **Por que isso explica melhor o achado do item 61 que "NOTIFY
+      perdido"**: se o processo já tivesse caído assim durante o teste de
+      capacidade, ele só voltaria ao ar quando o Railway reiniciasse
+      (supervisor externo) — sem log de erro correspondente pro pedido
+      específico, porque o log de antes do crash não menciona um pedido que
+      só passou a existir durante o downtime. Bate com "zero erro
+      correspondente no log" do achado original.
+    - **Corrigido**: a chamada de reconexão agora está em try/catch — falha
+      ao reconectar agenda outra tentativa em 5s (mesmo padrão de sempre),
+      em vez de matar o processo.
+    - **Rede de segurança adicional** (defesa em profundidade, não depende
+      de achar a causa exata de todo NOTIFY perdido que possa existir):
+      extraída a varredura de "pedidos prontos sem rota" de
+      `reconciliarNaSubida()` pra `despacharPedidosOrfaos()`, chamada agora
+      também (a) logo após qualquer reconexão bem-sucedida do listener
+      (fecha a janela entre "conexão caiu" e "LISTEN religado" — antes só a
+      subida do processo rodava essa varredura) e (b) num poll periódico de
+      60s independente de reconexão. Custo desprezível (1 SELECT
+      normalmente vazio a cada 60s).
+    - **Suíte de testes**: `despacho_motor.test.js` também estava falhando
+      antes desta sessão — não pela minha mudança (confirmado com
+      `git stash`, falhava igual no código original), mas por 86 rotas
+      "planejada" + 24 tentativas abertas acumuladas no banco hospedado
+      (resíduo órfão da sessão de investigação anterior, que crashou antes
+      de terminar sua própria limpeza — 20 tenants "Loja Repro N" +
+      ~40 `pessoas_entregadoras`/usuários de teste "Repro N"), fazendo a
+      reconciliação de subida estourar os 10s de timeout do teste. Limpo
+      (confirmado com o usuário antes, por ser delete em massa em produção
+      hospedada) — suíte completa voltou a passar 100%.
+    - Achado relacionado, **registrado mas não corrigido nesta sessão**
+      (fora do escopo do que foi pedido, risco de expandir demais): mesmo
+      padrão de "self-heal só limpa o timer, não reprocessa" existe também
+      pro lado de resposta — se o NOTIFY de
+      `tentativa_despacho_respondida` for perdido (mesmo tipo de gap), o
+      autocorretor do repique (`agendarRepique`) percebe que a tentativa já
+      tem `resultado` e só para de repicar, mas **não chama
+      `tratarRespostaDespacho()`** — uma tentativa aceita (`resultado='aceito'`)
+      que teve seu NOTIFY perdido ficaria com a rota nunca atribuída ao
+      entregador, indefinidamente. E a reconciliação de subida também não
+      cobre esse caso (só olha tentativas com `resultado IS NULL`). Mais raro
+      ainda que o achado original (exige perder o NOTIFY específico de uma
+      resposta, não de um pedido pronto), mas é o mesmo tipo de lacuna e vale
+      uma sessão dedicada.
+63. **Motor de despacho da feira rodando em produção pela 1ª vez —
+    `feira-dispatch/worker.js` novo** (28/08/2026, mesmo pedido do item 62:
+    "opção 3... a ordem fica seu critério, como especialista, faça o
+    melhor"). Fechar essa pendência exigia revisitar a decisão registrada
+    no item anterior de "não subir infra nova agora" — perguntei
+    explicitamente e o usuário escolheu reverter: serviço Railway
+    **separado** pra feira, não mesclar no `dispatch-engine/` existente.
+    - **Achado de segurança que mudou o escopo, antes de codar**:
+      `feira-dispatch/src/index.js` (o "exemplo de integração" antigo) não
+      é só despacho — é um router Express com ~20 endpoints (checkout,
+      avaliação, aceitar rota, localização, etc.) **sem autenticação
+      nenhuma**, usando a service_role key. Subir esse arquivo inteiro
+      como serviço público exporia escrita não-autenticada na internet.
+      Perguntei e o usuário confirmou escopo reduzido: construir um
+      serviço NOVO, só despacho+cron, sem nenhum endpoint HTTP público
+      (exceto `/health`) — `src/index.js` continua intocado, sem uso.
+    - **Migration nova aplicada no banco hospedado** (confirmada com o
+      usuário antes, por ser DDL em produção): `estabelecimentos.is_teste`
+      (mesmo princípio de `tenants.is_teste`) + trigger
+      `notificar_pedido_grupo_pronto()` (`pg_notify('pedido_grupo_pronto',
+      ...)` quando `pedido_grupo` vira `pronto_para_coleta`, pulando
+      estabelecimento de teste) — `db/schema.sql` atualizado junto.
+    - **`feira-dispatch/worker.js`**: mesma arquitetura de
+      `dispatch-engine/index.js` (LISTEN/NOTIFY + reconciliação de
+      startup/reconexão + crons via `setInterval`), já nascendo com a
+      correção do item 62 (reconexão com `.catch()`, não crasha o
+      processo). `package.json` do módulo ganhou `pg`+`dotenv` e um
+      script `start`.
+    - **2 achados reais só apareceram testando de ponta a ponta pela 1ª
+      vez** (nunca detectáveis antes porque `despacharPedido()` nunca
+      rodava sozinho em produção):
+      - `routeManager.despacharPedido()` **não é idempotente**: chamar 2x
+        pro mesmo `pedido_grupo` já despachado duplica as paradas da rota
+        (2 -> 4 no teste) — `inserir_grupo_em_rota_atomico()` já é
+        idempotente no banco (`on conflict do nothing`), mas
+        `salvarSequencia()` reescreve a sequência inteira sem checar se o
+        grupo já está nela. Corrigir a raiz dentro de `routeManager.js`
+        exigiria o mesmo cuidado de várias rodadas de ultrareview que o
+        lado restaurante já levou — fora de escopo. Blindado na BORDA
+        (`worker.js`): `despacharComLog()` só chama `despacharPedido()`
+        depois de confirmar que o grupo ainda não está comitado numa rota
+        nem tem proposta pendente, com um lock em memória
+        (`pedidosDespachando`, mesmo princípio do `rotasProcessando` do
+        dispatch-engine) fechando a corrida entre a checagem e o
+        despacho. Testado: 2ª chamada pro mesmo grupo agora é ignorada
+        ("já comitado... ignorando"), 0 duplicação.
+      - `feira-dispatch/src/notifications.js` **nunca exportava
+        `enviarPushBuzinaEntregador`** (definida, usada por
+        `routeManager.js`, mas ausente do `module.exports`) — o push de
+        oferta pro entregador da feira falhava silenciosamente
+        (`is not a function`, engolido pelo try/catch fire-and-forget)
+        desde a integração original (22/08/2026). Corrigido (1 linha).
+    - **Testado de ponta a ponta contra o banco hospedado** (fixtures
+      isoladas, limpas depois): caminho de teste via
+      `/interno/despachar` (endpoint só com `HABILITAR_ENDPOINTS_TESTE=true`,
+      mesmo padrão do dispatch-engine) E o caminho de PRODUÇÃO real — UPDATE
+      direto em `pedido_grupo.status`, trigger nova disparando
+      `pg_notify`, worker pegando sozinho sem nenhuma chamada manual.
+      Suíte completa (`tests/`, 160 testes) e suíte unitária do módulo
+      feira (`feira-dispatch/`, 80 testes) — 100% verde depois das
+      correções.
+    - **Limpeza de resíduo encontrado no caminho**: 4 `pedido_grupo` reais
+      no banco hospedado (não is_teste — a flag não existia antes desta
+      sessão), claramente lixo de sessões anteriores (nomes
+      "[TESTE] Banca Simultanea"/"Banca Teste Hortifruti", endereço "Rua
+      Teste Feira, 50"), parados em `pronto_para_coleta` desde 25-27/08.
+      Se o worker tivesse subido sem tratar isso, despacharia esse lixo
+      de verdade (push real pra um entregador real). Confirmado com o
+      usuário, marcados `status='cancelado'`. Os estabelecimentos/feiras/
+      pessoas por trás desse lixo continuam no banco (sem `pedido_grupo`
+      ativo apontando pra eles, inofensivos) — não limpos nesta sessão,
+      fora de escopo do que foi pedido.
+    - **Falta só o deploy real no Railway** — `railway up` de dentro de
+      `feira-dispatch/` (serviço novo, precisa ser criado no dashboard
+      primeiro, mesmo fluxo do `girocerto-dispatch-engine` original) — não
+      feito nesta sessão porque criar infra nova/paga em produção pede
+      confirmação explícita separada do usuário no momento do deploy, não
+      só da decisão de arquitetura.
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -3452,38 +3592,28 @@ C:\Users\Usuário\Projetos\giro certo
       (`redespachar_apos_recusa_feira()`, ver item 23) e commitado. Cobre
       só recusa EXPLÍCITA — ver pendência de timeout logo abaixo, que
       continua real.
-- [ ] **TIMEOUT no despacho de feira não tem cobertura nenhuma**
-      (entregador recebe a oferta e nunca responde — nem aceita, nem
-      recusa). O failover de recusa explícita (`redespachar_apos_recusa_feira()`)
-      só dispara quando alguém efetivamente clica "Recusar" — sem isso,
-      uma rota fica "presa" com `status='em_montagem'` indefinidamente.
-      Resolver exige um processo vivo checando `now() - aberta_em > prazo`
-      periodicamente (mesmo problema da pendência de cron abaixo — não é
-      uma lacuna nova, é a mesma). **Registrado explicitamente a pedido do
-      usuário**, pra não virar surpresa quando alguém notar uma rota
-      presa sem entender por quê: hoje isso é esperado, não bug.
-      **Mesmo gap vale pra `proposta_consolidacao`** (item 24, 22/08/2026):
-      se o entregador nunca responder o card de "parada nova", a proposta
-      fica `'pendente'` pra sempre — sem cron, não tem quem force o
-      timeout nem redespache sozinho.
-- [ ] **O motor de despacho da feira não roda em lugar nenhum em produção —
-      achado real, é maior do que "falta um cron"** (investigado
-      26/08/2026). `feira-dispatch/src/index.js` é literalmente rotulado
-      "Exemplo de integração" no próprio arquivo — um router Express que
-      nunca foi montado em nenhum processo. Confirmado no Railway: existe
-      só 1 serviço hospedado (`girocerto-dispatch-engine`, o motor de
-      restaurante); não existe segundo serviço pra feira. Ou seja
-      `despacharPedido()` **nunca roda sozinho** — nos testes ao vivo dos
-      itens 23/24 ele só funcionou porque foi chamado manualmente via
-      script de teste (mesmo padrão do `/interno/resposta-despacho` do
-      motor de restaurante em tenant de teste). Hoje, sem intervenção
-      manual, nenhum pedido de feira pronto é despachado pra nenhum
-      entregador. Perguntado ao usuário como resolver (mesclar no
-      `dispatch-engine/` existente vs. serviço Railway separado) —
-      **decisão explícita: não subir infra nova agora, só manter
-      documentado**. `fecharRotasExpiradas`/`expirar_pedidos_pendentes`/
-      `processarLote` (cron de timeout) dependem dessa decisão de
-      arquitetura ser tomada primeiro — não é só "adicionar node-cron".
+- [x] ~~O motor de despacho da feira não roda em lugar nenhum em
+      produção~~ — **construído e testado no item 63 (28/08/2026)**,
+      decisão revertida a pedido do usuário (agora: serviço Railway
+      separado, não mesclar no `dispatch-engine/`). Ver item 63 pro
+      detalhe completo. `feira-dispatch/worker.js` (novo) roda
+      `despacharPedido()` automaticamente via LISTEN/NOTIFY real + os 3
+      crons (`fecharRotasExpiradas`, `expirar_pedidos_pendentes`,
+      `processarLote`) — testado de ponta a ponta local contra o banco
+      hospedado (fixtures isoladas, limpas depois). **Falta só o deploy
+      no Railway** (`railway up` — infra nova, decisão de custo/produção,
+      não tomada ainda nesta sessão) — sem isso, o código existe e foi
+      validado mas ainda não está rodando 24/7 de verdade.
+- [ ] **TIMEOUT no despacho de feira — parcialmente coberto agora** (ver
+      item 63): `fecharRotasExpiradas()` (rota `em_montagem` presa) e
+      `expirar_pedidos_pendentes()` (pagamento pendente) já rodam via cron
+      no worker novo. **Ainda falta**: `proposta_consolidacao` pendente
+      (entregador nunca responde o card de "parada nova", item 24,
+      22/08/2026) não tem função de expiração nenhuma no banco — não é só
+      "faltava rodar o cron", a função em si não existe ainda. Decisão de
+      produto pendente (o que fazer no timeout: reverter a proposta e
+      redespachar, ou outra coisa) antes de escrever a função — fora do
+      escopo do item 63 de propósito, pra não expandir demais.
 - [ ] **`PainelFeirante`/`DashboardFeirante` e `CheckoutConsumidor`** (as 2
       de 4 personas de `FeiraApp.jsx` fora de escopo) — sem tela existente
       pra integrar (GiroCerto nunca teve painel de feirante nem checkout de
@@ -3609,6 +3739,15 @@ C:\Users\Usuário\Projetos\giro certo
       reaparecer em volume maior.
 - [ ] `.env` local tem as credenciais do projeto Supabase hospedado
       (`ntmxkwzhumiqspxijuln`) — nunca comitar, já está no `.gitignore`.
+- [ ] Resíduo de teste no módulo feira (achado no item 63, 28/08/2026):
+      5 `estabelecimentos` ("[TESTE] Banca Simultanea" x4, "Banca Teste
+      Hortifruti"), 5 `feira`/feira_ocorrencia associadas, 2
+      `pessoas_entregadoras` ("Ent Teste", "Entregador Teste") e 5
+      `usuarios` ("[TESTE] Cliente Simultaneo" x4, "Cliente Feira Teste")
+      de sessões anteriores a 28/08 — os `pedido_grupo` ligados a eles já
+      foram cancelados (não vão ser despachados), mas as entidades em si
+      continuam no banco. Inofensivo, baixa prioridade — limpar numa
+      sessão futura se sobrar tempo.
 - [ ] 3 nits do `/ultrareview` de 14/08/2026 ficaram de fora desta rodada (só os 6
       achados de severidade "normal" foram corrigidos, por prioridade explícita do
       usuário) — nenhum é bloqueio, mas seguem em aberto: `set_pin_integracoes` não
@@ -3644,6 +3783,17 @@ C:\Users\Usuário\Projetos\giro certo
       startup cobre pedidos órfãos e tentativas já expiradas, mas não timers "no meio
       do caminho"). Aceitável pra um piloto de 2-3 lojas, documentado em
       `dispatch-engine/README.md`, não é bloqueio.
+- [ ] **Tentativa aceita/recusada com o NOTIFY de `tentativa_despacho_respondida`
+      perdido nunca é reprocessada** (achado no item 62, investigando o item 61,
+      28/08/2026) — o autocorretor do repique (`agendarRepique`) já verifica
+      periodicamente se a tentativa saiu de `resultado IS NULL`, mas só usa isso pra
+      PARAR de repicar — não chama `tratarRespostaDespacho()`. Se o NOTIFY específico
+      dessa resposta for perdido, uma tentativa `'aceito'` fica pra sempre sem a rota
+      atribuída ao entregador (a reconciliação de subida também não cobre, só olha
+      `resultado IS NULL`). Mais raro que o gap já corrigido do item 62 (exige perder o
+      NOTIFY de resposta, não o de pedido pronto), não corrigido ainda — precisa de uma
+      sessão dedicada (reprocessar direto no autocorretor do repique é o caminho óbvio,
+      mas não foi implementado pra não expandir escopo do que foi pedido nesta sessão).
 
 ## Convenções de trabalho estabelecidas
 - Nunca commitar nem dar push sem instrução explícita "commit e push", mesmo depois de

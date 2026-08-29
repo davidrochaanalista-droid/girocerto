@@ -310,4 +310,19 @@ async function enviarWhatsappAudio(numero, urlAudio) {
   }
 }
 
-module.exports = { createNotificationWorker, enviarWhatsappCloudAPI, enviarPushVoz, enviarWhatsappAudio };
+module.exports = {
+  createNotificationWorker,
+  enviarWhatsappCloudAPI,
+  enviarPushVoz,
+  enviarWhatsappAudio,
+  // achado real (item 62, 28/08/2026, testando o worker novo de ponta a
+  // ponta pela 1ª vez): faltava aqui — routeManager.js importa
+  // `enviarPushBuzinaEntregador` deste módulo (`require('./notifications')`),
+  // mas ela nunca tinha sido exportada. Como a chamada é fire-and-forget
+  // (try/catch só loga, nunca bloqueia o despacho — ver notificarEntregadorPush
+  // em routeManager.js), o erro "enviarPushBuzinaEntregador is not a
+  // function" ficava sempre escondido no log — o push de oferta pro
+  // entregador da feira nunca funcionou, silenciosamente, desde que essa
+  // cópia do módulo foi integrada (22/08/2026).
+  enviarPushBuzinaEntregador,
+};

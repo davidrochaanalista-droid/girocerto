@@ -2789,7 +2789,12 @@ create table if not exists estabelecimentos (
   chave_pix text,
   latitude double precision,   -- endereço cadastral, fallback se a banca
   longitude double precision,  -- não tiver latitude_banca/longitude_banca
-  criado_em timestamptz not null default now()
+  criado_em timestamptz not null default now(),
+
+  -- item 62 (28/08/2026): mesmo princípio de tenants.is_teste — isola dado
+  -- de teste do NOTIFY que aciona o motor de despacho da feira em produção
+  -- (ver notificar_pedido_grupo_pronto() mais abaixo).
+  is_teste boolean not null default false
 );
 
 create table if not exists usuarios (
@@ -3902,6 +3907,42 @@ drop trigger if exists trg_notificar_grupo_pronto on pedido_grupo;
 create trigger trg_notificar_grupo_pronto
 after update on pedido_grupo
 for each row execute function notificar_grupo_pronto();
+
+-- item 62 (28/08/2026): "campainha" pro motor de despacho da feira, mesmo
+-- padrão de notificar_pedido_pronto() (motor de restaurante) — trigger
+-- SEPARADA de notificar_grupo_pronto() acima (que só insere em
+-- `notificacao`, não aciona nenhum processo). Sem isso, o motor da feira
+-- nunca sabia que um pedido_grupo virou pronto_para_coleta — dependia de
+-- alguém chamar despacharPedido() manualmente. Ignora estabelecimento de
+-- teste (mesmo princípio de tenants.is_teste): um pedido_grupo cujas
+-- bancas sejam TODAS reais dispara; se qualquer banca envolvida for de
+-- teste, não dispara (evita reação parcial/ambígua do motor real).
+create or replace function notificar_pedido_grupo_pronto()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.status = 'pronto_para_coleta' and old.status is distinct from 'pronto_para_coleta' then
+    if not exists (
+      select 1
+      from pedido p
+      join estabelecimentos e on e.id = p.estabelecimento_id
+      where p.pedido_grupo_id = new.id and e.is_teste = true
+    ) then
+      perform pg_notify('pedido_grupo_pronto', new.id::text);
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_notificar_pedido_grupo_pronto on pedido_grupo;
+create trigger trg_notificar_pedido_grupo_pronto
+  after update on pedido_grupo
+  for each row
+  execute function notificar_pedido_grupo_pronto();
 
 create or replace function checar_valor_minimo()
 returns trigger as $$

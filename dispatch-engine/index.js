@@ -512,18 +512,38 @@ async function reconstruirTentadosPorRota() {
   }
 }
 
-async function reconciliarNaSubida() {
-  await reconstruirTentadosPorRota();
-
-  const { data: pedidosPendentes } = await admin
+// achado real (teste de capacidade, item 61, 28/08/2026): 0,7% dos pedidos
+// de um teste de carga sustentada ficaram 'pronto' sem NENHUMA tentativa —
+// nenhum erro correspondente no log. Hipótese (consistente com o outro
+// achado da mesma sessão: conexão pg direta de longa duração morre às
+// vezes nesta máquina/rede): o listener de NOTIFY reconecta sozinho em
+// falhas de conexão (agendarReconexao, ~5s), mas Postgres não enfileira
+// NOTIFY pra sessão desconectada — um pedido que vira 'pronto' bem nessa
+// janela de reconexão nunca dispara tentarDespachar, e antes desta função
+// existir a única rede de segurança (a varredura abaixo) só rodava 1x, na
+// subida do processo — não de novo depois de cada reconexão. Extraída pra
+// reaproveitar tanto na subida quanto após reconectar e num poll periódico
+// (chamadas em iniciarListener/main abaixo) — mesmo princípio defensivo já
+// usado no autocorretor do repique (agendarRepique) e no expurgo.
+async function despacharPedidosOrfaos() {
+  const { data: pedidosPendentes, error } = await admin
     .from('pedidos')
     .select('id')
     .eq('status', 'pronto')
     .is('rota_id', null);
+  if (error) {
+    console.error('[reconciliação] falha ao buscar pedidos prontos sem rota:', error.message);
+    return;
+  }
   for (const p of pedidosPendentes || []) {
     console.log(`[reconciliação] pedido ${p.id} pronto sem rota — despachando agora`);
     await tentarDespachar(p.id);
   }
+}
+
+async function reconciliarNaSubida() {
+  await reconstruirTentadosPorRota();
+  await despacharPedidosOrfaos();
 
   const { data: tentativasAbertas } = await admin
     .from('tentativas_despacho')
@@ -582,8 +602,25 @@ async function reconciliarNaSubida() {
 // escutando ao mesmo tempo (todo NOTIFY processado 2x, cada disconnect
 // dobrando de novo). `reconectando` garante só uma reconexão agendada por
 // vez.
+//
+// achado real (investigação do item 61, 28/08/2026, reproduzido ao vivo
+// nesta máquina): uma queda de DNS/rede real (`getaddrinfo ENOTFOUND
+// ...supabase.co`) durante uma tentativa de reconexão derrubava o
+// processo INTEIRO — `iniciarListener()` é async e `await listener.connect()`
+// pode rejeitar, mas a chamada de dentro do setTimeout de reconexão não
+// tinha `.catch()`, então a rejeição virava unhandled rejection e matava o
+// Node inteiro (comportamento padrão do Node moderno). Mais grave que "1
+// NOTIFY perdido": explica melhor o achado do teste de capacidade (item
+// 61) — se isso já tinha acontecido lá, o processo só voltou ao ar quando
+// o Railway reiniciou (supervisor externo), e qualquer pedido que virasse
+// 'pronto' bem nessa janela de downtime ficaria órfão exatamente como
+// observado, sem log de erro correspondente (o log de antes do crash não
+// menciona um pedido que só existiu depois). Corrigido envolvendo a
+// chamada de reconexão em try/catch — falha ao reconectar agora agenda
+// OUTRA tentativa em 5s (mesmo padrão), em vez de derrubar o processo.
 // ------------------------------------------------------------
 let reconectando = false;
+let jaConectouAntes = false;
 
 async function iniciarListener() {
   const listener = new Client({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
@@ -592,9 +629,13 @@ async function iniciarListener() {
     if (reconectando) return;
     reconectando = true;
     console.warn(`[listener] ${motivo} — reconectando em 5s`);
-    setTimeout(() => {
+    setTimeout(async () => {
       reconectando = false;
-      iniciarListener();
+      try {
+        await iniciarListener();
+      } catch (e) {
+        agendarReconexao(`falha ao reconectar: ${e.message}`);
+      }
     }, 5000);
   };
 
@@ -604,6 +645,14 @@ async function iniciarListener() {
   await listener.connect();
   await listener.query('LISTEN pedido_pronto');
   await listener.query('LISTEN tentativa_despacho_respondida');
+
+  // fecha a janela entre "conexão caiu" e "LISTEN religado" (ver comentário
+  // em despacharPedidosOrfaos) — sem isso, só o poll periódico abaixo (main())
+  // pegaria um pedido perdido nessa janela, com até 60s de atraso.
+  if (jaConectouAntes) {
+    despacharPedidosOrfaos().catch((e) => console.error('[reconciliação] falha na varredura pós-reconexão:', e.message));
+  }
+  jaConectouAntes = true;
 
   listener.on('notification', (msg) => {
     if (msg.channel === 'pedido_pronto') {
@@ -646,6 +695,14 @@ async function main() {
 
   await expurgarLocalizacoesAntigas();
   setInterval(expurgarLocalizacoesAntigas, 24 * 60 * 60 * 1000);
+
+  // rede de segurança final (ver despacharPedidosOrfaos): cobre qualquer
+  // NOTIFY perdido que a checagem pós-reconexão não pegou (ex: reconexão
+  // que não passou pelos handlers 'error'/'end', ou perda sem desconexão
+  // detectável). Custo de 1 SELECT vazio a cada 60s é desprezível.
+  setInterval(() => {
+    despacharPedidosOrfaos().catch((e) => console.error('[reconciliação] falha no poll periódico:', e.message));
+  }, 60 * 1000);
 
   const app = express();
   app.get('/health', (req, res) => res.json({ status: 'ok', tentadosPorRota: tentadosPorRota.size, timersAtivos: timersPorRota.size }));

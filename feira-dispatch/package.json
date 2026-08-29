@@ -2,16 +2,16 @@
   "name": "girocerto-feira-dispatch",
   "version": "1.0.0",
   "description": "Módulo de dispatch multi-parada da feira, integrado ao GiroCerto (schema em db/schema.sql, seção MÓDULO FEIRA)",
-  "main": "src/index.js",
+  "main": "worker.js",
   "scripts": {
+    "start": "node worker.js",
     "test": "node src/__tests__/dispatch.test.js && node src/__tests__/feeCalculator.test.js && node src/__tests__/stopGrouping.test.js && node src/__tests__/multiBanca.test.js && node src/__tests__/duasRotasNaTela.test.js && node src/__tests__/arrivalBonus.test.js && node src/__tests__/vehicleRules.test.js && node src/__tests__/ultraAnalise.test.js && node src/__tests__/proximityNotifier.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "firebase-admin": "^12.7.0"
-  },
-  "optionalDependencies": {
-    "node-cron": "^3.0.3"
+    "firebase-admin": "^12.7.0",
+    "pg": "^8.12.0"
   }
 }
