@@ -3601,6 +3601,51 @@ C:\Users\Usuário\Projetos\giro certo
       possível pra decidir depois: sempre confirmar `railway status` no
       fim de qualquer sessão que tocar em `railway down`, antes de
       encerrar.
+65. **Tentativa de mitigar o risco do item 64 com alerta automático —
+    pausada no meio, retomar numa sessão futura** (29/08/2026, pedido
+    direto: "mitigar o risco do railway down com alerta/lembrete").
+    - **Domínio público novo criado** (confirmado com o usuário antes):
+      `girocerto-feira-dispatch-production.up.railway.app` — o worker da
+      feira não tinha nenhum domínio até então (só uso interno). Só expõe
+      `/health`, sem dado sensível.
+    - **1ª tentativa: rotina agendada na nuvem (routine/cloud agent,
+      skill `schedule`), checando os 2 endpoints `/health` a cada 1h e
+      mandando e-mail via Gmail se algum estiver fora do ar** — criada
+      (`trig_011uqbqBhXsHAbScekBF4GyN`), mas **não funciona**: o ambiente
+      de nuvem onde a rotina roda bloqueia toda saída de rede pra
+      domínios externos (`EGRESS_BLOCKED`, confirmado testando tanto
+      `curl` via Bash quanto a ferramenta `WebFetch` — os dois batem no
+      mesmo bloqueio de política de rede da organização, que só libera
+      APIs da própria Anthropic e registros de pacote tipo npm/pypi, não
+      internet geral). Não tem workaround por dentro do prompt/ferramenta
+      escolhida — é um bloqueio de infraestrutura, não de permissão.
+    - **Estado atual da rotina**: ainda existe e está habilitada, rodando
+      de hora em hora — hoje só manda um push avisando "bloqueado por
+      rede" a cada execução (não manda e-mail falso de "serviço fora do
+      ar", porque o prompt foi escrito pra distinguir bloqueio de rede de
+      queda real — isso pelo menos funcionou certo). Mas isso pode virar
+      um aviso repetitivo inútil toda hora. **Decisão pendente**: desabilitar
+      essa rotina (ou apagar via https://claude.ai/code/routines, a API
+      não permite apagar) até a próxima abordagem estar pronta, ou deixar
+      rodando por enquanto.
+    - **2ª tentativa, mais promissora, não terminada**: o Railway tem
+      sistema de notificação NATIVO (`notificationRuleCreate` na API
+      GraphQL dele, campos `channelConfigs`/`eventTypes`/`severities`) —
+      não depende de rede saindo de lugar nenhum, é o próprio Railway
+      avisando (provavelmente por e-mail/Slack/webhook, precisa checar as
+      opções exatas de canal). Não deu tempo de descobrir o formato exato
+      de `channelConfigs` (campo opaco, tipo JSON, não introspectável
+      pela API) nem quais `eventTypes` existem (ex: se cobre deploy
+      removido/parado, não só crash) — sessão pausada pelo usuário
+      ("pausa") antes de terminar essa investigação.
+    - **Próximo passo, quando retomar**: descobrir o formato de
+      `channelConfigs` e a lista de `eventTypes` válidos (via
+      `railway api describe`/documentação do Railway), criar a regra de
+      notificação nativa cobrindo os 2 serviços (`girocerto-dispatch-engine`
+      e `girocerto-feira-dispatch`) pra evento de deploy removido/parado,
+      e só depois decidir o que fazer com a rotina de nuvem (item acima)
+      — provavelmente desabilitar, já que o Railway nativo cobre o mesmo
+      caso sem a limitação de rede.
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -3812,9 +3857,13 @@ C:\Users\Usuário\Projetos\giro certo
 - [ ] **`railway down` sem religar depois já causou 33h de produção
       offline sem ninguém perceber** (item 64, 29/08/2026) — não tem
       lembrete/alerta/timeout de segurança nenhum no protocolo atual
-      (pausar antes de teste local, religar depois). Mitigação possível,
-      não decidida ainda: sempre confirmar `railway status` no fim de
-      qualquer sessão que rodar `railway down`, antes de encerrar.
+      (pausar antes de teste local, religar depois). **Mitigação em
+      andamento, pausada no meio (item 65)**: rotina na nuvem criada mas
+      não funcional (bloqueio de rede do ambiente — `EGRESS_BLOCKED`);
+      caminho mais promissor achado e não terminado é o sistema nativo de
+      notificação do próprio Railway (`notificationRuleCreate`). Decisão
+      pendente também sobre o que fazer com a rotina de nuvem inútil que
+      ficou ativa (roda de hora em hora, só manda push de "bloqueado").
 - [ ] Resíduo de teste no módulo feira (achado no item 63, 28/08/2026):
       5 `estabelecimentos` ("[TESTE] Banca Simultanea" x4, "Banca Teste
       Hortifruti"), 5 `feira`/feira_ocorrencia associadas, 2
