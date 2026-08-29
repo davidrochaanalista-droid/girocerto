@@ -3542,17 +3542,65 @@ C:\Users\Usuário\Projetos\giro certo
       um crash do processo), consistente com algo externo tendo derrubado
       o serviço, não com o bug do item 62 (que geraria uma exceção não
       tratada no log, não um SIGTERM limpo). Causa exata não identificada
-      com certeza (não é o mesmo limite de volume do Trial que pausou o
-      OSRM — `railway up` funcionou sem erro de billing/plano). Perguntei
-      ao usuário antes de agir; confirmado que ele não sabia e pediu pra
-      investigar e religar. **Resolvido**: `railway up -c` de dentro de
-      `dispatch-engine/` — voltou `● Online`, log limpo, `/health`
-      responde de fora. Já sobe com a correção do item 62 (a mesma
-      imagem). **Efeito colateral do diagnóstico**: rodar `railway domain`
-      pra inspecionar criou um domínio público novo pro serviço (ele não
-      tinha nenhum antes — `girocerto-dispatch-engine-production.up.railway.app`,
-      só expõe `/health`, sem dado sensível). Se não for desejado, dá pra
-      remover depois (`railway domain` → remover pelo dashboard).
+      com certeza nesta hora **(achada e detalhada no item 64, logo
+      abaixo)**. Perguntei ao usuário antes de agir; confirmado que ele
+      não sabia e pediu pra investigar e religar. **Resolvido**:
+      `railway up -c` de dentro de `dispatch-engine/` — voltou
+      `● Online`, log limpo, `/health` responde de fora. Já sobe com a
+      correção do item 62 (a mesma imagem). **Efeito colateral do
+      diagnóstico**: rodar `railway domain` pra inspecionar criou um
+      domínio público novo pro serviço (ele não tinha nenhum antes —
+      `girocerto-dispatch-engine-production.up.railway.app`, só expõe
+      `/health`, sem dado sensível). Se não for desejado, dá pra remover
+      depois (`railway domain` → remover pelo dashboard).
+64. **Causa raiz das 33h offline do item 63, encontrada** (29/08/2026,
+    pedido direto do usuário: "investigar por que o motor do restaurante
+    ficou 33h offline"). Reconstruída com evidência forte via a API
+    GraphQL do Railway (`railway api`, queries `auditLogs` e
+    `deploymentEvents` — não é especulação, são timestamps e IDs reais do
+    próprio Railway), não só pelos logs de texto.
+    - **Sequência exata** (`deploymentEvents` do deployment `fc23cc12`):
+      `SNAPSHOT_CODE` (11:21:16 UTC) → `BUILD_IMAGE` (11:21:20) →
+      `CREATE_CONTAINER` (11:21:35, container sobe, listener conecta,
+      healthcheck fica pronto) → `CONFIGURE_NETWORK` (11:21:40) →
+      `DRAIN_INSTANCES` (11:21:42, dura ~26ms — ação instantânea, não
+      timeout nem crash). `DRAIN_INSTANCES` é exatamente o passo que
+      acontece quando alguém roda `railway down` — 26 segundos depois do
+      deploy ter acabado de subir.
+    - **Quem/quando**: `auditLogs` (`workspaceId` da conta) mostra o
+      evento `Deployment.created` desse mesmo deployment com
+      `agentSessionId: 5472ebeb-89e8-4017-9b85-90fa25c36d8e` — uma sessão
+      DIFERENTE do Claude Code (não esta), a mesma cujo scratchpad
+      (`repro_notify_perdido.js`) já tinha sido achado investigando o
+      item 61. Nenhum outro evento de deploy nesse serviço apareceu no
+      log de auditoria entre 11:21:42 de 28/08 e o `railway up` desta
+      sessão (29/08) — confirma que ninguém mexeu no serviço nesse
+      intervalo inteiro.
+    - **Por que não é um bug, é um protocolo interrompido no meio**:
+      existe uma convenção já confirmada por David em 24/08/2026 (ver
+      "Convenções de trabalho estabelecidas" mais abaixo) — pausar a
+      produção (`railway down -y`) antes de qualquer teste local, porque
+      o motor de produção reage ao mesmo canal de NOTIFY que um teste
+      local usaria. A sessão `5472ebeb` estava seguindo esse protocolo
+      corretamente (subiu com `up`, pausou com `down` antes do teste
+      local). O que faltou foi o passo final: `railway up -y -c` depois
+      do teste, pra religar a produção de novo. O próprio scratchpad
+      daquela sessão mostra o motivo mais provável — o script
+      `repro_notify_perdido.js` bateu numa queda de DNS real da máquina
+      no meio da execução (`ERRO FATAL: getaddrinfo ENOTFOUND
+      db.<ref>.supabase.co`, mesmo achado já registrado no item 62),
+      inclusive a limpeza dela falhou por causa disso. Consistente com a
+      sessão ter encerrado ali, sem nunca chegar no passo de religar a
+      produção.
+    - **Risco de processo exposto, não corrigido nesta sessão** (fica
+      registrado, decisão de como mitigar é do usuário): `railway down`
+      não tem nenhum lembrete, alerta ou timeout de segurança — se uma
+      sessão for interrompida entre o `down` e o `up`, a produção fica
+      parada silenciosamente, sem nada avisando ninguém, até alguém
+      checar manualmente (foi o que aconteceu aqui: ~33h). Mitigação
+      possível pra decidir depois: sempre confirmar `railway status` no
+      fim de qualquer sessão que tocar em `railway down`, antes de
+      encerrar.
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -3761,6 +3809,12 @@ C:\Users\Usuário\Projetos\giro certo
       reaparecer em volume maior.
 - [ ] `.env` local tem as credenciais do projeto Supabase hospedado
       (`ntmxkwzhumiqspxijuln`) — nunca comitar, já está no `.gitignore`.
+- [ ] **`railway down` sem religar depois já causou 33h de produção
+      offline sem ninguém perceber** (item 64, 29/08/2026) — não tem
+      lembrete/alerta/timeout de segurança nenhum no protocolo atual
+      (pausar antes de teste local, religar depois). Mitigação possível,
+      não decidida ainda: sempre confirmar `railway status` no fim de
+      qualquer sessão que rodar `railway down`, antes de encerrar.
 - [ ] Resíduo de teste no módulo feira (achado no item 63, 28/08/2026):
       5 `estabelecimentos` ("[TESTE] Banca Simultanea" x4, "Banca Teste
       Hortifruti"), 5 `feira`/feira_ocorrencia associadas, 2
