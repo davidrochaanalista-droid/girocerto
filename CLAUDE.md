@@ -3524,12 +3524,35 @@ C:\Users\Usuário\Projetos\giro certo
       pessoas por trás desse lixo continuam no banco (sem `pedido_grupo`
       ativo apontando pra eles, inofensivos) — não limpos nesta sessão,
       fora de escopo do que foi pedido.
-    - **Falta só o deploy real no Railway** — `railway up` de dentro de
-      `feira-dispatch/` (serviço novo, precisa ser criado no dashboard
-      primeiro, mesmo fluxo do `girocerto-dispatch-engine` original) — não
-      feito nesta sessão porque criar infra nova/paga em produção pede
-      confirmação explícita separada do usuário no momento do deploy, não
-      só da decisão de arquitetura.
+    - **Deployado em produção** (confirmação explícita do usuário pra criar
+      infra nova, separada da decisão de arquitetura): serviço Railway
+      novo `girocerto-feira-dispatch`, no MESMO projeto do
+      `girocerto-dispatch-engine` (`railway add --service`), variáveis
+      copiadas do serviço do restaurante (`DATABASE_URL`, `SUPABASE_URL`,
+      `SUPABASE_SERVICE_ROLE_KEY`, `FIREBASE_SERVICE_ACCOUNT_JSON`),
+      `railway up -c` de dentro de `feira-dispatch/`. Confirmado
+      `● Online`, log limpo (`[listener-feira] conectado`, sem erro), 0
+      pedidos órfãos na subida (banco já limpo pelo item 63 acima).
+    - **Achado à parte, no meio do deploy — `girocerto-dispatch-engine`
+      (motor do RESTAURANTE) estava offline havia ~33h** (desde
+      2026-08-28 11:21 UTC, achado ao rodar `railway status` pra ver como
+      o serviço original estava configurado antes de replicar pro da
+      feira). `railway deployment list` mostrava todo deploy como
+      `REMOVED`, inclusive o mais recente — parada limpa (`SIGTERM`, não
+      um crash do processo), consistente com algo externo tendo derrubado
+      o serviço, não com o bug do item 62 (que geraria uma exceção não
+      tratada no log, não um SIGTERM limpo). Causa exata não identificada
+      com certeza (não é o mesmo limite de volume do Trial que pausou o
+      OSRM — `railway up` funcionou sem erro de billing/plano). Perguntei
+      ao usuário antes de agir; confirmado que ele não sabia e pediu pra
+      investigar e religar. **Resolvido**: `railway up -c` de dentro de
+      `dispatch-engine/` — voltou `● Online`, log limpo, `/health`
+      responde de fora. Já sobe com a correção do item 62 (a mesma
+      imagem). **Efeito colateral do diagnóstico**: rodar `railway domain`
+      pra inspecionar criou um domínio público novo pro serviço (ele não
+      tinha nenhum antes — `girocerto-dispatch-engine-production.up.railway.app`,
+      só expõe `/health`, sem dado sensível). Se não for desejado, dá pra
+      remover depois (`railway domain` → remover pelo dashboard).
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -3600,10 +3623,9 @@ C:\Users\Usuário\Projetos\giro certo
       `despacharPedido()` automaticamente via LISTEN/NOTIFY real + os 3
       crons (`fecharRotasExpiradas`, `expirar_pedidos_pendentes`,
       `processarLote`) — testado de ponta a ponta local contra o banco
-      hospedado (fixtures isoladas, limpas depois). **Falta só o deploy
-      no Railway** (`railway up` — infra nova, decisão de custo/produção,
-      não tomada ainda nesta sessão) — sem isso, o código existe e foi
-      validado mas ainda não está rodando 24/7 de verdade.
+      hospedado (fixtures isoladas, limpas depois). **Deployado em
+      produção** no serviço Railway novo `girocerto-feira-dispatch`
+      (28/08/2026), confirmado `● Online` — rodando 24/7 de verdade.
 - [ ] **TIMEOUT no despacho de feira — parcialmente coberto agora** (ver
       item 63): `fecharRotasExpiradas()` (rota `em_montagem` presa) e
       `expirar_pedidos_pendentes()` (pagamento pendente) já rodam via cron
