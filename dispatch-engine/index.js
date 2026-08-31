@@ -119,6 +119,20 @@ const repiquesPorRota = new Map();
 // trecho "achar candidato -> criar tentativa -> agendar push/timers" pra
 // essa rota. Ver comentário em tentarDespachar sobre por que isso existe.
 const rotasProcessando = new Set();
+// tentativa_id -> presente depois que tratarRespostaDespacho já processou
+// essa tentativa com sucesso. Existe pro achado do item 65 (pendência
+// registrada no item 62, 28/08/2026): agendarRepique agora chama
+// tratarRespostaDespacho() diretamente quando descobre pelo poll que uma
+// tentativa já foi resolvida sem o NOTIFY avisar (não só para o repique) —
+// isso abre uma janela onde o NOTIFY real, só atrasado (não perdido de
+// verdade), pode chegar DEPOIS e chamar tratarRespostaDespacho() de novo
+// pra mesma tentativa. O caminho 'aceito' já é atômico (UPDATE...WHERE
+// entregador_id IS NULL), mas o caminho 'recusado' chama tentarDespachar()
+// de novo sem essa proteção — um 2º disparo sequencial (não concorrente,
+// o lock rotasProcessando só cobre concorrência) criaria uma 2ª oferta
+// pra outro entregador no mesmo pedido já redespachado. Este Set fecha
+// essa janela.
+const tentativasProcessadas = new Set();
 
 function limparEstadoDaRota(rotaId) {
   tentadosPorRota.delete(rotaId);
@@ -166,6 +180,17 @@ function agendarRepique(rotaId, pushToken, plataforma, segundosRepique, tentativ
         console.log(`[despacho] repique da tentativa ${tentativaId} parado — já resolvida (achado que o NOTIFY não avisou, ex: tenant de teste)`);
         clearInterval(interval);
         repiquesPorRota.delete(rotaId);
+        // achado real (item 65, 28/08/2026): antes só parava o repique
+        // aqui — se o NOTIFY de resposta nunca chegou, ninguém mais
+        // chamava tratarRespostaDespacho(), e uma tentativa 'aceito' cuja
+        // notificação se perdeu ficava com a rota nunca atribuída ao
+        // entregador pra sempre. Agora reprocessa direto (idempotente via
+        // tentativasProcessadas, ver comentário lá).
+        if (tentativa && tentativa.resultado) {
+          tratarRespostaDespacho(tentativaId).catch((e) =>
+            console.error(`[despacho] falha ao reprocessar tentativa ${tentativaId} via autocorretor do repique:`, e.message)
+          );
+        }
         return;
       }
     }
@@ -430,6 +455,15 @@ async function tratarRespostaDespacho(tentativaId) {
   const { data: tentativa, error } = await admin.from('tentativas_despacho').select('*').eq('id', tentativaId).single();
   if (error || !tentativa || !tentativa.resultado) return;
 
+  // ver comentário em tentativasProcessadas: fecha a janela de um NOTIFY
+  // atrasado (não perdido) chegando depois do autocorretor do repique já
+  // ter processado a mesma resposta.
+  if (tentativasProcessadas.has(tentativaId)) {
+    console.log(`[despacho] tentativa ${tentativaId}: resposta já processada antes — ignorando chamada repetida`);
+    return;
+  }
+  tentativasProcessadas.add(tentativaId);
+
   const timer = timersPorRota.get(tentativa.rota_id);
   if (timer) {
     clearTimeout(timer);
@@ -535,14 +569,50 @@ async function despacharPedidosOrfaos() {
     console.error('[reconciliação] falha ao buscar pedidos prontos sem rota:', error.message);
     return;
   }
-  for (const p of pedidosPendentes || []) {
+  // em paralelo, não sequencial — despachar N pedidos órfãos é seguro
+  // concorrentemente (mesmas proteções já usadas pra NOTIFY concorrente:
+  // buscarProximoCandidato()/candidatosExcluidos por chamada e o índice
+  // único parcial no banco), e sequencial deixava a subida lenta demais
+  // quando há muitos órfãos acumulados (achado real testando o item 65).
+  await Promise.all((pedidosPendentes || []).map((p) => {
     console.log(`[reconciliação] pedido ${p.id} pronto sem rota — despachando agora`);
-    await tentarDespachar(p.id);
+    return tentarDespachar(p.id);
+  }));
+}
+
+// achado real (item 65, 30/08/2026, mesma investigação do reprocessamento
+// acima): se o processo reiniciar bem no meio de um failover — depois de
+// marcar uma tentativa 'recusado'/'sem_resposta', mas antes de criar a
+// próxima tentativa pra rota — a rota 'planejada' fica sem NENHUMA
+// tentativa aberta (resultado IS NULL) e sem timer nenhum (timers em
+// memória não sobrevivem a restart). Sem isso, nada nunca mais retoma o
+// failover dessa rota. `reconstruirTentadosPorRota()` já reconstrói quem
+// foi tentado (então o failover não vai repetir candidato), só faltava
+// disparar o PRÓXIMO candidato pras rotas que ficaram exatamente nesse
+// buraco.
+async function retomarRotasSemTentativaAberta() {
+  const { data: rotasAbertas, error } = await admin
+    .from('rotas_entrega')
+    .select('id, tentativas_despacho(resultado)')
+    .eq('status', 'planejada');
+  if (error) {
+    console.error('[reconciliação] falha ao buscar rotas planejadas sem tentativa aberta:', error.message);
+    return;
   }
+  // em paralelo — mesmo motivo de despacharPedidosOrfaos() logo acima.
+  await Promise.all((rotasAbertas || []).map(async (rota) => {
+    const temTentativaAberta = (rota.tentativas_despacho || []).some((t) => t.resultado === null);
+    if (temTentativaAberta) return; // coberta pelo laço de tentativasAbertas logo abaixo
+    const { data: pedidoRow } = await admin.from('pedidos').select('id').eq('rota_id', rota.id).limit(1).maybeSingle();
+    if (!pedidoRow) return;
+    console.log(`[reconciliação] rota ${rota.id}: nenhuma tentativa aberta sobrevivente ao restart — retomando failover`);
+    await tentarDespachar(pedidoRow.id);
+  }));
 }
 
 async function reconciliarNaSubida() {
   await reconstruirTentadosPorRota();
+  await retomarRotasSemTentativaAberta();
   await despacharPedidosOrfaos();
 
   const { data: tentativasAbertas } = await admin
