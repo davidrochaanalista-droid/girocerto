@@ -85,6 +85,40 @@ async function run() {
       r.check('funcionário tentando o PIN correto do DONO via verificar_pin_integracoes() ainda retorna false (função só olha papel=dono do PRÓPRIO auth.uid())', funcVerifica === false, funcVerifica);
     }
 
+    console.log('\n=== Fix do item 68 (31/08/2026): trocar PIN existente exige o PIN atual ===');
+    {
+      const { error: eSemAtual } = await sessDono.rpc('set_pin_integracoes', { novo_pin: '5678' });
+      r.check('trocar PIN sem informar o atual falha (PIN já existe, definido acima)', !!eSemAtual, eSemAtual);
+
+      const { error: eAtualErrado } = await sessDono.rpc('set_pin_integracoes', { novo_pin: '5678', pin_atual: '0000' });
+      r.check('trocar PIN com o atual errado falha', !!eAtualErrado, eAtualErrado);
+
+      const { data: aindaOAntigo } = await sessDono.rpc('verificar_pin_integracoes', { tentativa: '1234' });
+      r.check('PIN antigo continua valendo depois das tentativas falhas', aindaOAntigo === true, aindaOAntigo);
+
+      const { error: eAtualCerto } = await sessDono.rpc('set_pin_integracoes', { novo_pin: '5678', pin_atual: '1234' });
+      r.check('trocar PIN com o atual certo funciona', !eAtualCerto, eAtualCerto);
+
+      const { data: novoValeu } = await sessDono.rpc('verificar_pin_integracoes', { tentativa: '5678' });
+      r.check('PIN novo passa a valer depois da troca', novoValeu === true, novoValeu);
+
+      const { data: antigoNaoValeMais } = await sessDono.rpc('verificar_pin_integracoes', { tentativa: '1234' });
+      r.check('PIN antigo para de valer depois da troca', antigoNaoValeMais === false, antigoNaoValeMais);
+    }
+
+    console.log('\n=== Fix do item 68: hash do PIN não vaza mais por SELECT normal de usuarios_loja ===');
+    {
+      const { rows: colunaSumiu } = await pg.query(
+        `select column_name from information_schema.columns where table_name = 'usuarios_loja' and column_name = 'pin_integracoes_hash'`
+      );
+      r.check('coluna pin_integracoes_hash não existe mais em usuarios_loja', colunaSumiu.length === 0, colunaSumiu);
+
+      // usuarios_loja_pin não tem NENHUMA policy — nem o próprio dono lê direto,
+      // só via RPC. Um select comum (mesmo do dono da linha) deve voltar vazio.
+      const { data: donoTentaLerDireto } = await sessDono.from('usuarios_loja_pin').select('*');
+      r.check('nem o dono consegue ler usuarios_loja_pin direto (sem policy nenhuma de propósito, só as 3 funções tocam)', Array.isArray(donoTentaLerDireto) && donoTentaLerDireto.length === 0, donoTentaLerDireto);
+    }
+
     return r.summary();
   } finally {
     await cleanup(pg, tenantIds, authUserIds);

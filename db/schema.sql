@@ -1,8 +1,10 @@
 -- ============================================================
 -- GiroCerto — Schema inicial (Supabase / Postgres)
 -- MVP: foco em ciclo ocioso (espera na loja + volta vazia)
--- Multi-tenant desde o início via tenant_id, mas sem RLS
--- robusta ainda — cliente único no piloto, RLS entra na Fase 2.
+-- Multi-tenant desde o início via tenant_id. RLS já é robusta em
+-- todo o schema (nit do ultrareview de 14/08/2026 corrigido no
+-- item 68, 31/08/2026 — este comentário estava desatualizado desde
+-- que RLS passou a valer em produção, bem antes disso).
 -- ============================================================
 
 create extension if not exists pgcrypto; -- necessário para gen_random_uuid()
@@ -325,13 +327,24 @@ create table if not exists usuarios_loja (
   papel text not null default 'funcionario'
     check (papel in ('dono', 'funcionario')),
 
-  -- PIN de segurança pra aba de Integrações (seção 40) — nunca guardado em
-  -- texto puro, sempre hash via pgcrypto (crypt/gen_salt); definido e
-  -- verificado só pelas funções abaixo, nunca por update direto na tabela
-  pin_integracoes_hash text,
-
   criado_em timestamptz not null default now()
 );
+
+-- PIN de segurança pra aba de Integrações (seção 40) — hash do PIN mora
+-- numa tabela SEPARADA, não em usuarios_loja (item 68, 31/08/2026, fix de
+-- nit do ultrareview de 14/08): RLS é por linha, não por coluna, e a
+-- policy de SELECT de usuarios_loja ("usuario ve colegas do mesmo tenant")
+-- deixava QUALQUER funcionário autenticado do tenant ler o hash do PIN do
+-- dono via `select * from usuarios_loja` comum — não era só "teórico",
+-- dava pra explorar direto pela API sem precisar de UI nenhuma. Esta
+-- tabela não tem NENHUMA policy de propósito — só as 3 funções
+-- SECURITY DEFINER abaixo tocam nela (bypassam RLS por serem definer),
+-- então não tem policy nenhuma pra "esquecer" de restringir.
+create table if not exists usuarios_loja_pin (
+  usuario_loja_id uuid primary key references usuarios_loja(id) on delete cascade,
+  pin_hash text not null
+);
+alter table usuarios_loja_pin enable row level security;
 
 create unique index if not exists idx_usuarios_loja_auth_user
   on usuarios_loja (auth_user_id);
@@ -2277,21 +2290,44 @@ create policy "dono ve e edita integracoes do seu tenant" on integracoes for all
 );
 
 -- ------------------------------------------------------------
--- PIN de segurança da aba de Integrações — definido e verificado
--- só por essas duas funções; a coluna pin_integracoes_hash nunca
--- é lida nem escrita diretamente pelo cliente (sem policy de
--- select/update nela na prática, só via RPC abaixo)
+-- PIN de segurança da aba de Integrações — definido e verificado só
+-- por essas 3 funções, sempre via usuarios_loja_pin (nunca a tabela
+-- base usuarios_loja, ver comentário lá em cima).
 -- ------------------------------------------------------------
-create or replace function set_pin_integracoes(novo_pin text)
+create or replace function set_pin_integracoes(novo_pin text, pin_atual text default null)
 returns void
-language sql
+language plpgsql
 security definer
 set search_path = public, extensions, pg_temp -- extensions: onde o pgcrypto
   -- (gen_salt/crypt) fica instalado no Supabase hospedado, não em public
 as $$
-  update usuarios_loja
-  set pin_integracoes_hash = crypt(novo_pin, gen_salt('bf'))
-  where auth_user_id = auth.uid() and papel = 'dono';
+declare
+  v_usuario_id uuid;
+  v_hash_atual text;
+begin
+  select id into v_usuario_id from usuarios_loja
+    where auth_user_id = auth.uid() and papel = 'dono';
+  if v_usuario_id is null then
+    raise exception 'usuário não é dono de nenhuma loja' using errcode = '42501';
+  end if;
+
+  -- fix de nit do ultrareview de 14/08 (item 68, 31/08/2026): antes
+  -- sobrescrevia sem checar o PIN atual. Só exige o atual quando já
+  -- existe um (a UI real só chama esta função na 1ª definição, quando
+  -- ainda não existe PIN nenhum — troca de PIN existente não tem tela
+  -- ainda, então esse branch é defesa em profundidade pra uma chamada
+  -- direta via API, não muda o fluxo real de hoje).
+  select pin_hash into v_hash_atual from usuarios_loja_pin where usuario_loja_id = v_usuario_id;
+  if v_hash_atual is not null then
+    if pin_atual is null or v_hash_atual <> crypt(pin_atual, v_hash_atual) then
+      raise exception 'PIN atual incorreto ou não informado' using errcode = '28000';
+    end if;
+  end if;
+
+  insert into usuarios_loja_pin (usuario_loja_id, pin_hash)
+  values (v_usuario_id, crypt(novo_pin, gen_salt('bf')))
+  on conflict (usuario_loja_id) do update set pin_hash = excluded.pin_hash;
+end;
 $$;
 
 create or replace function verificar_pin_integracoes(tentativa text)
@@ -2301,9 +2337,9 @@ security definer
 set search_path = public, extensions, pg_temp
 as $$
   select coalesce(
-    (select pin_integracoes_hash = crypt(tentativa, pin_integracoes_hash)
-     from usuarios_loja
-     where auth_user_id = auth.uid() and papel = 'dono' and pin_integracoes_hash is not null),
+    (select p.pin_hash = crypt(tentativa, p.pin_hash)
+     from usuarios_loja u join usuarios_loja_pin p on p.usuario_loja_id = u.id
+     where u.auth_user_id = auth.uid() and u.papel = 'dono'),
     false
   );
 $$;
@@ -2315,8 +2351,9 @@ security definer
 set search_path = public, pg_temp
 as $$
   select coalesce(
-    (select pin_integracoes_hash is not null
-     from usuarios_loja where auth_user_id = auth.uid() and papel = 'dono'),
+    (select true
+     from usuarios_loja u join usuarios_loja_pin p on p.usuario_loja_id = u.id
+     where u.auth_user_id = auth.uid() and u.papel = 'dono'),
     false
   );
 $$;
