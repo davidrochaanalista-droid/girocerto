@@ -3804,6 +3804,18 @@ C:\Users\Usuário\Projetos\giro certo
     - **Não commitado** (o arquivo está em `mockups/.gitignore` desde uma
       decisão anterior do usuário, roda só local) — fix existe no disco,
       não no repo público.
+70. **Cobertura dedicada de `calcular_segundos_parado()` com `iniciada_em`
+    real** (31/08/2026, continuando "faça as outras pendências"). Teste
+    novo em `tests/seguranca.test.js`: tenant dedicado com
+    `segundos_parado_alerta=5` (rápido de testar), rota com `iniciada_em`
+    controlado, leituras de GPS brutas com timestamps precisos —
+    confirma que o corte de `iniciada_em` (leitura de antes da rota
+    iniciar, ex: espera na loja, não conta pro platô — fix antigo do
+    ultrareview) continua funcionando com dado real, que o cálculo do
+    tempo parado bate, que o trigger dispara o alerta `motoboy_parado`
+    de verdade, e o caso negativo (entregador se movendo >15m entre
+    leituras não gera alerta falso). 171/171 na suíte completa. Commit
+    `32e3522`.
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -4045,12 +4057,11 @@ C:\Users\Usuário\Projetos\giro certo
       agora exige o PIN atual pra trocar um já existente. Comentário
       desatualizado ("RLS entra na Fase 2") corrigido. Migration aplicada no
       banco hospedado, 20/20 em `integracoes.test.js` (com cobertura nova).
-- [ ] `calcular_segundos_parado` (fix do ultrareview round 1, item 7) depende de
-      `rotas_entrega.iniciada_em`, que agora É populado de verdade pelo motor de
-      despacho real (item 10, `confirmarRetirada()`) — a lacuna que fazia esse fix ficar
-      inerte foi fechada, mas o comportamento não foi re-testado especificamente com
-      dado real do motor de despacho nesta sessão. Vale um teste dedicado antes de
-      considerar 100% validado em produção.
+- [x] ~~`calcular_segundos_parado` não foi re-testado com `iniciada_em` real~~ —
+      **coberto no item 70 (31/08/2026)**: teste dedicado em `tests/seguranca.test.js`
+      (31/31) — confirma o corte (leitura antes de `iniciada_em` não conta pro
+      platô), o cálculo do tempo parado, o alerta `motoboy_parado` disparando via
+      trigger de verdade, e o caso negativo (entregador se movendo não gera alerta).
 - [x] ~~Link público de rastreio pro cliente final~~ — construído (item 42),
       `mockups/rastreio-pedido.html` + 2 RPCs SECURITY DEFINER, testado ao vivo
       com a chave anon de verdade. Ainda falta o disparo automático do envio do
