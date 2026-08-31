@@ -3771,6 +3771,39 @@ C:\Users\Usuário\Projetos\giro certo
       grep). `tests/integracoes.test.js` ganhou cobertura nova (troca de
       PIN com/sem o atual, isolamento da tabela nova) — 20/20. Commit
       `2f99c61`.
+69. **`painel-dev.html` corrigido (item 52 tinha deixado quebrado)**
+    (31/08/2026, continuando "faça as outras pendências"). Achado real:
+    eram **3 lugares** quebrados, não 2 como a pendência registrada dizia
+    — `carregarPedidosDev()` também tinha um embed `entregadores(nome)`
+    (a lista de tentativas de despacho por pedido) que ninguém tinha
+    notado. Os 3: `carregarAprovacao()` e `carregarEntregadores()`
+    (liam `entregadores.nome`/`status_verificacao`/`lat`/etc direto —
+    tudo isso mudou de tabela no item 52) e o embed em
+    `carregarPedidosDev()`.
+    - **Fix**: as 2 primeiras passaram a usar a view `entregadores_completo`
+      (já existe desde o item 52, faz o join certo com os MESMOS nomes de
+      coluna que o código já esperava — troca praticamente mecânica). Como
+      é view (não tabela), o PostgREST não embeda `tenants(nome)`
+      automaticamente nela — resolvido com uma função nova,
+      `buscarNomesTenants()`, que busca os nomes em lote numa 2ª query. O
+      embed em `carregarPedidosDev()` virou `entregadores(pessoas_entregadoras(nome))`
+      (encadeado — `entregadores`/`pessoas_entregadoras` são tabelas reais
+      com FK, isso funciona normal, diferente da view).
+    - **Achado extra no meio do fix**: `aprovar_entregador_teste()` também
+      estava sendo chamada errada — a função já tinha virado
+      `aprovar_entregador_teste(p_pessoa_id uuid)` faz tempo (opera em
+      `pessoas_entregadoras`, não mais em `entregadores`), mas
+      `painel-dev.html` ainda mandava `{ p_entregador_id: ... }` (nome de
+      parâmetro que não existe mais) com o `id` da tabela errada. Corrigido
+      pra passar `pessoa_id` com o nome de parâmetro certo.
+    - **Validado com script de teste dedicado** (não pela suíte
+      `tests/`, já que é HTML puro sem teste automatizado formal):
+      fixtures isoladas (`is_teste=true`), sessão real de um usuário
+      dev-admin temporário (`desenvolvedores_admin`), as 3 queries e o
+      RPC rodando com RLS de verdade — todos OK, dados limpos depois.
+    - **Não commitado** (o arquivo está em `mockups/.gitignore` desde uma
+      decisão anterior do usuário, roda só local) — fix existe no disco,
+      não no repo público.
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -3951,10 +3984,11 @@ C:\Users\Usuário\Projetos\giro certo
 - [x] ~~Fase 2 do item 52 — limite de rotas simultâneas~~ — **feita no item 54
       (27/08/2026)**: freelance até 3, fixo com o limite configurado pela loja
       (default 1). Ver item 54 pro detalhe completo.
-- [ ] `painel-dev.html` (ferramenta interna, nunca deployada) não foi atualizado no item
-      52 — lê `entregadores.nome`/`status_verificacao` direto em 2 lugares, quebrado
-      desde a separação pessoa/vínculo. Decisão consciente: não é produto,
-      `painel-admin.html` é o fluxo real de aprovação.
+- [x] ~~`painel-dev.html` não foi atualizado no item 52~~ — **corrigido no item 69
+      (31/08/2026)**: eram 3 lugares quebrados, não 2 (achado um a mais: embed
+      `entregadores(nome)` em `carregarPedidosDev()`). Validado com script de
+      teste dedicado (sessão dev-admin real, RLS de verdade) — não commitado, o
+      arquivo continua fora do repo por decisão do usuário (`mockups/.gitignore`).
 - [ ] Módulo feira: as 3 funções de matching (`buscar_entregador_mais_proximo()`,
       dentro de `aceitar_proposta_consolidacao()`/`recusar_proposta_consolidacao()`, e
       `redespachar_apos_recusa_feira()`) ganharam o join pra `pessoas_entregadoras` no
