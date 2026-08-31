@@ -3693,6 +3693,48 @@ C:\Users\Usuário\Projetos\giro certo
       cobre e avisa esse caso também, pelo menos). **Não é pendência
       técnica, é decisão de negócio do usuário** (upgrade de plano) —
       só registrado aqui pra não passar despercebido.
+67. **Fecha o gap de reprocessamento do item 62 (NOTIFY de resposta perdido)
+    + achado de infra que destrava a flakiness de rede da sessão inteira**
+    (31/08/2026, pedido direto: "faça as outras pendências, deixa railway
+    para depois").
+    - **Fix em `dispatch-engine/index.js`**: `agendarRepique()` agora chama
+      `tratarRespostaDespacho()` quando o autocorretor descobre que uma
+      tentativa já resolveu sem NOTIFY (antes só parava o repique, sem
+      processar — uma tentativa `'aceito'` com NOTIFY perdido ficava pra
+      sempre sem a rota atribuída). Guard de idempotência
+      (`tentativasProcessadas`, Set em memória) fecha a janela de um NOTIFY
+      atrasado (não perdido) chegando depois do autocorretor já ter
+      processado — sem isso, o caminho `'recusado'` poderia despachar 2
+      ofertas pro mesmo pedido. `reconciliarNaSubida()` ganhou
+      `retomarRotasSemTentativaAberta()`: cobre o processo caindo bem no
+      meio de um failover (rota `planejada` sem tentativa aberta nem timer
+      sobrevivente — nada mais a reviveria). As 2 varreduras de
+      reconciliação (pedidos órfãos + rotas sem tentativa aberta) passaram
+      a rodar em paralelo (`Promise.all`) em vez de sequencial — subida
+      mais rápida com vários órfãos acumulados.
+    - **Achado de infra, provavelmente explica boa parte da flakiness de
+      rede documentada nesta sessão inteira (itens 61/62/65)**: o `.env`
+      local usava `DATABASE_URL` apontando pro host DIRETO do Supabase
+      (`db.<ref>.supabase.co`), que só resolve em **IPv6** — e essa
+      máquina/rede tem rota IPv6 instável especificamente pra esse host
+      (confirmado: `ping`/HTTPS funcionam normalmente, só a conexão
+      Postgres direta falhava, repetidamente, com `ETIMEDOUT` no endereço
+      IPv6). Testado e confirmado: o **pooler** (`aws-0-us-east-2.pooler.supabase.com:5432`,
+      IPv4 — o MESMO que o Railway já usa em produção pro
+      `dispatch-engine/`) conecta na hora, sem falha nenhuma. `.env` local
+      atualizado pra usar o pooler (arquivo não versionado,
+      `.gitignore`) — várias rodadas de teste depois dessa troca, zero
+      timeout de conexão. Se a flakiness voltar a aparecer em sessão
+      futura, checar primeiro se o `.env` local ainda está no pooler antes
+      de assumir que é o Supabase/rede em geral.
+    - Durante o trabalho: derrubei o `girocerto-feira-dispatch` por engano
+      (rodei `railway down` esperando pausar o `dispatch-engine`, mas o
+      link do CLI tinha ficado preso no serviço da feira do trabalho
+      anterior) — religado em menos de 2min, sem pedido gerado no
+      intervalo (confirmado sem `pedido_grupo` pendente). Lição: sempre
+      `railway link -s <serviço>` explícito antes de `railway down`/`up`
+      em vez de confiar no link salvo da sessão, e passar `--service`
+      como segurança extra.
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -3958,17 +4000,16 @@ C:\Users\Usuário\Projetos\giro certo
       startup cobre pedidos órfãos e tentativas já expiradas, mas não timers "no meio
       do caminho"). Aceitável pra um piloto de 2-3 lojas, documentado em
       `dispatch-engine/README.md`, não é bloqueio.
-- [ ] **Tentativa aceita/recusada com o NOTIFY de `tentativa_despacho_respondida`
-      perdido nunca é reprocessada** (achado no item 62, investigando o item 61,
-      28/08/2026) — o autocorretor do repique (`agendarRepique`) já verifica
-      periodicamente se a tentativa saiu de `resultado IS NULL`, mas só usa isso pra
-      PARAR de repicar — não chama `tratarRespostaDespacho()`. Se o NOTIFY específico
-      dessa resposta for perdido, uma tentativa `'aceito'` fica pra sempre sem a rota
-      atribuída ao entregador (a reconciliação de subida também não cobre, só olha
-      `resultado IS NULL`). Mais raro que o gap já corrigido do item 62 (exige perder o
-      NOTIFY de resposta, não o de pedido pronto), não corrigido ainda — precisa de uma
-      sessão dedicada (reprocessar direto no autocorretor do repique é o caminho óbvio,
-      mas não foi implementado pra não expandir escopo do que foi pedido nesta sessão).
+- [x] ~~Tentativa aceita/recusada com o NOTIFY de `tentativa_despacho_respondida`
+      perdido nunca é reprocessada~~ — **corrigido no item 67 (31/08/2026)**.
+      `agendarRepique()` agora chama `tratarRespostaDespacho()` de verdade quando
+      descobre que uma tentativa já resolveu sem o NOTIFY avisar (antes só parava
+      o repique). Guard de idempotência (`tentativasProcessadas`) fecha a janela
+      de um NOTIFY atrasado (não perdido) chegando depois. Ganho de brinde:
+      `reconciliarNaSubida()` ganhou `retomarRotasSemTentativaAberta()` — cobre
+      o caso relacionado de o processo cair bem no meio de um failover (rota
+      `planejada` sem nenhuma tentativa aberta nem timer sobrevivente). Commit
+      `ce97527`, 160/160 testes.
 
 ## Convenções de trabalho estabelecidas
 - Nunca commitar nem dar push sem instrução explícita "commit e push", mesmo depois de
@@ -3999,6 +4040,23 @@ C:\Users\Usuário\Projetos\giro certo
   teste local dispara e corrompe as asserções. Sempre confirmar
   `railway status`/`railway logs` mostrando online e escutando antes de seguir
   em frente, pra minimizar o tempo fora do ar.
+- **O CLI do Railway mantém um link salvo por diretório, mas ele fica "grudado" no
+  último serviço linkado explicitamente — não confiar nisso quando o projeto tem mais
+  de 1 serviço** (achado real, item 67, 31/08/2026: `railway down` rodado de dentro de
+  `dispatch-engine/` derrubou o `girocerto-feira-dispatch` por engano, porque o link
+  tinha ficado preso no último `railway link` feito pra feira). Sempre rodar
+  `railway link -p <project> -e <env> -s <service>` explícito logo antes de qualquer
+  `down`/`up`/`status` num projeto multi-serviço, e passar `--service <nome>` como
+  segurança extra nos comandos que aceitam a flag.
+- **`.env` local: usar sempre o pooler do Supabase (`aws-0-us-east-2.pooler.supabase.com:5432`),
+  nunca o host direto (`db.<ref>.supabase.co`)** — achado real, item 67 (31/08/2026): o
+  host direto só resolve em IPv6, e essa máquina/rede tem rota IPv6 instável
+  especificamente pra ele (`ETIMEDOUT` repetido em vários testes ao longo de toda a
+  sessão — itens 61/62/65 — provavelmente a causa raiz de boa parte da flakiness de
+  conexão pg direta documentada). O pooler (IPv4, o MESMO que o Railway já usa em
+  produção) conectou de primeira, sem falha nenhuma, em todas as rodadas depois da
+  troca. Se testes locais voltarem a falhar com `ECONNRESET`/`ETIMEDOUT` numa conexão
+  `pg` direta, checar isso primeiro antes de assumir instabilidade geral do Supabase.
 - **`signUp()` real (não `admin.createUser`) consome o rate limit de e-mail do
   Supabase** (free tier) — depois de poucas confirmações reais numa mesma
   sessão, novas tentativas retornam `429 email rate limit exceeded` (bloqueia
