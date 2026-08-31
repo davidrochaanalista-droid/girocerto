@@ -3735,6 +3735,42 @@ C:\Users\Usuário\Projetos\giro certo
       `railway link -s <serviço>` explícito antes de `railway down`/`up`
       em vez de confiar no link salvo da sessão, e passar `--service`
       como segurança extra.
+68. **3 nits do `/ultrareview` de 14/08/2026, fechados** (31/08/2026,
+    continuando "faça as outras pendências").
+    - `pin_integracoes_hash` era exposto via SELECT normal de
+      `usuarios_loja` pra QUALQUER funcionário do tenant — achado real,
+      não só teórico: a policy `"usuario ve colegas do mesmo tenant"`
+      (SELECT por `tenant_id`, não por linha própria) deixava um
+      funcionário autenticado ler o hash do PIN do dono via
+      `supabase.from('usuarios_loja').select('*')` direto pela API, sem
+      precisar de UI nenhuma. RLS é por linha, não por coluna — não dava
+      pra restringir só essa coluna na mesma tabela.
+    - **Fix**: hash movido pra tabela nova `usuarios_loja_pin`
+      (`usuario_loja_id` + `pin_hash`), com RLS habilitada e **nenhuma
+      policy** de propósito — nem o próprio dono lê essa tabela direto,
+      só as 3 funções `SECURITY DEFINER` (`set_pin_integracoes`,
+      `verificar_pin_integracoes`, `tem_pin_integracoes`) tocam nela,
+      bypassando RLS por serem definer. Testado: `sessDono.from('usuarios_loja_pin').select('*')`
+      volta vazio mesmo pro dono da linha.
+    - **`set_pin_integracoes(novo_pin, pin_atual default null)`** agora
+      exige o PIN atual antes de sobrescrever um já existente — só não
+      exige na 1ª definição (quando `pin_hash` ainda não existe), que é
+      o único caminho que a UI de `painel-loja.html` de fato usa hoje
+      (não existe tela de "trocar PIN" ainda, só "criar" e "confirmar
+      pra entrar"). Achado no meio da implementação: `create or replace
+      function` com assinatura DIFERENTE (parâmetro novo) não substitui
+      a função antiga — cria uma 2ª função sobrecarregada, e o PostgREST
+      não consegue escolher entre as duas (`PGRST203`). Precisou de
+      `drop function set_pin_integracoes(text)` explícito antes.
+    - Comentário desatualizado no topo do `db/schema.sql` ("RLS entra na
+      Fase 2") corrigido — RLS já é robusta em todo o schema há muito
+      tempo, o comentário só nunca tinha sido atualizado.
+    - Migration aplicada no banco hospedado (confirmado com o usuário
+      antes — DDL em produção). Zero mudança de frontend necessária
+      (nenhum código lia `pin_integracoes_hash` direto, confirmado por
+      grep). `tests/integracoes.test.js` ganhou cobertura nova (troca de
+      PIN com/sem o atual, isolamento da tabela nova) — 20/20. Commit
+      `2f99c61`.
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -3965,15 +4001,16 @@ C:\Users\Usuário\Projetos\giro certo
       foram cancelados (não vão ser despachados), mas as entidades em si
       continuam no banco. Inofensivo, baixa prioridade — limpar numa
       sessão futura se sobrar tempo.
-- [ ] 3 nits do `/ultrareview` de 14/08/2026 ficaram de fora desta rodada (só os 6
-      achados de severidade "normal" foram corrigidos, por prioridade explícita do
-      usuário) — nenhum é bloqueio, mas seguem em aberto: `set_pin_integracoes` não
-      exige o PIN atual antes de sobrescrever (impacto prático baixo, dono já tem
-      SELECT direto em `integracoes` de qualquer forma); `pin_integracoes_hash` fica
-      exposto via SELECT normal de `usuarios_loja` (RLS é por linha, não por coluna —
-      contradiz o comentário no schema, mas hoje não há fluxo de funcionário pra
-      explorar); comentário no topo de `db/schema.sql` ainda diz "RLS entra na Fase 2",
-      contradizendo o schema logo abaixo (só afeta leitura/documentação).
+- [x] ~~3 nits do `/ultrareview` de 14/08/2026~~ — **fechados no item 68
+      (31/08/2026)**. `pin_integracoes_hash` era exposto via SELECT normal de
+      `usuarios_loja` pra QUALQUER funcionário do tenant (achado real: RLS é
+      por linha, não por coluna — a policy de SELECT existente deixava
+      qualquer colega ler o hash do PIN do dono, explorável direto pela API
+      sem UI nenhuma) — movido pra `usuarios_loja_pin`, tabela sem NENHUMA
+      policy, só as 3 funções SECURITY DEFINER tocam. `set_pin_integracoes()`
+      agora exige o PIN atual pra trocar um já existente. Comentário
+      desatualizado ("RLS entra na Fase 2") corrigido. Migration aplicada no
+      banco hospedado, 20/20 em `integracoes.test.js` (com cobertura nova).
 - [ ] `calcular_segundos_parado` (fix do ultrareview round 1, item 7) depende de
       `rotas_entrega.iniciada_em`, que agora É populado de verdade pelo motor de
       despacho real (item 10, `confirmarRetirada()`) — a lacuna que fazia esse fix ficar
