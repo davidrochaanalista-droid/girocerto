@@ -3646,6 +3646,53 @@ C:\Users\Usuário\Projetos\giro certo
       e só depois decidir o que fazer com a rotina de nuvem (item acima)
       — provavelmente desabilitar, já que o Railway nativo cobre o mesmo
       caso sem a limitação de rede.
+66. **Mitigação do item 64 concluída: regra nativa de notificação do
+    Railway criada, cobrindo o gap real** (30/08/2026, retomando o item
+    65 a pedido do usuário: "retomar a mitigação do item 65").
+    - **`channelConfigs`/`eventTypes` não são introspectáveis pela API
+      (confirmado — são campos opacos), mas o painel do Railway tem uma
+      página de configuração própria** que a sessão anterior não tinha
+      achado: `railway.com/account/notifications` (chega lá pelo sino de
+      notificação no topo → "Edit preferences" — não fica em Project
+      Settings nem em Workspace Settings, só nessa página de conta).
+      Usada via navegador (`claude-in-chrome`) pra descobrir o formato
+      certo e criar a regra com confiança, em vez de continuar chutando
+      contra a API às cegas.
+    - **A lista de eventos disponíveis** (categoria "Deployment") é:
+      Crashed, Oom Killed, Failed, Deployed, Redeployed, Slept, Resumed,
+      Restarted, **Removed**, Building, Deploying, Waiting, Needs
+      Approval, Queued. Já existiam regras padrão pra Failed/
+      Crashed+OomKilled/UsageAlert — nenhuma cobria **Removed**, que é
+      exatamente o evento do incidente do item 64 (`railway down` /
+      `DRAIN_INSTANCES`, não é um crash).
+    - **Regra criada pelo painel** (não pela API — a mutation
+      `notificationRuleCreate` aceita qualquer JSON sem validar, e uma
+      rule criada assim por tentativa e erro nesta sessão (evento
+      `deployment.crashed`, chutado) nem aparece na lista do painel nem
+      no `notificationRules` da API depois — órfã, inofensiva mas
+      inútil; tentei apagar com `notificationRuleDelete`, deu "Not
+      Authorized" pro token de CLI. Fica lá, sem efeito prático, não vale
+      mais esforço): **"All Projects → Deployment Removed → Email &
+      In-App"**, confirmada salva após reload da página. Cobre os 2
+      serviços do GiroCerto automaticamente (e também `torre-fleet-orchestrator`,
+      outro projeto de David no mesmo workspace — bônus, não pedido, sem
+      efeito colateral ruim).
+    - **Rotina de nuvem do item 65 desabilitada** (`trig_011uqbqBhXsHAbScekBF4GyN`,
+      `enabled: false` via `RemoteTrigger`) — a API não permite apagar
+      rotina, só desabilitar; pra apagar de vez é preciso ir em
+      https://claude.ai/code/routines manualmente. Não vale a pena
+      reaproveitar pra outra coisa: o bloqueio de rede do ambiente de
+      nuvem (`EGRESS_BLOCKED` pra qualquer domínio fora da allowlist da
+      Anthropic) é estrutural, não vai mudar.
+    - **Achado à parte, mais urgente que o que motivou o item 64**: a
+      conta Railway está no plano **Trial**, com aviso explícito no
+      painel — "7 days or $4.06 left · Upgrade to keep your services
+      online." Isso é um risco de disponibilidade maior que esquecer um
+      `railway down` — se o saldo/trial acabar, o próprio Railway pode
+      derrubar os serviços (a regra "Deployment Removed" criada acima
+      cobre e avisa esse caso também, pelo menos). **Não é pendência
+      técnica, é decisão de negócio do usuário** (upgrade de plano) —
+      só registrado aqui pra não passar despercebido.
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -3854,16 +3901,19 @@ C:\Users\Usuário\Projetos\giro certo
       reaparecer em volume maior.
 - [ ] `.env` local tem as credenciais do projeto Supabase hospedado
       (`ntmxkwzhumiqspxijuln`) — nunca comitar, já está no `.gitignore`.
-- [ ] **`railway down` sem religar depois já causou 33h de produção
-      offline sem ninguém perceber** (item 64, 29/08/2026) — não tem
-      lembrete/alerta/timeout de segurança nenhum no protocolo atual
-      (pausar antes de teste local, religar depois). **Mitigação em
-      andamento, pausada no meio (item 65)**: rotina na nuvem criada mas
-      não funcional (bloqueio de rede do ambiente — `EGRESS_BLOCKED`);
-      caminho mais promissor achado e não terminado é o sistema nativo de
-      notificação do próprio Railway (`notificationRuleCreate`). Decisão
-      pendente também sobre o que fazer com a rotina de nuvem inútil que
-      ficou ativa (roda de hora em hora, só manda push de "bloqueado").
+- [x] ~~`railway down` sem religar depois já causou 33h de produção
+      offline sem ninguém perceber~~ — **mitigado no item 66 (30/08/2026)**:
+      regra nativa do Railway (`railway.com/account/notifications` →
+      "All Projects → Deployment Removed → Email & In-App") avisa por
+      e-mail agora sempre que um deploy for removido, cobrindo os 2
+      serviços do GiroCerto. Rotina de nuvem do item 65 (não funcional,
+      bloqueada por rede) desabilitada.
+- [ ] **Conta Railway no plano Trial, saldo/prazo expirando** (achado no
+      item 66, 30/08/2026) — painel mostra "7 days or $4.06 left ·
+      Upgrade to keep your services online." Não é pendência técnica, é
+      decisão de negócio do usuário (fazer upgrade de plano) — registrado
+      pra não passar despercebido, já que se o saldo acabar o próprio
+      Railway pode derrubar os serviços de produção.
 - [ ] Resíduo de teste no módulo feira (achado no item 63, 28/08/2026):
       5 `estabelecimentos` ("[TESTE] Banca Simultanea" x4, "Banca Teste
       Hortifruti"), 5 `feira`/feira_ocorrencia associadas, 2
