@@ -253,6 +253,84 @@ async function run() {
       r.check('update de campo NÃO relacionado (lat/lng) continua funcionando normalmente mesmo bloqueado', !eLegitimo && checkLegitimo[0].lat === -23.5 && checkLegitimo[0].bloqueado_ate !== null, checkLegitimo[0]);
     }
 
+    console.log('\n=== item 70 (31/08/2026): calcular_segundos_parado() com iniciada_em real, dado bruto de GPS ===');
+    // pendência antiga: calcular_segundos_parado() dependia de rotas_entrega.iniciada_em,
+    // que só passou a ser populado de verdade pelo motor real no item 10 — nunca foi
+    // re-testado com esse dado real desde então. Testa direto a função (mesma que o
+    // trigger avaliar_alertas_seguranca_localizacao() chama), com timestamps controlados.
+    {
+      const stalledTenantId = crypto.randomUUID();
+      tenantIds.push(stalledTenantId);
+      await pg.query(`insert into tenants (id, nome, segundos_parado_alerta) values ($1,'Loja Parado',5)`, [stalledTenantId]);
+      const stalledUser = await createAuthUser('parado.seguranca');
+      authUserIds.push(stalledUser.id);
+      const { entregadorId: entregadorParadoId } = await criarEntregador(pg, stalledTenantId, stalledUser.id, { nome: 'Entregador Parado', status: 'em_rota' });
+      const { rows: rotaParadoRows } = await pg.query(
+        `insert into rotas_entrega (tenant_id, entregador_id, status, iniciada_em) values ($1,$2,'em_entrega', now() - interval '30 seconds') returning id, iniciada_em`,
+        [stalledTenantId, entregadorParadoId]
+      );
+      const rotaParadoId = rotaParadoRows[0].id;
+      const iniciadaEm = rotaParadoRows[0].iniciada_em;
+      const PONTO_A = { lat: -23.5505, lng: -46.6333 }; // parado, sempre o mesmo lugar
+      const PONTO_B = { lat: -23.5600, lng: -46.6500 }; // ~1.5km de A — bem fora da tolerância de 15m
+
+      // achado ultrareview (bug_004, já corrigido antes): 2 leituras ANTES de
+      // iniciada_em, no MESMO lugar (espera na loja) — não podem contar como
+      // "parado durante a entrega". Só a fixture pra confirmar que o corte
+      // continua funcionando com iniciada_em vindo do motor real.
+      await pg.query(
+        `insert into localizacoes_entregador (entregador_id, rota_id, lat, lng, registrado_em) values
+         ($1,$2,$3,$4, $5::timestamptz - interval '120 seconds'),
+         ($1,$2,$3,$4, $5::timestamptz - interval '60 seconds')`,
+        [entregadorParadoId, rotaParadoId, PONTO_A.lat, PONTO_A.lng, iniciadaEm]
+      );
+      // 3 leituras DEPOIS de iniciada_em, mesmo lugar (dentro da tolerância de
+      // 15m), a mais antiga 20s depois de iniciada_em — plateau real de ~20s.
+      await pg.query(
+        `insert into localizacoes_entregador (entregador_id, rota_id, lat, lng, registrado_em) values
+         ($1,$2,$3,$4, $5::timestamptz + interval '20 seconds'),
+         ($1,$2,$3,$4, $5::timestamptz + interval '25 seconds'),
+         ($1,$2,$3,$4, now())`,
+        [entregadorParadoId, rotaParadoId, PONTO_A.lat, PONTO_A.lng, iniciadaEm]
+      );
+
+      const { rows: calcRows } = await pg.query(`select calcular_segundos_parado($1,$2) as segundos`, [entregadorParadoId, rotaParadoId]);
+      const segundosParado = Number(calcRows[0].segundos);
+      r.check(
+        'calcular_segundos_parado() conta só o platô DEPOIS de iniciada_em (~10-20s, desde iniciada_em+20s), não desde a espera na loja (~150s atrás)',
+        segundosParado > 5 && segundosParado < 40,
+        segundosParado
+      );
+
+      const { rows: alertaParadoRows } = await pg.query(
+        `select id, tipo from alertas_seguranca where rota_id = $1 and tipo = 'motoboy_parado'`,
+        [rotaParadoId]
+      );
+      r.check('trigger cria alerta motoboy_parado de verdade (segundos_parado_alerta=5, platô real >5s)', alertaParadoRows.length === 1, alertaParadoRows);
+
+      // Caso negativo: entregador se movendo (>15m entre leituras) não deve
+      // gerar alerta de "parado", mesmo com o mesmo tenant/limite baixo.
+      const movingUser = await createAuthUser('movendo.seguranca');
+      authUserIds.push(movingUser.id);
+      const { entregadorId: entregadorMovendoId } = await criarEntregador(pg, stalledTenantId, movingUser.id, { nome: 'Entregador Movendo', status: 'em_rota' });
+      const { rows: rotaMovendoRows } = await pg.query(
+        `insert into rotas_entrega (tenant_id, entregador_id, status, iniciada_em) values ($1,$2,'em_entrega', now() - interval '30 seconds') returning id`,
+        [stalledTenantId, entregadorMovendoId]
+      );
+      const rotaMovendoId = rotaMovendoRows[0].id;
+      await pg.query(
+        `insert into localizacoes_entregador (entregador_id, rota_id, lat, lng, registrado_em) values
+         ($1,$2,$3,$4, now() - interval '20 seconds'),
+         ($1,$2,$5,$6, now())`,
+        [entregadorMovendoId, rotaMovendoId, PONTO_A.lat, PONTO_A.lng, PONTO_B.lat, PONTO_B.lng]
+      );
+      const { rows: alertaMovendoRows } = await pg.query(
+        `select id from alertas_seguranca where rota_id = $1 and tipo = 'motoboy_parado'`,
+        [rotaMovendoId]
+      );
+      r.check('entregador se movendo (>15m entre leituras) NÃO gera alerta de parado', alertaMovendoRows.length === 0, alertaMovendoRows);
+    }
+
     console.log('\n=== config_fadiga_do_meu_tenant() — achado da revisão do ultrareview: RPC nunca era testada via .rpc() ===');
     // achado (auditoria de "caminho errado" pedida depois do achado #1 da 2ª
     // rodada de ultrareview): essa RPC é chamada por app-entregador.html
