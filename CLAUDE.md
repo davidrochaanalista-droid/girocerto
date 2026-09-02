@@ -3828,6 +3828,27 @@ C:\Users\Usuário\Projetos\giro certo
     `auth_user_id` antes de apagar as linhas de negócio) — inofensivo,
     não vale caçar retroativamente. Verificação final: 0 linhas
     restantes em todas as tabelas checadas.
+72. **Auditoria de gaps de Realtime/publication, feita** (02/09/2026,
+    continuando "faça as outras pendências"). Mapeados todos os
+    `carregar*()` dos 4 mockups principais (`painel-loja.html`,
+    `painel-admin.html`, `painel-feirante.html`, `app-entregador.html`) e
+    cruzados contra `.channel()`/`setInterval()` existentes.
+    - **Achado real (4º caso do mesmo padrão do item 17)**:
+      `carregarSolicitacoesSaque()` em `painel-loja.html` não tinha
+      Realtime NEM polling — um entregador solicitando saque pelo
+      PRÓPRIO app (`repasses.saque_solicitado_em`) não aparecia pra loja
+      sem F5 manual. Fix: entrou no fallback de polling que já existe
+      pras outras views (guardado por visibilidade da view
+      `mv-entregadores`, mesmo padrão).
+    - `painel-feirante.html` tinha Realtime funcionando mas sem rede de
+      segurança de polling (o único `carregarPedidos()` do arquivo) —
+      adicionada, por consistência com o padrão já estabelecido.
+    - `painel-admin.html`: revisado e descartado — a falta de
+      Realtime/polling ali é decisão consciente já documentada no
+      próprio código (item 27, "ferramenta interna de baixo tráfego, não
+      painel operacional ao vivo"), não é um gap novo.
+    - `app-entregador.html`: já tinha 5 canais + 5 `setInterval` — bem
+      coberto, nenhum `carregar*()` órfão encontrado.
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -3965,15 +3986,15 @@ C:\Users\Usuário\Projetos\giro certo
       quem aprova, é o ADMIN da plataforma, pelo `painel-admin.html` novo
       (produção, publicado). `painel-loja.html` continua sem nenhuma UI de
       aprovação — decisão de produto, não pendência.
-- [ ] **Auditoria de outros gaps latentes de Realtime/publication** (pedido
-      explícito do usuário, não bloqueia o piloto desta semana) — o achado do
-      item 17 (`pedidos`/`rotas_entrega` fora da publication, painel não
-      atualizava sozinho) é o 3º caso do mesmo padrão nesta sessão (ver
-      "REGRA GERAL" em "Arquitetura conhecida"). Vale, com calma, revisar se
-      existe mais algum `carregar*()` nos 3 mockups que só roda uma vez (sem
-      Realtime nem polling) mas deveria refletir mudança feita por fora da
-      própria aba — antes de expandir o sistema pra mais funções/telas, não
-      depois.
+- [x] ~~Auditoria de outros gaps latentes de Realtime/publication~~ —
+      **feita no item 72 (02/09/2026)**. Achado real (4º caso do mesmo
+      padrão): `carregarSolicitacoesSaque()` em `painel-loja.html` nunca
+      reagia a nada — um entregador solicitando saque pelo PRÓPRIO app
+      não aparecia pra loja sem F5 manual. Entrou no fallback de polling
+      já existente. `painel-feirante.html` tinha Realtime mas sem rede de
+      segurança de polling — adicionada, mesmo padrão de `painel-loja.html`.
+      `painel-admin.html` revisado e descartado: falta de Realtime/polling
+      ali é decisão consciente já documentada (item 27), não é gap novo.
 - [x] ~~`dispatch-engine/` não está deployado no Railway ainda~~ — deployado em
       17/08/2026, validado com teste real de ponta a ponta contra o serviço publicado
       (ver item 15). `DATABASE_URL` corrigida (pooler modo sessão, porta 5432),
