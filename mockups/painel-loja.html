@@ -514,6 +514,14 @@ function iniciarAtualizacoesAoVivo(){
       carregarRotas();
     }
     if(document.getElementById('mv-pedidos').style.display !== 'none') carregarPedidos();
+    // item 72 (02/09/2026, auditoria de gaps de Realtime pedida pelo usuário):
+    // carregarSolicitacoesSaque() nunca reagia a nada — um entregador
+    // solicitando saque pelo PRÓPRIO app (repasses.saque_solicitado_em)
+    // não aparecia aqui sem F5 manual, mesmo padrão já achado 3x antes
+    // (ver "REGRA GERAL" em Arquitetura conhecida). Entra no mesmo
+    // fallback de polling das outras views, sem precisar de canal
+    // Realtime novo nem mexer na publication.
+    if(document.getElementById('mv-entregadores').style.display !== 'none') carregarSolicitacoesSaque();
   }, POLL_INTERVAL_MS);
 }
 

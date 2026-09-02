@@ -215,6 +215,13 @@ async function iniciarApp(){
       filter: `estabelecimento_id=eq.${estabelecimentoId}`,
     }, () => carregarPedidos())
     .subscribe();
+
+  // item 72 (02/09/2026, auditoria de gaps de Realtime pedida pelo
+  // usuário): rede de segurança de polling, mesmo princípio já usado em
+  // painel-loja.html — Realtime acima é o caminho normal, isso só garante
+  // que a tela nunca fica presa esperando um evento que pode não chegar
+  // (assinatura caindo silenciosamente, mesma classe de achado do item 17).
+  setInterval(carregarPedidos, 15000);
 }
 
 async function carregarPedidos(){
