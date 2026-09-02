@@ -6470,3 +6470,198 @@ begin
   return new;
 end;
 $$ language plpgsql;
+
+-- ==============================================================
+-- ITEM 74 (02/09/2026) — cadastro de entregador FIXO pelo app instalado
+-- direto (sem link nenhum). Achado ao vivo testando no aparelho físico
+-- (Realme C75): abrir o app pelo ícone sempre caía num beco sem saída
+-- ("link de cadastro inválido") — TENANT_ID só existia quando alguém
+-- abria pelo link ?loja=<uuid> que a loja compartilha (mockups/app-
+-- entregador.html); o app instalado nunca tem URL nenhuma. Achado junto,
+-- no mesmo fix: o cadastro (por QUALQUER caminho, inclusive o link)
+-- sempre criava vínculo 'freelance' — hardcoded em
+-- provisionar_cadastro_pos_signup(), nunca 'fixo', mesmo vindo de um
+-- link que a loja compartilhou especificamente pra recrutar gente PRA
+-- ELA. Decisão do usuário: só o cadastro FIXO ganha um campo pra digitar
+-- um código; freelance não precisa de loja nenhuma no cadastro (entra no
+-- pool aberto, vínculo criado depois — get_or_criar_vinculo_freelance()).
+-- ==============================================================
+alter table tenants add column if not exists codigo_cadastro text;
+
+-- código curto (6 caracteres, sem 0/O/1/I/L — ambíguos de digitar/ler em
+-- voz alta) que o dono compartilha (verbalmente, WhatsApp) com quem vai
+-- ser entregador FIXO da loja dele. Não precisa ser secreto (não dá
+-- acesso a nada sozinho, só identifica QUAL loja o cadastro é — o
+-- restante do fluxo de aprovação continua igual).
+create or replace function gerar_codigo_cadastro_tenant()
+returns text
+language plpgsql
+as $$
+declare
+  chars text := '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+  codigo text;
+  tentativas int := 0;
+begin
+  loop
+    codigo := '';
+    for i in 1..6 loop
+      codigo := codigo || substr(chars, floor(random() * length(chars) + 1)::int, 1);
+    end loop;
+    exit when not exists (select 1 from tenants where codigo_cadastro = codigo);
+    tentativas := tentativas + 1;
+    if tentativas > 20 then
+      raise exception 'não consegui gerar código único depois de 20 tentativas';
+    end if;
+  end loop;
+  return codigo;
+end;
+$$;
+
+create or replace function preencher_codigo_cadastro_tenant()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.codigo_cadastro is null then
+    new.codigo_cadastro := gerar_codigo_cadastro_tenant();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_preencher_codigo_cadastro_tenant on tenants;
+create trigger trg_preencher_codigo_cadastro_tenant
+  before insert on tenants
+  for each row execute function preencher_codigo_cadastro_tenant();
+
+update tenants set codigo_cadastro = gerar_codigo_cadastro_tenant() where codigo_cadastro is null;
+
+alter table tenants alter column codigo_cadastro set not null;
+create unique index if not exists idx_tenants_codigo_cadastro on tenants (codigo_cadastro);
+
+-- Chamada ANTES do login existir (tela de cadastro, sem sessão) — precisa
+-- funcionar com a chave anon. SECURITY DEFINER só pra ter certeza (função
+-- SQL simples, sem RLS na tabela tenants pra leitura anônima), devolve só
+-- id+nome (nunca dado sensível) — mesmo princípio de baixo risco das RPCs
+-- públicas de rastreio (item 42).
+create or replace function resolver_codigo_cadastro_loja(p_codigo text)
+returns table(id uuid, nome text)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select t.id, t.nome from tenants t where t.codigo_cadastro = upper(trim(p_codigo));
+$$;
+
+-- 4ª versão de provisionar_cadastro_pos_signup() (mesmas 3 anteriores no
+-- arquivo, esta é a que vale — create or replace com a MESMA assinatura,
+-- não cria overload). Muda 2 coisas: (1) dispatch agora é por
+-- `meta ? 'tipo_vinculo'` em vez de `meta ? 'tenant_id'` — cobre tanto
+-- fixo (tem tenant_id) quanto freelance (não tem); (2) só cria a linha em
+-- `entregadores` quando tipo_vinculo='fixo' E tenant_id presente —
+-- freelance fica só com a pessoa, sem vínculo nenhum ainda.
+create or replace function provisionar_cadastro_pos_signup()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  meta jsonb := new.raw_user_meta_data;
+  novo_tenant_id uuid;
+  v_pessoa_id uuid;
+begin
+  if meta ? 'tipo_vinculo' then
+    insert into pessoas_entregadoras (
+      auth_user_id, email, nome, tipo_veiculo, data_nascimento,
+      endereco, numero_residencia, cep, chave_pix,
+      cpf, cnh_numero, cnh_validade, placa, crlv_validade,
+      rg_numero, responsavel_nome, is_teste,
+      verificacao_enviada_em, verificacao_prazo_limite, consentimento_lgpd_aceito_em
+    ) values (
+      new.id,
+      new.email,
+      meta->>'nome',
+      coalesce(nullif(meta->>'tipo_veiculo', ''), 'moto'),
+      nullif(meta->>'data_nascimento', '')::date,
+      meta->>'endereco',
+      meta->>'numero_residencia',
+      meta->>'cep',
+      meta->>'chave_pix',
+      meta->>'cpf',
+      meta->>'cnh_numero',
+      nullif(meta->>'cnh_validade', '')::date,
+      meta->>'placa',
+      nullif(meta->>'crlv_validade', '')::date,
+      meta->>'rg_numero',
+      meta->>'responsavel_nome',
+      coalesce((meta->>'is_teste')::boolean, false),
+      now(),
+      now() + interval '7 days',
+      now()
+    )
+    on conflict (auth_user_id) where auth_user_id is not null do nothing
+    returning id into v_pessoa_id;
+
+    if v_pessoa_id is null then
+      select id into v_pessoa_id from pessoas_entregadoras where auth_user_id = new.id;
+    end if;
+
+    if meta->>'tipo_vinculo' = 'fixo' and meta->>'tenant_id' is not null then
+      insert into entregadores (tenant_id, pessoa_id, tipo_vinculo)
+      values ((meta->>'tenant_id')::uuid, v_pessoa_id, 'fixo')
+      on conflict (pessoa_id, tenant_id) where tenant_id is not null do nothing;
+    end if;
+    -- freelance (ou fixo sem tenant_id, não deveria acontecer com a UI
+    -- nova mas fica seguro): nenhum vínculo criado aqui — pool aberto, o
+    -- vínculo é criado só quando ganha a 1ª corrida
+    -- (get_or_criar_vinculo_freelance(), ver buscarProximoCandidato() em
+    -- dispatch-engine/index.js).
+
+    update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
+
+  elsif meta ? 'nome' then
+    novo_tenant_id := gen_random_uuid();
+    insert into tenants (
+      id, nome, telefone, proprietario_nome, proprietario_cpf, proprietario_data_nascimento,
+      proprietario_endereco, proprietario_numero_endereco, proprietario_cep,
+      cnpj, endereco_loja, numero_loja, cep_loja, segmento,
+      tempo_preparo_padrao_min, chave_pix, is_teste, consentimento_lgpd_aceito_em
+    ) values (
+      novo_tenant_id,
+      meta->>'nome',
+      meta->>'telefone',
+      meta->>'proprietario_nome',
+      meta->>'proprietario_cpf',
+      nullif(meta->>'proprietario_data_nascimento', '')::date,
+      meta->>'proprietario_endereco',
+      meta->>'proprietario_numero_endereco',
+      meta->>'proprietario_cep',
+      meta->>'cnpj',
+      meta->>'endereco_loja',
+      meta->>'numero_loja',
+      meta->>'cep_loja',
+      nullif(meta->>'segmento', ''),
+      nullif(meta->>'tempo_preparo_padrao_min', '')::integer,
+      meta->>'chave_pix',
+      coalesce((meta->>'is_teste')::boolean, false),
+      now()
+    )
+    on conflict (id) do nothing;
+
+    insert into usuarios_loja (tenant_id, auth_user_id, nome, papel)
+    values (novo_tenant_id, new.id, meta->>'proprietario_nome', 'dono')
+    on conflict (auth_user_id) do nothing;
+
+    if meta ? 'horarios' then
+      insert into horarios_funcionamento (tenant_id, dia_semana, periodo_inicio, periodo_fim)
+      select novo_tenant_id, (h->>'dia_semana')::smallint, (h->>'periodo_inicio')::time, (h->>'periodo_fim')::time
+      from jsonb_array_elements(meta->'horarios') as h;
+    end if;
+
+    update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
+  end if;
+  return new;
+end;
+$$;

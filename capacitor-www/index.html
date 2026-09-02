@@ -77,6 +77,7 @@ complementar). -->
 
   .msg{padding:11px 13px;border-radius:10px;font-size:13px;margin-bottom:14px;display:none;}
   .msg.error{background:var(--red-soft);color:var(--red);display:block;}
+  .msg.success{background:var(--green-soft);color:var(--leaf);display:block;}
 
   .toggle-tipo{display:flex;gap:10px;margin-bottom:18px;}
   .tipo-opt{flex:1;border:1.5px solid var(--border);border-radius:12px;padding:14px;text-align:center;cursor:pointer;font-weight:700;font-size:14px;color:var(--gray);}
@@ -162,6 +163,37 @@ complementar). -->
     <p style="color:var(--gray);font-size:13.5px;margin:0 0 18px;">Leva uns minutos — documentos entram em avaliação (até 7 dias).</p>
     <div class="msg" id="cadMsg"></div>
 
+    <!-- item 74 (02/09/2026): achado ao vivo testando no app instalado
+    (Realme C75) — abrir o app pelo ícone (sem link nenhum) sempre caía
+    num beco sem saída ("link de cadastro inválido"), porque TENANT_ID só
+    existe quando alguém abre pelo link ?loja=<uuid> que a loja compartilha.
+    Esse bloco só aparece quando TENANT_ID já não veio do link (definido
+    logo abaixo, no script). Fixo = vínculo com UMA loja específica
+    (precisa do código dela); freelance = sem loja nenhuma no cadastro,
+    entra no pool aberto (vínculo é criado depois, na hora que ganha a
+    1ª corrida — get_or_criar_vinculo_freelance()). -->
+    <div class="field" id="escolhaVinculoBox" style="display:none;">
+      <label>Como você vai trabalhar?</label>
+      <div class="toggle-tipo">
+        <div class="tipo-opt" id="opt-vinc-fixo" onclick="setVinculo('fixo')">🏪 Fixo de uma loja</div>
+        <div class="tipo-opt" id="opt-vinc-freelance" onclick="setVinculo('freelance')">🔄 Freelance</div>
+      </div>
+      <div class="cond" id="cond-vinc-fixo" style="margin-top:10px;">
+        <div class="field">
+          <label>Código da loja (peça pro dono)</label>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="c_codigo_loja" maxlength="6" style="text-transform:uppercase;flex:1;" placeholder="Ex: 7XK2QP">
+            <button type="button" class="action-btn" onclick="verificarCodigoLoja()">Verificar</button>
+          </div>
+        </div>
+        <div class="msg" id="codigoLojaMsg"></div>
+      </div>
+      <p id="vincFreelanceInfo" class="cond" style="color:var(--gray);font-size:12.5px;margin-top:8px;">
+        Você vai receber ofertas de entrega de várias lojas perto de você, sem vínculo fixo com nenhuma.
+      </p>
+    </div>
+
+    <div class="cond show" id="resto-formulario-cadastro">
     <div class="toggle-tipo">
       <div class="tipo-opt sel" id="opt-moto" onclick="setTipo('moto')">🛵 Moto</div>
       <div class="tipo-opt" id="opt-bike" onclick="setTipo('bicicleta')">🚲 Bicicleta</div>
@@ -210,6 +242,7 @@ complementar). -->
     </div>
 
     <button class="btn-primary" id="btnCadastrar" onclick="enviarCadastro()">Enviar cadastro</button>
+    </div>
     <p style="text-align:center;margin-top:14px;font-size:13.5px;">
       <button class="link-btn" onclick="mostrar('view-login')">Já tenho conta</button>
     </p>
@@ -331,12 +364,26 @@ complementar). -->
 
     <div id="avisoDocumento" style="display:none;background:var(--amber-soft);color:var(--amber-ink);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:13px;font-weight:600;"></div>
 
+    <!-- item 52 (27/08/2026), pedido do usuário: quem atende restaurante E
+    feira escolhe onde está disponível agora, pra não ser chamado nos dois
+    ao mesmo tempo (feira só acontece de manhã, mas a escolha é manual, não
+    por horário). Só aparece pra quem realmente tem os dois contextos. -->
+    <div id="modoDisponibilidadeBox" style="display:none;margin-bottom:14px;">
+      <div style="font-size:11.5px;font-weight:700;color:var(--gray);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;">Disponível agora pra</div>
+      <div class="toggle-tipo" style="margin-bottom:0;">
+        <div class="tipo-opt" id="modo-opt-restaurante" onclick="definirModoDisponibilidade('restaurante')" style="font-size:13px;">🍔 Restaurante</div>
+        <div class="tipo-opt" id="modo-opt-feira" onclick="definirModoDisponibilidade('feira')" style="font-size:13px;">🧺 Feira</div>
+        <div class="tipo-opt" id="modo-opt-ambos" onclick="definirModoDisponibilidade('ambos')" style="font-size:13px;">Ambos</div>
+      </div>
+    </div>
+
     <div class="emerg-row">
       <a class="emerg-btn" href="tel:190">🚓 190 — Polícia</a>
       <a class="emerg-btn" href="tel:192">🚑 192 — SAMU/Resgate</a>
     </div>
 
-    <p style="text-align:right;margin:-8px 0 14px;">
+    <p style="text-align:right;margin:-8px 0 14px;display:flex;justify-content:flex-end;gap:16px;">
+      <button class="link-btn" style="font-size:12.5px;" onclick="abrirSaque()">💰 Saque</button>
       <button class="link-btn" style="font-size:12.5px;" onclick="abrirViewMfa()">🔒 Verificação em duas etapas</button>
     </p>
 
@@ -370,6 +417,11 @@ complementar). -->
         <button class="btn-primary" onclick="mostrar('view-rota')" style="margin-bottom:12px;">Ver rota ativa</button>
       </div>
 
+      <!-- item 54 (27/08/2026, Fase 2): freelance pode ter até 3 rotas de
+      restaurante ativas ao mesmo tempo — essa lista só aparece quando há
+      mais de 1, pra nenhuma ficar escondida (ver verificarRotaAtiva()). -->
+      <div id="comRotaMultipla" style="display:none;margin-bottom:12px;"></div>
+
       <!-- Módulo feira (sessão de 22/08/2026, ver CLAUDE.md item 23): a MESMA
       conta atende restaurante e feira, sem seletor de modo — se as duas
       existirem ao mesmo tempo, os dois botões aparecem juntos aqui. -->
@@ -379,10 +431,105 @@ complementar). -->
 
       <button class="link-btn" id="btnExtratoFeira" onclick="abrirExtratoFeira()" style="display:none;text-align:center;width:100%;margin-bottom:14px;">Ver extrato da feira</button>
 
+      <button class="link-btn" onclick="abrirProblemaVeiculo()" style="text-align:center;width:100%;margin-bottom:14px;color:var(--red);">🔧 Problema com o veículo</button>
+
       <button class="btn-primary" id="btnContinuar" onclick="clicarContinuar()" style="margin-bottom:10px;display:none;">Continuar</button>
       <button class="btn-outline" id="btnPausar" onclick="clicarPausar()" style="margin-bottom:10px;">Pausar</button>
       <button class="btn-ghost" onclick="clicarFinalizar()">Finalizar turno</button>
     </div>
+  </div>
+
+  <!-- ===================== VIEW: SAQUE (item 51, 26-27/08/2026) =====================
+  Repasse de restaurante, não confundir com view-extrato-feira (ambiente
+  separado, com QR code de Pix pro cliente — ver clarificação do usuário no
+  CLAUDE.md item 51). Pix real não existe: "solicitar saque" só marca o
+  pedido pra loja pagar por fora com a chave Pix já cadastrada. -->
+  <div class="view" id="view-saque">
+    <button class="link-btn" onclick="mostrar('view-turno')" style="margin-bottom:14px;">← Voltar</button>
+    <h2 style="margin-bottom:4px;">Saque</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 18px;">Valores das suas entregas no restaurante. A loja paga direto no seu Pix cadastrado — o GiroCerto não transfere dinheiro.</p>
+
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="lbl">Disponível pra saque</div>
+        <div class="val" id="sq_pendente">R$ 0,00</div>
+      </div>
+      <div class="stat-card">
+        <div class="lbl">Já recebido</div>
+        <div class="val" id="sq_pago">R$ 0,00</div>
+      </div>
+    </div>
+
+    <div id="sq_msg" class="msg"></div>
+
+    <button class="btn-primary" id="sq_btnSolicitar" onclick="solicitarSaque()" style="margin-bottom:10px;">Solicitar saque</button>
+    <div id="sq_jaSolicitado" style="display:none;background:var(--green-soft);border-radius:14px;padding:14px 16px;margin-bottom:18px;font-size:13.5px;color:var(--leaf);font-weight:600;text-align:center;">
+      Saque solicitado — aguardando a loja pagar no seu Pix.
+    </div>
+
+    <p style="color:var(--gray);font-size:12.5px;margin:6px 0 8px;font-weight:700;">Sem chave Pix cadastrada?</p>
+    <p style="color:var(--gray);font-size:12.5px;margin:0 0 18px;">Fale com a loja pra atualizar seu cadastro — sem isso ela não consegue te pagar.</p>
+
+    <p style="font-weight:700;font-size:13.5px;margin-bottom:10px;">Últimas entregas</p>
+    <div id="sq_lista"><div class="empty">Carregando…</div></div>
+  </div>
+
+  <!-- ===================== VIEW: PROBLEMA COM O VEÍCULO (item 51) =====================
+  Alerta pra loja (mesmo canal de alertas_seguranca, painel-loja.html) e
+  aviso genérico pro cliente final via rastreio-pedido.html — a loja é quem
+  decide reembolsar ou reenviar o pedido, o GiroCerto só avisa os dois lados. -->
+  <div class="view" id="view-problema-veiculo">
+    <button class="link-btn" id="pv_btnVoltar" onclick="mostrar('view-turno')" style="margin-bottom:14px;">← Voltar</button>
+    <h2 style="margin-bottom:4px;">Problema com o veículo</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 18px;">Isso avisa a loja na hora — e, se você estiver numa entrega, avisa o cliente também que houve um imprevisto. A loja decide o que fazer com o pedido.</p>
+
+    <div class="toggle-tipo" style="flex-wrap:wrap;">
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pv-opt-pneu" onclick="selecionarProblemaVeiculo('pneu_furado')">🛞 Pneu furado</div>
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pv-opt-pane" onclick="selecionarProblemaVeiculo('pane_mecanica')">🔧 Pane mecânica</div>
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pv-opt-acidente" onclick="selecionarProblemaVeiculo('acidente_leve')">⚠️ Acidente leve</div>
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pv-opt-outro" onclick="selecionarProblemaVeiculo('outro')">✏️ Outro</div>
+    </div>
+
+    <div class="field">
+      <label>Quer contar mais detalhe? (opcional)</label>
+      <textarea id="pv_descricao" rows="3" style="width:100%;padding:12px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;resize:vertical;" placeholder="Ex: pneu furou a caminho da loja, vou levar uns 15min a mais"></textarea>
+    </div>
+
+    <div id="pv_msg" class="msg"></div>
+
+    <div class="emerg-row" style="margin-bottom:14px;">
+      <a class="emerg-btn" href="tel:190">🚓 190 — Polícia</a>
+      <a class="emerg-btn" href="tel:192">🚑 192 — SAMU/Resgate</a>
+    </div>
+
+    <button class="btn-danger" onclick="enviarProblemaVeiculo()">Avisar a loja agora</button>
+  </div>
+
+  <!-- ===================== VIEW: PROBLEMA COM A ENTREGA ===================== -->
+  <!-- item 58 (27/08/2026, pedido direto do usuário): mesmo padrão de
+  view-problema-veiculo (item 51), mas pra imprevistos DESTA parada
+  específica (não do veículo/rota inteira) — sempre volta pra view-entrega,
+  a única tela de onde essa opção aparece. -->
+  <div class="view" id="view-problema-entrega">
+    <button class="link-btn" onclick="mostrar('view-entrega')" style="margin-bottom:14px;">← Voltar</button>
+    <h2 style="margin-bottom:4px;">Problemas com a entrega</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 18px;">Isso avisa a loja na hora sobre esta parada — ela decide o que fazer com o pedido.</p>
+
+    <div class="toggle-tipo" style="flex-wrap:wrap;">
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pe-opt-endereco" onclick="selecionarProblemaEntrega('endereco_nao_encontrado')">📍 Não achei o endereço</div>
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pe-opt-cliente" onclick="selecionarProblemaEntrega('cliente_nao_atende')">📵 Cliente não atende</div>
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pe-opt-local" onclick="selecionarProblemaEntrega('local_fechado')">🚪 Local fechado/inacessível</div>
+      <div class="tipo-opt" style="flex:1 1 45%;" id="pe-opt-outro" onclick="selecionarProblemaEntrega('outro')">✏️ Outro</div>
+    </div>
+
+    <div class="field">
+      <label>Quer contar mais detalhe? (opcional)</label>
+      <textarea id="pe_descricao" rows="3" style="width:100%;padding:12px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;resize:vertical;" placeholder="Ex: toquei o interfone 3x, ninguém atendeu"></textarea>
+    </div>
+
+    <div id="pe_msg" class="msg"></div>
+
+    <button class="btn-danger" onclick="enviarProblemaEntrega()">Avisar a loja agora</button>
   </div>
 
   <!-- ===================== VIEW: ROTA (paradas) ===================== -->
@@ -395,6 +542,7 @@ complementar). -->
     <div id="mapaLojaBox" style="display:none;">
       <div id="mapaLoja" class="mapa-tela-cheia"></div>
       <button class="mapa-btn-voltar" onclick="mostrar('view-turno')">←</button>
+      <button class="mapa-btn-voltar" style="left:auto;right:18px;top:74px;font-size:18px;" onclick="abrirProblemaVeiculo()">🔧</button>
       <div class="clima-flutuante" id="climaLoja"></div>
       <div class="mapa-sheet">
         <div style="font-weight:700;margin-bottom:4px;">A caminho da loja?</div>
@@ -407,7 +555,17 @@ complementar). -->
     </div>
 
     <div id="rotaHeaderNormal">
-    <button class="link-btn" onclick="mostrar('view-turno')" style="margin-bottom:14px;">← Voltar</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <button class="link-btn" onclick="mostrar('view-turno')">← Voltar</button>
+      <button class="link-btn" style="color:var(--red);" onclick="abrirProblemaVeiculo()">🔧 Problema com o veículo</button>
+    </div>
+    <!-- item 58 (27/08/2026, pedido direto do usuário): ligar pra loja
+    direto do app, sem precisar sair da tela e procurar o número. Some
+    sozinho se a loja não tiver telefone cadastrado (lojas antigas, de
+    antes desse campo existir). -->
+    <div id="r_ligarLojaBox" style="display:none;margin-bottom:14px;">
+      <a class="btn-outline" id="r_ligarLoja" style="display:block;text-align:center;text-decoration:none;">📞 Falar com a loja</a>
+    </div>
     <h2 style="margin-bottom:4px;">Rota ativa</h2>
     <p style="color:var(--gray);font-size:13px;margin:0 0 18px;" id="r_resumo">—</p>
 
@@ -432,6 +590,7 @@ complementar). -->
     <div id="chegadaEntregaBox" style="display:none;">
       <div id="mapaEntrega" class="mapa-tela-cheia"></div>
       <button class="mapa-btn-voltar" onclick="mostrar('view-rota')">←</button>
+      <button class="mapa-btn-voltar" style="left:auto;right:18px;top:74px;font-size:18px;" onclick="abrirProblemaVeiculo()">🔧</button>
       <div class="clima-flutuante" id="climaEntrega"></div>
       <div class="mapa-sheet">
         <div style="font-weight:700;margin-bottom:4px;">A caminho do cliente?</div>
@@ -444,7 +603,21 @@ complementar). -->
     </div>
 
     <div id="entregaHeaderNormal">
-    <button class="link-btn" onclick="mostrar('view-rota')" style="margin-bottom:14px;">← Voltar pra rota</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <button class="link-btn" onclick="mostrar('view-rota')">← Voltar pra rota</button>
+      <button class="link-btn" style="color:var(--red);" onclick="abrirProblemaVeiculo()">🔧 Problema com o veículo</button>
+    </div>
+    <!-- item 58 (27/08/2026, pedido direto do usuário): "falar com o
+    cliente" (por parada, some se o pedido não tiver telefone cadastrado)
+    e "problemas com a entrega" (endereço não encontrado, cliente não
+    atende etc — diferente de problema_veiculo, que é sobre a rota
+    inteira/o veículo). -->
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+      <div id="e_ligarClienteBox" style="display:none;flex:1;">
+        <a class="btn-outline" id="e_ligarCliente" style="display:block;text-align:center;text-decoration:none;">📞 Falar com o cliente</a>
+      </div>
+      <button class="btn-outline" style="flex:1;color:var(--red);border-color:var(--red);" onclick="abrirProblemaEntrega()">⚠️ Problemas com a entrega</button>
+    </div>
     <p style="color:var(--gray);font-size:13px;">Parada <span id="e_indice">1</span></p>
     <h2 id="e_endereco" style="margin-bottom:16px;">—</h2>
 
@@ -616,7 +789,10 @@ const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_
 // cópia do mockup só servia 1 loja, sem forma nenhuma de reaproveitar pra
 // 2-3 lojas reais no piloto.
 const params = new URLSearchParams(window.location.search);
-const TENANT_ID = params.get('loja') || localStorage.getItem('girocerto_tenant_id') || null;
+// item 74 (02/09/2026): TENANT_ID não é mais const — o cadastro pelo app
+// instalado direto (sem link, sem nada salvo) pode preencher isso depois,
+// via código da loja digitado na tela (ver verificarCodigoLoja()).
+let TENANT_ID = params.get('loja') || localStorage.getItem('girocerto_tenant_id') || null;
 if(TENANT_ID){ localStorage.setItem('girocerto_tenant_id', TENANT_ID); }
 
 function escapeHtml(str){
@@ -624,8 +800,11 @@ function escapeHtml(str){
 }
 
 let entregadorId = null;
+let pessoaId = null; // item 52 (27/08/2026): identidade da pessoa, separada do vínculo (entregadorId) com a loja atual
 let appNavegacaoPreferido = 'waze';
 let enderecoLojaAtual = null;
+let telefoneLojaAtual = null; // item 58 (27/08/2026): "Falar com a loja"
+let clienteTelefoneAtual = null; // item 58: "Falar com o cliente" (por parada, muda a cada abrirEntrega())
 let minhaPosicaoAtual = null; // item 38 — última posição conhecida, pro mapa embutido
 let statusEntregadorCanalAtivo = false;
 let pollStatusEntregadorTimer = null;
@@ -738,16 +917,50 @@ function pararRastreioPosicao(){
   watchId = null;
 }
 
+// item 56 (27/08/2026), achado do item 54: com até 3 rotas simultâneas
+// possíveis (Fase 2), gravar a posição só na rota "em foco"
+// (rotaAtivaId) deixava as OUTRAS rotas ativas sem checagem de
+// desvio_rota/motoboy_parado (a trigger avaliar_alertas_seguranca_localizacao()
+// avalia por rota_id da própria linha inserida) — a posição física do
+// entregador é uma só, mas o alerta de segurança precisa valer pra todas
+// as rotas que ele está com pedido em mãos, não só a que está na tela
+// agora. Grava 1 linha por rota ativa (mesma lat/lng), não só a focada.
 async function enviarPosicao(lat, lng){
   if(!entregadorId) return;
-  const { error } = await supabaseClient.from('localizacoes_entregador').insert({
-    entregador_id: entregadorId,
-    rota_id: rotaAtivaId,
-    lat, lng,
+
+  // item 73 (02/09/2026, achado do item 52/investigação do item 11): o
+  // motor de despacho rankeia candidato por distância usando
+  // pessoas_entregadoras.lat/lng, mas NADA no código real atualizava essa
+  // coluna — a única função que faria isso (atualizar_localizacao_entregador)
+  // só era chamada pelo router morto do módulo feira (item 62/63), nunca
+  // por aqui. Sem isso, o "entregador mais próximo" sempre rankeava com
+  // dado congelado desde o cadastro (ou nunca, se NULL) — pros DOIS
+  // motores (restaurante e feira compartilham a mesma coluna). Chamado
+  // aqui (mesmo throttle de sempre, INTERVALO_MIN_ENVIO_POSICAO_MS),
+  // fora do "if(!rotas.length) return" abaixo de propósito — um
+  // entregador só 'disponível' (esperando oferta, sem rota ainda) também
+  // precisa da posição fresca pra ser candidato de verdade a receber a
+  // PRIMEIRA oferta, não só durante uma entrega já em andamento. RPC não
+  // é SECURITY DEFINER — respeita a RLS de sempre (só atualiza a própria
+  // pessoa), fire-and-forget como o resto desta função.
+  supabaseClient.rpc('atualizar_localizacao_entregador', {
+    p_entregador_id: entregadorId, p_latitude: lat, p_longitude: lng,
+  }).then(({ error }) => {
+    if(error) console.warn('Não deu pra atualizar a posição atual do entregador:', error.message);
   });
-  // Falha de envio de posição não deveria interromper o fluxo do
-  // entregador (ele nem veria isso na tela) — só loga pra debug.
-  if(error) console.warn('Não deu pra gravar a posição:', error.message);
+
+  const rotas = rotasAtivasLista.length ? rotasAtivasLista.map(r => r.id) : (rotaAtivaId ? [rotaAtivaId] : []);
+  if(!rotas.length) return;
+  for(const rid of rotas){
+    const { error } = await supabaseClient.from('localizacoes_entregador').insert({
+      entregador_id: entregadorId,
+      rota_id: rid,
+      lat, lng,
+    });
+    // Falha de envio de posição não deveria interromper o fluxo do
+    // entregador (ele nem veria isso na tela) — só loga pra debug.
+    if(error) console.warn('Não deu pra gravar a posição:', error.message);
+  }
 }
 
 function mostrar(id){
@@ -778,6 +991,63 @@ function setTipo(tipo){
 }
 setTipo('moto');
 
+// item 74 (02/09/2026): ver comentário no HTML de escolhaVinculoBox. Só
+// mostra a escolha fixo/freelance quando o cadastro NÃO chegou por um
+// link de loja (TENANT_ID já resolvido = presume fixo daquela loja,
+// mesmo comportamento de sempre, só que agora explícito no metadata
+// também — antes o vínculo sempre saía 'freelance' por padrão do banco,
+// mesmo vindo de um link que a loja compartilhou pra recrutar gente pra
+// ELA, achado no meio deste mesmo fix).
+function iniciarEscolhaVinculoCadastro(){
+  if(TENANT_ID){
+    window._tipoVinculo = 'fixo';
+    return;
+  }
+  document.getElementById('escolhaVinculoBox').style.display = 'block';
+  document.getElementById('resto-formulario-cadastro').classList.remove('show');
+}
+iniciarEscolhaVinculoCadastro();
+
+function setVinculo(tipo){
+  document.getElementById('opt-vinc-fixo').classList.toggle('sel', tipo==='fixo');
+  document.getElementById('opt-vinc-freelance').classList.toggle('sel', tipo==='freelance');
+  document.getElementById('cond-vinc-fixo').classList.toggle('show', tipo==='fixo');
+  document.getElementById('vincFreelanceInfo').classList.toggle('show', tipo==='freelance');
+  window._tipoVinculo = tipo;
+  document.getElementById('codigoLojaMsg').textContent = '';
+  document.getElementById('codigoLojaMsg').className = 'msg';
+  if(tipo === 'freelance'){
+    document.getElementById('resto-formulario-cadastro').classList.add('show');
+  } else {
+    // fixo: só libera o resto do formulário depois de verificar o código
+    document.getElementById('resto-formulario-cadastro').classList.remove('show');
+  }
+}
+
+async function verificarCodigoLoja(){
+  const msg = document.getElementById('codigoLojaMsg');
+  const codigo = document.getElementById('c_codigo_loja').value.trim().toUpperCase();
+  if(codigo.length < 4){
+    msg.textContent = 'Digite o código completo que a loja te passou.';
+    msg.className = 'msg error';
+    return;
+  }
+  msg.textContent = 'Verificando…'; msg.className = 'msg';
+  const { data, error } = await supabaseClient.rpc('resolver_codigo_cadastro_loja', { p_codigo: codigo });
+  const loja = data && data[0];
+  if(error || !loja){
+    msg.textContent = 'Código não encontrado. Confere com a loja se digitou certo.';
+    msg.className = 'msg error';
+    document.getElementById('resto-formulario-cadastro').classList.remove('show');
+    return;
+  }
+  TENANT_ID = loja.id;
+  localStorage.setItem('girocerto_tenant_id', TENANT_ID);
+  msg.textContent = `Loja encontrada: ${escapeHtml(loja.nome)}. Pode continuar o cadastro abaixo.`;
+  msg.className = 'msg success';
+  document.getElementById('resto-formulario-cadastro').classList.add('show');
+}
+
 document.querySelectorAll('.upload input[type=file]').forEach(inp => {
   inp.addEventListener('change', e => {
     const nameEl = document.getElementById(inp.id + '_n');
@@ -806,8 +1076,14 @@ async function uploadDoc(file, pasta){
 async function enviarCadastro(){
   const msg = document.getElementById('cadMsg');
   msg.className = 'msg';
-  if(!TENANT_ID){
-    msg.textContent = 'Link de cadastro inválido — peça o link certo pra loja onde você vai trabalhar.';
+  // item 74 (02/09/2026): antes travava aqui sempre que TENANT_ID vinha
+  // vazio — só era possível chegar num TENANT_ID via link, e o app
+  // instalado direto nunca tem link nenhum. Agora TENANT_ID só é
+  // obrigatório pro caminho FIXO (a UI já garante isso escondendo o
+  // resto do formulário até o código da loja ser verificado — este é só
+  // um cinto de segurança contra chamada direta/estado inconsistente).
+  if(window._tipoVinculo === 'fixo' && !TENANT_ID){
+    msg.textContent = 'Verifique o código da loja antes de continuar.';
     msg.className = 'msg error';
     return;
   }
@@ -819,8 +1095,14 @@ async function enviarCadastro(){
 
   try{
     const tipo = window._tipoVeiculo;
+    // item 74: tipo_vinculo manda explícito agora — antes o vínculo
+    // sempre saía 'freelance' (default do banco), mesmo vindo de um link
+    // que a loja compartilhou especificamente pra recrutar gente PRA ELA
+    // (achado no mesmo fix). tenant_id só entra no metadata quando existe
+    // de verdade — omitir a chave (não só mandar null) evita qualquer
+    // ambiguidade do lado do trigger que decide o que criar no banco.
     const metadata = {
-      tenant_id: TENANT_ID,
+      tipo_vinculo: window._tipoVinculo || 'fixo',
       nome: document.getElementById('c_nome').value,
       tipo_veiculo: tipo,
       data_nascimento: document.getElementById('c_nasc').value,
@@ -829,6 +1111,7 @@ async function enviarCadastro(){
       cep: document.getElementById('c_cep').value,
       chave_pix: document.getElementById('c_pix').value,
     };
+    if(TENANT_ID) metadata.tenant_id = TENANT_ID;
 
     if(tipo === 'moto'){
       metadata.cpf = document.getElementById('c_cpf').value;
@@ -841,7 +1124,16 @@ async function enviarCadastro(){
       metadata.responsavel_nome = document.getElementById('c_responsavel').value || null;
     }
 
-    const redirectUrl = window.location.origin + '/app-entregador.html'
+    // item 74 (02/09/2026), achado no mesmo fix: dentro do app instalado
+    // (Capacitor), window.location.origin NÃO é o domínio real — é a
+    // origem interna da WebView (ex: "https://localhost"), inalcançável
+    // de fora. O e-mail de confirmação levava o entregador pra um link
+    // morto sempre que o cadastro acontecia pelo app nativo. Usa o
+    // domínio real fixo nesse caso.
+    const origemReal = (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())
+      ? 'https://girocerto-mockups.vercel.app'
+      : window.location.origin;
+    const redirectUrl = origemReal + '/app-entregador.html'
       + (TENANT_ID ? '?loja=' + encodeURIComponent(TENANT_ID) : '');
 
     const { error: authError } = await supabaseClient.auth.signUp({
@@ -884,7 +1176,7 @@ async function enviarDocumentosPendentes(){
   try{
     const { data: { user } } = await supabaseClient.auth.getUser();
     const { data: entregador, error: eBusca } = await supabaseClient
-      .from('entregadores').select('tipo_veiculo').eq('auth_user_id', user.id).single();
+      .from('pessoas_entregadoras').select('tipo_veiculo').eq('auth_user_id', user.id).single();
     if(eBusca) throw eBusca;
 
     const payload = {
@@ -902,7 +1194,7 @@ async function enviarDocumentosPendentes(){
     // por cima de um documento que já tinha sido enviado numa tentativa anterior
     Object.keys(payload).forEach(k => { if(payload[k] === null) delete payload[k]; });
 
-    const { error: eUpdate } = await supabaseClient.from('entregadores').update(payload).eq('auth_user_id', user.id);
+    const { error: eUpdate } = await supabaseClient.from('pessoas_entregadoras').update(payload).eq('auth_user_id', user.id);
     if(eUpdate) throw eUpdate;
 
     await carregarEntregador();
@@ -939,10 +1231,10 @@ async function registrarPushEntregador(){
     await PushNotifications.register();
 
     PushNotifications.addListener('registration', async (token) => {
-      await supabaseClient.from('entregadores').update({
+      await supabaseClient.from('pessoas_entregadoras').update({
         push_token: token.value,
         push_plataforma: 'android', // só Android por enquanto (sem suporte iOS no projeto)
-      }).eq('id', entregadorId);
+      }).eq('id', pessoaId);
     });
 
     PushNotifications.addListener('registrationError', (err) => {
@@ -1121,25 +1413,45 @@ async function verificarDispositivo(entregador){
     });
   }
 
+  // item 52 (27/08/2026): device_id_atual é da pessoa agora, não do vínculo
+  // com essa loja específica — faz sentido, é o mesmo aparelho independente
+  // de qual loja ele está atendendo no momento.
   await supabaseClient
-    .from('entregadores')
+    .from('pessoas_entregadoras')
     .update({ device_id_atual: deviceIdAtual, device_id_atualizado_em: new Date().toISOString() })
-    .eq('id', entregador.id);
+    .eq('id', entregador.pessoa_id);
 }
 
 async function carregarEntregador(){
   const { data: { user } } = await supabaseClient.auth.getUser();
   if(!user) return;
 
-  const { data: entregador, error } = await supabaseClient
-    .from('entregadores')
+  if(!TENANT_ID){ mostrar('view-login'); return; }
+
+  // item 52 (27/08/2026): entregadores_completo junta vínculo (por loja) +
+  // pessoa (identidade/documentos/status, compartilhados entre lojas).
+  let { data: entregador, error } = await supabaseClient
+    .from('entregadores_completo')
     .select('*')
     .eq('auth_user_id', user.id)
-    .single();
+    .eq('tenant_id', TENANT_ID)
+    .maybeSingle();
 
-  if(error || !entregador){ mostrar('view-login'); return; }
+  if(error){ mostrar('view-login'); return; }
+
+  if(!entregador){
+    // pessoa já tem conta (login funcionou) mas nunca trabalhou pra ESSA
+    // loja — cria o vínculo na hora (documentos/verificação são da pessoa,
+    // não precisa repetir cadastro pra cada loja nova).
+    const { data: novoVinculoId, error: erroVinculo } = await supabaseClient.rpc('solicitar_vinculo_loja', { p_tenant_id: TENANT_ID });
+    if(erroVinculo){ mostrar('view-login'); return; }
+    const retry = await supabaseClient.from('entregadores_completo').select('*').eq('id', novoVinculoId).single();
+    entregador = retry.data;
+    if(!entregador){ mostrar('view-login'); return; }
+  }
 
   entregadorId = entregador.id;
+  pessoaId = entregador.pessoa_id;
   appNavegacaoPreferido = entregador.app_navegacao_preferido || 'waze'; // item 37
   registrarPushEntregador(); // no-op fora do app nativo (Capacitor) — ver função
 
@@ -1181,6 +1493,10 @@ async function carregarEntregador(){
   document.getElementById('t_nome').textContent = 'Olá, ' + entregador.nome.split(' ')[0];
   mostrar('view-turno');
 
+  // item 52: seletor de modo só aparece pra quem tem os dois contextos de verdade
+  document.getElementById('modoDisponibilidadeBox').style.display = entregador.aceita_feira ? 'block' : 'none';
+  if(entregador.aceita_feira) marcarModoDisponibilidadeUI(entregador.modo_disponibilidade || 'ambos');
+
   // aviso prévio de documento vencendo (achado real: verificar_documentos_vencidos()
   // no banco só marca *_alerta_enviado_em — a entrega de verdade (WhatsApp/push) fica
   // pendente até integracoes.whatsapp_* existir; enquanto isso, este banner in-app é
@@ -1215,13 +1531,27 @@ function legendaMotivoReprovacao(motivo){
 }
 
 // ------------------------------------------------------------
+// MODO DE DISPONIBILIDADE (item 52, 27/08/2026) — restaurante/feira/ambos.
+// Só mostrado quando a pessoa tem os dois contextos (aceita_feira=true E
+// tem vínculo de restaurante) — ver toggle em carregarEntregador().
+// ------------------------------------------------------------
+function marcarModoDisponibilidadeUI(modo){
+  ['restaurante', 'feira', 'ambos'].forEach(m =>
+    document.getElementById('modo-opt-' + m).classList.toggle('sel', m === modo));
+}
+async function definirModoDisponibilidade(modo){
+  marcarModoDisponibilidadeUI(modo);
+  await supabaseClient.from('pessoas_entregadoras').update({ modo_disponibilidade: modo }).eq('id', pessoaId);
+}
+
+// ------------------------------------------------------------
 // TURNO
 // ------------------------------------------------------------
 async function checarTurnoAtivo(){
   const { data: turno } = await supabaseClient
     .from('turnos')
     .select('*')
-    .eq('entregador_id', entregadorId)
+    .eq('pessoa_id', pessoaId)
     .eq('status', 'ativo')
     .maybeSingle();
 
@@ -1233,8 +1563,8 @@ async function checarTurnoAtivo(){
     document.getElementById('t_status_sub').innerHTML =
       '<span class="status-dot"></span>Turno ativo desde ' + turnoIniciadoEm.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
 
-    const { data: entregador } = await supabaseClient.from('entregadores').select('status').eq('id', entregadorId).single();
-    const pausado = entregador && entregador.status === 'pausado';
+    const { data: pessoa } = await supabaseClient.from('pessoas_entregadoras').select('status').eq('id', pessoaId).single();
+    const pausado = pessoa && pessoa.status === 'pausado';
     document.getElementById('btnPausar').style.display = pausado ? 'none' : 'block';
     document.getElementById('btnContinuar').style.display = pausado ? 'block' : 'none';
 
@@ -1255,14 +1585,14 @@ async function checarTurnoAtivo(){
 }
 
 async function iniciarTurno(){
-  const { data: entregador } = await supabaseClient.from('entregadores').select('bloqueado_ate').eq('id', entregadorId).single();
-  if(entregador.bloqueado_ate && new Date(entregador.bloqueado_ate) > new Date()){
+  const { data: pessoa } = await supabaseClient.from('pessoas_entregadoras').select('bloqueado_ate').eq('id', pessoaId).single();
+  if(pessoa.bloqueado_ate && new Date(pessoa.bloqueado_ate) > new Date()){
     alert('Você ainda está no período de descanso obrigatório. Tente novamente mais tarde.');
     return;
   }
-  const { data, error } = await supabaseClient.from('turnos').insert({ entregador_id: entregadorId }).select().single();
+  const { data, error } = await supabaseClient.from('turnos').insert({ pessoa_id: pessoaId }).select().single();
   if(error){ alert('Não deu pra iniciar o turno: ' + error.message); return; }
-  await supabaseClient.from('entregadores').update({ status: 'disponivel' }).eq('id', entregadorId);
+  await supabaseClient.from('pessoas_entregadoras').update({ status: 'disponivel' }).eq('id', pessoaId);
   turnoAtualId = data.id;
   turnoIniciadoEm = new Date(data.iniciado_em);
   checarTurnoAtivo();
@@ -1338,12 +1668,12 @@ async function finalizarTurnoDeVerdade(comBloqueio){
     total_repassado: total,
   }).eq('id', turnoAtualId);
 
-  const updateEntregador = { status: 'offline' };
+  const updatePessoa = { status: 'offline' };
   if(comBloqueio){
     const bloqueadoAte = new Date(Date.now() + tenantConfig.horas_descanso_obrigatorio * 3600 * 1000);
-    updateEntregador.bloqueado_ate = bloqueadoAte.toISOString();
+    updatePessoa.bloqueado_ate = bloqueadoAte.toISOString();
   }
-  await supabaseClient.from('entregadores').update(updateEntregador).eq('id', entregadorId);
+  await supabaseClient.from('pessoas_entregadoras').update(updatePessoa).eq('id', pessoaId);
 
   turnoAtualId = null;
   rotaAtivaId = null;
@@ -1640,7 +1970,17 @@ async function garantirEnderecoLoja(){
   if(enderecoLojaAtual !== null) return;
   const { data } = await supabaseClient.rpc('endereco_loja_do_meu_tenant');
   enderecoLojaAtual = (data && data[0] && data[0].endereco_loja) || '';
+  telefoneLojaAtual = (data && data[0] && data[0].telefone_loja) || '';
 }
+
+// item 54 (27/08/2026, Fase 2 — limite de rotas simultâneas): freelance
+// pode ter até 3 rotas ativas ao mesmo tempo agora — sem o .limit(1) de
+// antes, uma 2ª/3ª rota atribuída ficava invisível pro entregador (ele
+// nunca saberia que tinha outra entrega esperando). Com 1 só, comporta
+// exatamente como antes; com 2+, mostra uma lista pra escolher qual ver
+// agora — rastreio de posição (enviarPosicao) continua vinculado só à
+// rota "em foco" no momento (rotaAtivaId), não a todas de uma vez.
+let rotasAtivasLista = [];
 
 async function verificarRotaAtiva(){
   const { data: rotas } = await supabaseClient
@@ -1648,20 +1988,43 @@ async function verificarRotaAtiva(){
     .select('*, pedidos(*)')
     .eq('entregador_id', entregadorId)
     .in('status', ['a_caminho_da_loja','em_entrega'])
-    .order('criado_em', { ascending:false })
-    .limit(1);
+    .order('criado_em', { ascending:false });
 
-  if(rotas && rotas.length){
-    rotaAtivaId = rotas[0].id; // B1 — a próxima posição enviada já sai vinculada a essa rota
-    document.getElementById('semRota').style.display = 'none';
-    document.getElementById('comRota').style.display = 'block';
-    await garantirEnderecoLoja();
-    montarRota(rotas[0]);
-  } else {
+  rotasAtivasLista = rotas || [];
+
+  if(rotasAtivasLista.length === 0){
     rotaAtivaId = null;
     document.getElementById('semRota').style.display = 'block';
     document.getElementById('comRota').style.display = 'none';
+    document.getElementById('comRotaMultipla').style.display = 'none';
+  } else if(rotasAtivasLista.length === 1){
+    rotaAtivaId = rotasAtivasLista[0].id; // B1 — a próxima posição enviada já sai vinculada a essa rota
+    document.getElementById('semRota').style.display = 'none';
+    document.getElementById('comRota').style.display = 'block';
+    document.getElementById('comRotaMultipla').style.display = 'none';
+    await garantirEnderecoLoja();
+    montarRota(rotasAtivasLista[0]);
+  } else {
+    document.getElementById('semRota').style.display = 'none';
+    document.getElementById('comRota').style.display = 'none';
+    const box = document.getElementById('comRotaMultipla');
+    box.style.display = 'block';
+    box.innerHTML = `<div style="font-weight:700;font-size:13px;margin-bottom:8px;">Você tem ${rotasAtivasLista.length} rotas ativas agora</div>` +
+      rotasAtivasLista.map((r, i) => `
+        <button class="btn-outline" style="margin-bottom:8px;text-align:left;" onclick="abrirRotaEspecifica(${i})">
+          Rota ${i + 1} — ${(r.pedidos || []).length} parada(s) · ${r.status === 'a_caminho_da_loja' ? 'indo pra loja' : 'em entrega'}
+        </button>
+      `).join('');
   }
+}
+
+async function abrirRotaEspecifica(indice){
+  const rota = rotasAtivasLista[indice];
+  if(!rota) return;
+  rotaAtivaId = rota.id;
+  await garantirEnderecoLoja();
+  montarRota(rota);
+  mostrar('view-rota');
 }
 
 function montarRota(rota){
@@ -1670,6 +2033,14 @@ function montarRota(rota){
     pedidos.length + ' parada(s) · código de retirada ' + rota.codigo_retirada;
 
   document.getElementById('r_enderecoLoja').textContent = enderecoLojaAtual || 'Endereço da loja não cadastrado';
+
+  const ligarLojaBox = document.getElementById('r_ligarLojaBox');
+  if(telefoneLojaAtual){
+    document.getElementById('r_ligarLoja').href = 'tel:' + telefoneLojaAtual;
+    ligarLojaBox.style.display = 'block';
+  } else {
+    ligarLojaBox.style.display = 'none';
+  }
 
   // item 34 (25/08/2026, pedido explícito do usuário testando de ponta a
   // ponta): passo novo "cheguei na loja" ANTES da confirmação de retirada
@@ -1716,7 +2087,7 @@ function montarRota(rota){
       <div class="pay-pill ${p.pago_antecipado ? 'pix' : 'qrcode'}">
         ${p.pago_antecipado ? 'Pix · já pago' : 'Pix QR Code · a cobrar'}
       </div>
-      <button class="btn-primary" style="margin-top:12px;" data-pedido-id="${escapeHtml(p.id)}" data-endereco="${escapeHtml(p.endereco)}" data-valor="${p.valor_pedido}" data-indice="${i+1}" data-chegou="${p.chegou_entrega_em ? '1' : ''}">
+      <button class="btn-primary" style="margin-top:12px;" data-pedido-id="${escapeHtml(p.id)}" data-endereco="${escapeHtml(p.endereco)}" data-valor="${p.valor_pedido}" data-indice="${i+1}" data-chegou="${p.chegou_entrega_em ? '1' : ''}" data-cliente-telefone="${escapeHtml(p.cliente_telefone || '')}">
         ${p.status === 'entregue' ? 'Entregue ✓' : 'Ir pra essa parada'}
       </button>
     </div>
@@ -1724,7 +2095,7 @@ function montarRota(rota){
 
   paradasBox.querySelectorAll('button[data-pedido-id]').forEach(btn => {
     btn.addEventListener('click', () => {
-      abrirEntrega(btn.dataset.pedidoId, btn.dataset.endereco, Number(btn.dataset.valor), Number(btn.dataset.indice), !!btn.dataset.chegou);
+      abrirEntrega(btn.dataset.pedidoId, btn.dataset.endereco, Number(btn.dataset.valor), Number(btn.dataset.indice), !!btn.dataset.chegou, btn.dataset.clienteTelefone);
     });
   });
 }
@@ -2485,10 +2856,212 @@ async function abrirExtratoFeira(){
 }
 
 // ------------------------------------------------------------
+// SAQUE (item 51, 26-27/08/2026) — repasse de restaurante, ambiente
+// separado do extrato de feira (ver comentário na view). Pix real não
+// existe: "solicitar saque" só marca saque_solicitado_em pra loja ver e
+// pagar por fora, usando entregadores.chave_pix já cadastrada.
+// ------------------------------------------------------------
+async function abrirSaque(){
+  mostrar('view-saque');
+  await carregarSaque();
+}
+
+async function carregarSaque(){
+  const lista = document.getElementById('sq_lista');
+  const msg = document.getElementById('sq_msg');
+  msg.className = 'msg';
+  lista.innerHTML = '<div class="empty">Carregando…</div>';
+
+  const { data, error } = await supabaseClient
+    .from('repasses')
+    .select('valor, status, saque_solicitado_em, criado_em')
+    .eq('entregador_id', entregadorId)
+    .order('criado_em', { ascending: false })
+    .limit(30);
+
+  if(error){
+    lista.innerHTML = '';
+    msg.textContent = 'Não deu pra carregar seu saldo: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+
+  const pendentes = (data || []).filter(r => r.status === 'pendente');
+  const pagos = (data || []).filter(r => r.status === 'pago');
+  const totalPendente = pendentes.reduce((s, r) => s + Number(r.valor), 0);
+  const totalPago = pagos.reduce((s, r) => s + Number(r.valor), 0);
+
+  document.getElementById('sq_pendente').textContent = formatarReal(totalPendente);
+  document.getElementById('sq_pago').textContent = formatarReal(totalPago);
+
+  const jaSolicitado = pendentes.length > 0 && pendentes.every(r => r.saque_solicitado_em);
+  document.getElementById('sq_btnSolicitar').style.display = (pendentes.length === 0 || jaSolicitado) ? 'none' : 'block';
+  document.getElementById('sq_jaSolicitado').style.display = jaSolicitado ? 'block' : 'none';
+
+  if(!data || data.length === 0){
+    lista.innerHTML = '<p style="color:var(--gray);font-size:13px;">Nenhuma entrega repassada ainda.</p>';
+    return;
+  }
+
+  lista.innerHTML = data.map(r => `
+    <div class="stop-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div style="font-weight:700;">${formatarReal(Number(r.valor))}</div>
+          <div style="font-size:12px;color:var(--gray);">${new Date(r.criado_em).toLocaleDateString('pt-BR')}</div>
+        </div>
+        <span style="font-size:11.5px;font-weight:700;padding:4px 10px;border-radius:100px;background:${r.status === 'pago' ? 'var(--green-soft)' : 'var(--amber-soft)'};color:${r.status === 'pago' ? 'var(--leaf)' : 'var(--amber-ink)'};">
+          ${r.status === 'pago' ? 'Pago' : (r.saque_solicitado_em ? 'Saque pedido' : 'Pendente')}
+        </span>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function solicitarSaque(){
+  const msg = document.getElementById('sq_msg');
+  msg.className = 'msg';
+  const { data, error } = await supabaseClient.rpc('solicitar_saque');
+  if(error){
+    msg.textContent = 'Não deu pra solicitar o saque: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+  if(!data){
+    msg.textContent = 'Nada pendente pra solicitar agora.';
+    msg.className = 'msg error';
+    return;
+  }
+  await carregarSaque();
+}
+
+// ------------------------------------------------------------
+// PROBLEMA COM O VEÍCULO (item 51) — grava direto em alertas_seguranca
+// (policy "entregador ve e atualiza seus alertas" já cobre o INSERT, FOR
+// ALL sem WITH CHECK separado usa a mesma condição de posse). Aparece pra
+// loja em painel-loja.html (mesmo canal dos outros alertas) e, se houver
+// pedido em rota, como aviso genérico em rastreio-pedido.html.
+// ------------------------------------------------------------
+let viewAntesDoProblemaVeiculo = 'view-turno';
+let problemaVeiculoTipo = null;
+
+function abrirProblemaVeiculo(){
+  const ativa = document.querySelector('.view.active');
+  if(ativa) viewAntesDoProblemaVeiculo = ativa.id;
+  document.getElementById('pv_btnVoltar').onclick = () => mostrar(viewAntesDoProblemaVeiculo);
+  problemaVeiculoTipo = null;
+  document.querySelectorAll('#view-problema-veiculo .tipo-opt').forEach(el => el.classList.remove('sel'));
+  document.getElementById('pv_descricao').value = '';
+  document.getElementById('pv_msg').className = 'msg';
+  mostrar('view-problema-veiculo');
+}
+
+function selecionarProblemaVeiculo(tipo){
+  problemaVeiculoTipo = tipo;
+  document.querySelectorAll('#view-problema-veiculo .tipo-opt').forEach(el => el.classList.remove('sel'));
+  document.getElementById('pv-opt-' + tipo.split('_')[0]).classList.add('sel');
+}
+
+async function enviarProblemaVeiculo(){
+  const msg = document.getElementById('pv_msg');
+  msg.className = 'msg';
+
+  if(!problemaVeiculoTipo){
+    msg.textContent = 'Escolhe o que aconteceu antes de enviar.';
+    msg.className = 'msg error';
+    return;
+  }
+
+  const rotulos = { pneu_furado: 'Pneu furado', pane_mecanica: 'Pane mecânica', acidente_leve: 'Acidente leve', outro: 'Outro' };
+  const detalhe = document.getElementById('pv_descricao').value.trim();
+  const descricao = rotulos[problemaVeiculoTipo] + (detalhe ? ' — ' + detalhe : '');
+
+  const { error } = await supabaseClient.from('alertas_seguranca').insert({
+    entregador_id: entregadorId,
+    rota_id: rotaAtivaId,
+    tipo: 'problema_veiculo',
+    descricao,
+  });
+
+  if(error){
+    msg.textContent = 'Não deu pra avisar a loja: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+
+  alert('Loja avisada. Se você estiver numa entrega, o cliente também vai ver o aviso na página de rastreio.');
+  mostrar(viewAntesDoProblemaVeiculo);
+}
+
+// item 58 (27/08/2026, pedido direto do usuário): mesmo mecanismo de
+// enviarProblemaVeiculo() (alertas_seguranca, confirmação humana da
+// loja), tipo diferente ('problema_entrega') — sempre parte de
+// view-entrega, então não precisa rastrear "view antes" como o de veículo.
+let problemaEntregaTipo = null;
+
+function abrirProblemaEntrega(){
+  problemaEntregaTipo = null;
+  document.querySelectorAll('#view-problema-entrega .tipo-opt').forEach(el => el.classList.remove('sel'));
+  document.getElementById('pe_descricao').value = '';
+  document.getElementById('pe_msg').className = 'msg';
+  mostrar('view-problema-entrega');
+}
+
+function selecionarProblemaEntrega(tipo){
+  problemaEntregaTipo = tipo;
+  document.querySelectorAll('#view-problema-entrega .tipo-opt').forEach(el => el.classList.remove('sel'));
+  document.getElementById('pe-opt-' + tipo.split('_')[0]).classList.add('sel');
+}
+
+async function enviarProblemaEntrega(){
+  const msg = document.getElementById('pe_msg');
+  msg.className = 'msg';
+
+  if(!problemaEntregaTipo){
+    msg.textContent = 'Escolhe o que aconteceu antes de enviar.';
+    msg.className = 'msg error';
+    return;
+  }
+  if(!paradaAtualPedidoId){
+    msg.textContent = 'Nenhuma parada em foco no momento.';
+    msg.className = 'msg error';
+    return;
+  }
+
+  const rotulos = { endereco_nao_encontrado: 'Não achei o endereço', cliente_nao_atende: 'Cliente não atende', local_fechado: 'Local fechado/inacessível', outro: 'Outro' };
+  const detalhe = document.getElementById('pe_descricao').value.trim();
+  const descricao = rotulos[problemaEntregaTipo] + (detalhe ? ' — ' + detalhe : '');
+
+  const { error } = await supabaseClient.from('alertas_seguranca').insert({
+    entregador_id: entregadorId,
+    rota_id: rotaAtivaId,
+    tipo: 'problema_entrega',
+    descricao,
+  });
+
+  if(error){
+    msg.textContent = 'Não deu pra avisar a loja: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+
+  alert('Loja avisada sobre esta entrega. O cliente também vai ver o aviso na página de rastreio.');
+  mostrar('view-entrega');
+}
+
+// ------------------------------------------------------------
 // ENTREGA / PAGAMENTO
 // ------------------------------------------------------------
-function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou){
+function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou, clienteTelefone){
   paradaAtualPedidoId = pedidoId;
+  clienteTelefoneAtual = clienteTelefone || '';
+  const ligarClienteBox = document.getElementById('e_ligarClienteBox');
+  if(clienteTelefoneAtual){
+    document.getElementById('e_ligarCliente').href = 'tel:' + clienteTelefoneAtual;
+    ligarClienteBox.style.display = 'block';
+  } else {
+    ligarClienteBox.style.display = 'none';
+  }
   document.getElementById('e_endereco').textContent = endereco;
   document.getElementById('e_enderecoEntregaFlutuante').textContent = endereco;
   document.getElementById('e_valor').textContent = formatarReal(Number(valor));

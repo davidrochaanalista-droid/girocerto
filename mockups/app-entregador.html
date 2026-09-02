@@ -77,6 +77,7 @@ complementar). -->
 
   .msg{padding:11px 13px;border-radius:10px;font-size:13px;margin-bottom:14px;display:none;}
   .msg.error{background:var(--red-soft);color:var(--red);display:block;}
+  .msg.success{background:var(--green-soft);color:var(--leaf);display:block;}
 
   .toggle-tipo{display:flex;gap:10px;margin-bottom:18px;}
   .tipo-opt{flex:1;border:1.5px solid var(--border);border-radius:12px;padding:14px;text-align:center;cursor:pointer;font-weight:700;font-size:14px;color:var(--gray);}
@@ -162,6 +163,37 @@ complementar). -->
     <p style="color:var(--gray);font-size:13.5px;margin:0 0 18px;">Leva uns minutos — documentos entram em avaliação (até 7 dias).</p>
     <div class="msg" id="cadMsg"></div>
 
+    <!-- item 74 (02/09/2026): achado ao vivo testando no app instalado
+    (Realme C75) — abrir o app pelo ícone (sem link nenhum) sempre caía
+    num beco sem saída ("link de cadastro inválido"), porque TENANT_ID só
+    existe quando alguém abre pelo link ?loja=<uuid> que a loja compartilha.
+    Esse bloco só aparece quando TENANT_ID já não veio do link (definido
+    logo abaixo, no script). Fixo = vínculo com UMA loja específica
+    (precisa do código dela); freelance = sem loja nenhuma no cadastro,
+    entra no pool aberto (vínculo é criado depois, na hora que ganha a
+    1ª corrida — get_or_criar_vinculo_freelance()). -->
+    <div class="field" id="escolhaVinculoBox" style="display:none;">
+      <label>Como você vai trabalhar?</label>
+      <div class="toggle-tipo">
+        <div class="tipo-opt" id="opt-vinc-fixo" onclick="setVinculo('fixo')">🏪 Fixo de uma loja</div>
+        <div class="tipo-opt" id="opt-vinc-freelance" onclick="setVinculo('freelance')">🔄 Freelance</div>
+      </div>
+      <div class="cond" id="cond-vinc-fixo" style="margin-top:10px;">
+        <div class="field">
+          <label>Código da loja (peça pro dono)</label>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="c_codigo_loja" maxlength="6" style="text-transform:uppercase;flex:1;" placeholder="Ex: 7XK2QP">
+            <button type="button" class="action-btn" onclick="verificarCodigoLoja()">Verificar</button>
+          </div>
+        </div>
+        <div class="msg" id="codigoLojaMsg"></div>
+      </div>
+      <p id="vincFreelanceInfo" class="cond" style="color:var(--gray);font-size:12.5px;margin-top:8px;">
+        Você vai receber ofertas de entrega de várias lojas perto de você, sem vínculo fixo com nenhuma.
+      </p>
+    </div>
+
+    <div class="cond show" id="resto-formulario-cadastro">
     <div class="toggle-tipo">
       <div class="tipo-opt sel" id="opt-moto" onclick="setTipo('moto')">🛵 Moto</div>
       <div class="tipo-opt" id="opt-bike" onclick="setTipo('bicicleta')">🚲 Bicicleta</div>
@@ -210,6 +242,7 @@ complementar). -->
     </div>
 
     <button class="btn-primary" id="btnCadastrar" onclick="enviarCadastro()">Enviar cadastro</button>
+    </div>
     <p style="text-align:center;margin-top:14px;font-size:13.5px;">
       <button class="link-btn" onclick="mostrar('view-login')">Já tenho conta</button>
     </p>
@@ -756,7 +789,10 @@ const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_
 // cópia do mockup só servia 1 loja, sem forma nenhuma de reaproveitar pra
 // 2-3 lojas reais no piloto.
 const params = new URLSearchParams(window.location.search);
-const TENANT_ID = params.get('loja') || localStorage.getItem('girocerto_tenant_id') || null;
+// item 74 (02/09/2026): TENANT_ID não é mais const — o cadastro pelo app
+// instalado direto (sem link, sem nada salvo) pode preencher isso depois,
+// via código da loja digitado na tela (ver verificarCodigoLoja()).
+let TENANT_ID = params.get('loja') || localStorage.getItem('girocerto_tenant_id') || null;
 if(TENANT_ID){ localStorage.setItem('girocerto_tenant_id', TENANT_ID); }
 
 function escapeHtml(str){
@@ -891,6 +927,28 @@ function pararRastreioPosicao(){
 // agora. Grava 1 linha por rota ativa (mesma lat/lng), não só a focada.
 async function enviarPosicao(lat, lng){
   if(!entregadorId) return;
+
+  // item 73 (02/09/2026, achado do item 52/investigação do item 11): o
+  // motor de despacho rankeia candidato por distância usando
+  // pessoas_entregadoras.lat/lng, mas NADA no código real atualizava essa
+  // coluna — a única função que faria isso (atualizar_localizacao_entregador)
+  // só era chamada pelo router morto do módulo feira (item 62/63), nunca
+  // por aqui. Sem isso, o "entregador mais próximo" sempre rankeava com
+  // dado congelado desde o cadastro (ou nunca, se NULL) — pros DOIS
+  // motores (restaurante e feira compartilham a mesma coluna). Chamado
+  // aqui (mesmo throttle de sempre, INTERVALO_MIN_ENVIO_POSICAO_MS),
+  // fora do "if(!rotas.length) return" abaixo de propósito — um
+  // entregador só 'disponível' (esperando oferta, sem rota ainda) também
+  // precisa da posição fresca pra ser candidato de verdade a receber a
+  // PRIMEIRA oferta, não só durante uma entrega já em andamento. RPC não
+  // é SECURITY DEFINER — respeita a RLS de sempre (só atualiza a própria
+  // pessoa), fire-and-forget como o resto desta função.
+  supabaseClient.rpc('atualizar_localizacao_entregador', {
+    p_entregador_id: entregadorId, p_latitude: lat, p_longitude: lng,
+  }).then(({ error }) => {
+    if(error) console.warn('Não deu pra atualizar a posição atual do entregador:', error.message);
+  });
+
   const rotas = rotasAtivasLista.length ? rotasAtivasLista.map(r => r.id) : (rotaAtivaId ? [rotaAtivaId] : []);
   if(!rotas.length) return;
   for(const rid of rotas){
@@ -933,6 +991,63 @@ function setTipo(tipo){
 }
 setTipo('moto');
 
+// item 74 (02/09/2026): ver comentário no HTML de escolhaVinculoBox. Só
+// mostra a escolha fixo/freelance quando o cadastro NÃO chegou por um
+// link de loja (TENANT_ID já resolvido = presume fixo daquela loja,
+// mesmo comportamento de sempre, só que agora explícito no metadata
+// também — antes o vínculo sempre saía 'freelance' por padrão do banco,
+// mesmo vindo de um link que a loja compartilhou pra recrutar gente pra
+// ELA, achado no meio deste mesmo fix).
+function iniciarEscolhaVinculoCadastro(){
+  if(TENANT_ID){
+    window._tipoVinculo = 'fixo';
+    return;
+  }
+  document.getElementById('escolhaVinculoBox').style.display = 'block';
+  document.getElementById('resto-formulario-cadastro').classList.remove('show');
+}
+iniciarEscolhaVinculoCadastro();
+
+function setVinculo(tipo){
+  document.getElementById('opt-vinc-fixo').classList.toggle('sel', tipo==='fixo');
+  document.getElementById('opt-vinc-freelance').classList.toggle('sel', tipo==='freelance');
+  document.getElementById('cond-vinc-fixo').classList.toggle('show', tipo==='fixo');
+  document.getElementById('vincFreelanceInfo').classList.toggle('show', tipo==='freelance');
+  window._tipoVinculo = tipo;
+  document.getElementById('codigoLojaMsg').textContent = '';
+  document.getElementById('codigoLojaMsg').className = 'msg';
+  if(tipo === 'freelance'){
+    document.getElementById('resto-formulario-cadastro').classList.add('show');
+  } else {
+    // fixo: só libera o resto do formulário depois de verificar o código
+    document.getElementById('resto-formulario-cadastro').classList.remove('show');
+  }
+}
+
+async function verificarCodigoLoja(){
+  const msg = document.getElementById('codigoLojaMsg');
+  const codigo = document.getElementById('c_codigo_loja').value.trim().toUpperCase();
+  if(codigo.length < 4){
+    msg.textContent = 'Digite o código completo que a loja te passou.';
+    msg.className = 'msg error';
+    return;
+  }
+  msg.textContent = 'Verificando…'; msg.className = 'msg';
+  const { data, error } = await supabaseClient.rpc('resolver_codigo_cadastro_loja', { p_codigo: codigo });
+  const loja = data && data[0];
+  if(error || !loja){
+    msg.textContent = 'Código não encontrado. Confere com a loja se digitou certo.';
+    msg.className = 'msg error';
+    document.getElementById('resto-formulario-cadastro').classList.remove('show');
+    return;
+  }
+  TENANT_ID = loja.id;
+  localStorage.setItem('girocerto_tenant_id', TENANT_ID);
+  msg.textContent = `Loja encontrada: ${escapeHtml(loja.nome)}. Pode continuar o cadastro abaixo.`;
+  msg.className = 'msg success';
+  document.getElementById('resto-formulario-cadastro').classList.add('show');
+}
+
 document.querySelectorAll('.upload input[type=file]').forEach(inp => {
   inp.addEventListener('change', e => {
     const nameEl = document.getElementById(inp.id + '_n');
@@ -961,8 +1076,14 @@ async function uploadDoc(file, pasta){
 async function enviarCadastro(){
   const msg = document.getElementById('cadMsg');
   msg.className = 'msg';
-  if(!TENANT_ID){
-    msg.textContent = 'Link de cadastro inválido — peça o link certo pra loja onde você vai trabalhar.';
+  // item 74 (02/09/2026): antes travava aqui sempre que TENANT_ID vinha
+  // vazio — só era possível chegar num TENANT_ID via link, e o app
+  // instalado direto nunca tem link nenhum. Agora TENANT_ID só é
+  // obrigatório pro caminho FIXO (a UI já garante isso escondendo o
+  // resto do formulário até o código da loja ser verificado — este é só
+  // um cinto de segurança contra chamada direta/estado inconsistente).
+  if(window._tipoVinculo === 'fixo' && !TENANT_ID){
+    msg.textContent = 'Verifique o código da loja antes de continuar.';
     msg.className = 'msg error';
     return;
   }
@@ -974,8 +1095,14 @@ async function enviarCadastro(){
 
   try{
     const tipo = window._tipoVeiculo;
+    // item 74: tipo_vinculo manda explícito agora — antes o vínculo
+    // sempre saía 'freelance' (default do banco), mesmo vindo de um link
+    // que a loja compartilhou especificamente pra recrutar gente PRA ELA
+    // (achado no mesmo fix). tenant_id só entra no metadata quando existe
+    // de verdade — omitir a chave (não só mandar null) evita qualquer
+    // ambiguidade do lado do trigger que decide o que criar no banco.
     const metadata = {
-      tenant_id: TENANT_ID,
+      tipo_vinculo: window._tipoVinculo || 'fixo',
       nome: document.getElementById('c_nome').value,
       tipo_veiculo: tipo,
       data_nascimento: document.getElementById('c_nasc').value,
@@ -984,6 +1111,7 @@ async function enviarCadastro(){
       cep: document.getElementById('c_cep').value,
       chave_pix: document.getElementById('c_pix').value,
     };
+    if(TENANT_ID) metadata.tenant_id = TENANT_ID;
 
     if(tipo === 'moto'){
       metadata.cpf = document.getElementById('c_cpf').value;
@@ -996,7 +1124,16 @@ async function enviarCadastro(){
       metadata.responsavel_nome = document.getElementById('c_responsavel').value || null;
     }
 
-    const redirectUrl = window.location.origin + '/app-entregador.html'
+    // item 74 (02/09/2026), achado no mesmo fix: dentro do app instalado
+    // (Capacitor), window.location.origin NÃO é o domínio real — é a
+    // origem interna da WebView (ex: "https://localhost"), inalcançável
+    // de fora. O e-mail de confirmação levava o entregador pra um link
+    // morto sempre que o cadastro acontecia pelo app nativo. Usa o
+    // domínio real fixo nesse caso.
+    const origemReal = (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())
+      ? 'https://girocerto-mockups.vercel.app'
+      : window.location.origin;
+    const redirectUrl = origemReal + '/app-entregador.html'
       + (TENANT_ID ? '?loja=' + encodeURIComponent(TENANT_ID) : '');
 
     const { error: authError } = await supabaseClient.auth.signUp({

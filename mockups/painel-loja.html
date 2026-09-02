@@ -284,6 +284,13 @@
           <input type="text" id="linkCadastroEntregador" readonly style="flex:1;font-size:12.5px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;">
           <button class="action-btn" onclick="copiarLinkCadastroEntregador()">Copiar</button>
         </div>
+        <!-- item 74 (02/09/2026): pra quem for abrir o app JÁ INSTALADO
+        (sem link nenhum, ex: baixou o APK direto) — código curto que dá
+        pra falar por telefone/WhatsApp sem precisar mandar link nenhum. -->
+        <p style="color:var(--gray);font-size:13px;margin:14px 0 6px;">
+          Ou, se a pessoa já tem o app instalado (sem abrir pelo link), passe esse código pra ela digitar na tela de cadastro:
+        </p>
+        <div style="font-size:22px;font-weight:800;letter-spacing:3px;text-align:center;padding:10px;background:var(--paper);border-radius:10px;" id="codigoCadastroEntregador">——————</div>
       </div>
 
       <!-- item 51 (26-27/08/2026): Pix real não existe — loja paga por
@@ -692,7 +699,7 @@ async function iniciarApp(){
 
   const { data: vinculo, error } = await supabaseClient
     .from('usuarios_loja')
-    .select('tenant_id, papel, tenants(nome, lat, lng, proprietario_documento_foto_url, cnpj_documento_foto_url)')
+    .select('tenant_id, papel, tenants(nome, lat, lng, proprietario_documento_foto_url, cnpj_documento_foto_url, codigo_cadastro)')
     .eq('auth_user_id', user.id)
     .single();
 
@@ -718,6 +725,9 @@ async function iniciarApp(){
   const linkEntregador = new URL('app-entregador.html', window.location.href);
   linkEntregador.searchParams.set('loja', tenantId);
   document.getElementById('linkCadastroEntregador').value = linkEntregador.href;
+  // item 74 (02/09/2026): código curto pra quem for cadastrar como fixo
+  // pelo app já instalado (sem link nenhum).
+  document.getElementById('codigoCadastroEntregador').textContent = vinculo.tenants.codigo_cadastro || '——————';
 
   carregarPedidos();
   carregarDados();
