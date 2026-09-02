@@ -3910,11 +3910,67 @@ C:\Users\Usuário\Projetos\giro certo
       via `admin.createUser()` + o trigger real rodando de verdade (evita
       rate limit de e-mail do `signUp()` real). 171/171 na suíte.
       Commit `87d87bd`, **push feito** (17 commits acumulados da sessão
-      inteira, incluindo itens 61-74). Build de APK debug novo iniciado
-      em paralelo pro usuário reinstalar e testar o app nativo de
-      verdade (não só o site).
+      inteira, incluindo itens 61-74). Build de APK debug novo gerado
+      pro usuário reinstalar e testar o app nativo de verdade (não só o
+      site) — `JAVA_HOME` precisou apontar manual pro JDK do Android
+      Studio (`.../Android Studio/jbr`), não estava no PATH.
+75. **2 achados reais testando o item 74 AO VIVO com o usuário, ambos
+    corrigidos/registrados na hora** (02/09/2026).
+    - **Vercel não fazia deploy automático há 9 DIAS** — mesmo problema
+      de infra do Railway (item 64/67), nunca antes documentado pro
+      Vercel. O usuário testou o fix do item 74 e ainda via a mensagem de
+      erro ANTIGA — o código novo já estava no GitHub (confirmado via
+      `raw.githubusercontent.com`), mas o site ao vivo
+      (`girocerto-mockups.vercel.app`) servia uma versão de 9 dias atrás.
+      **Toda mudança em `mockups/*.html` de várias sessões anteriores
+      nunca chegou ao site até agora.** Corrigido rodando
+      `vercel --prod --yes` de dentro de `mockups/` (projeto Vercel
+      `girocerto-mockups`, linkado via `mockups/.vercel/project.json`) —
+      confirmado no ar. **Fica como convenção nova**: depois de qualquer
+      `git push` que toque `mockups/*.html`, rodar
+      `cd mockups && vercel --prod --yes` — não confiar em deploy
+      automático, igual já vale pro Railway.
+    - **Cadastro freelance (item 74) cria a pessoa certo, mas login trava
+      sem explicação nenhuma** — achado testando ao vivo com o usuário.
+      `carregarEntregador()` (a função que roda logo após login bem
+      sucedido) exige `TENANT_ID` presente (`if(!TENANT_ID){ mostrar(
+      'view-login'); return; }`) — sem isso, volta pro login em silêncio,
+      sem NENHUMA mensagem de erro. Um freelance de verdade (sem vínculo
+      nenhum ainda, é assim que o cadastro freelance foi desenhado de
+      propósito) não tem `?loja=` nenhum pra usar depois do cadastro —
+      fica travado sem jeito de entrar. **Não é um bug pequeno, é uma
+      lacuna real que o item 74 abriu**: construí o cadastro freelance
+      (correto, sem vínculo — pool aberto, item 52), mas não a
+      experiência de login/painel de um freelance sem vínculo nenhum —
+      `entregadores_completo` (usado por `carregarEntregador()`) sempre
+      filtra por `tenant_id`, e o restante do arquivo usa `entregadorId`
+      (id do VÍNCULO) em várias funções, não `pessoaId`. O banco já
+      suporta freelance sem tenant (`turnos` é por `pessoa_id` desde o
+      item 52), só a tela não foi adaptada. **Mitigação imediata**: criei
+      manualmente o vínculo do usuário de teste (`insert into
+      entregadores`) pra desbloquear o teste dele agora. **Não
+      corrigido de verdade ainda** — fica pra uma sessão dedicada
+      (repensar `carregarEntregador()`/telas de turno pra funcionar sem
+      `TENANT_ID`, usando `pessoaId` como base pro freelance puro).
 
 ## Pendências reais no momento
+- [ ] **Login de entregador FREELANCE sem vínculo nenhum trava sem
+      explicação** (achado ao vivo no item 75, 02/09/2026) —
+      `carregarEntregador()` em `app-entregador.html` exige `TENANT_ID`
+      (`?loja=` na URL) pra funcionar; um freelance recém-cadastrado
+      (item 74, de propósito sem vínculo — pool aberto) não tem link
+      nenhum pra usar depois do cadastro, fica preso voltando pro login
+      sem nenhuma mensagem de erro. Precisa de uma tela/fluxo pro
+      freelance logar e abrir turno usando `pessoaId`, não `entregadorId`
+      (vínculo) — o banco já suporta (`turnos` é por pessoa desde o item
+      52), só o frontend não foi adaptado. Mitigado na hora criando
+      manualmente o vínculo do usuário de teste; não é a solução real.
+- [ ] **Vercel não faz deploy automático — convenção nova, igual já
+      valia pro Railway** (achado no item 75, 02/09/2026): ficou **9
+      dias sem publicar nada**, mesmo com vários `git push` no meio.
+      Depois de qualquer push que toque `mockups/*.html`, rodar
+      `cd mockups && vercel --prod --yes` manualmente — não confiar em
+      deploy automático.
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
       **corrigido no item 56** (27/08/2026): `enviarPosicao()` grava posição em
       todas as rotas ativas agora, não só a focada na tela.
