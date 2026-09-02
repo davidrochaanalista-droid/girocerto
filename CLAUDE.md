@@ -3849,6 +3849,70 @@ C:\Users\Usuário\Projetos\giro certo
       painel operacional ao vivo"), não é um gap novo.
     - `app-entregador.html`: já tinha 5 canais + 5 `setInterval` — bem
       coberto, nenhum `carregar*()` órfão encontrado.
+73. **Staleness de `lat/lng` no despacho — investigado e corrigido**
+    (02/09/2026, continuando "faça as outras pendências"). Achado bem
+    mais sério do que a pendência original supunha: `pessoas_entregadoras.lat/lng`
+    (usado pelo ranking "mais próximo" dos DOIS motores) nunca era
+    atualizado por NINGUÉM — a função que faria isso
+    (`atualizar_localizacao_entregador`) só era chamada pelo router morto
+    do módulo feira (item 62/63), nunca pelo código real. Achado extra:
+    o rastreio de posição só gravava algo quando o entregador JÁ estava
+    numa rota ativa — um entregador só "disponível" (esperando oferta)
+    nunca tinha a posição atualizada nem uma vez.
+    - **Fix**: `enviarPosicao()` em `app-entregador.html` agora chama a
+      RPC `atualizar_localizacao_entregador()` sempre que dispara (mesmo
+      throttle de sempre), fora do `if(!rotas.length) return` que só
+      cobre o INSERT em `localizacoes_entregador` (esse continua exigindo
+      rota, é histórico/auditoria de segurança, correto ficar assim). A
+      RPC não é `SECURITY DEFINER` — respeita a RLS normal (só atualiza a
+      própria pessoa).
+    - Perguntei antes de implementar (mexe no loop de rastreio ao vivo,
+      já testado num aparelho físico real) — usuário confirmou.
+74. **Cadastro de entregador FIXO pelo app instalado direto — achado ao
+    vivo pelo usuário testando no Realme C75** (02/09/2026). Abrir o app
+    pelo ícone (sem link nenhum) sempre caía num beco sem saída ("link de
+    cadastro inválido") — `TENANT_ID` só existe quando alguém abre pelo
+    link `?loja=<uuid>` que a loja compartilha; o app instalado nunca tem
+    URL nenhuma. Achado junto, no mesmo fix: o cadastro (por QUALQUER
+    caminho, inclusive o link) sempre criava vínculo `'freelance'` —
+    hardcoded, nunca `'fixo'`, mesmo vindo de um link que a loja
+    compartilhou especificamente pra recrutar gente PRA ELA.
+    - **Decisão do usuário**: só o cadastro FIXO ganha um jeito de
+      informar a loja sem link (freelance não precisa — pool aberto).
+      Formato escolhido: código curto novo (6 caracteres), não o
+      UUID/link completo.
+    - **Migration**: `tenants.codigo_cadastro` (gerado automático por
+      trigger em tenants novos, backfill nos existentes), RPC
+      `resolver_codigo_cadastro_loja(p_codigo)` (chamável pela chave
+      anon, antes do login existir — devolve só id+nome, nunca dado
+      sensível), e 4ª versão de `provisionar_cadastro_pos_signup()`:
+      dispatch agora por `tipo_vinculo` (não só `tenant_id`) — freelance
+      não cria linha em `entregadores` no cadastro (só a pessoa; vínculo
+      nasce depois, na hora que ganha a 1ª corrida,
+      `get_or_criar_vinculo_freelance()`).
+    - **`app-entregador.html`**: campo novo (só aparece quando
+      `TENANT_ID` não veio de link) — escolher "fixo" (revela campo de
+      código, verifica via RPC, só libera o resto do formulário depois de
+      confirmado) ou "freelance" (libera direto, sem loja nenhuma).
+    - **Achado extra no mesmo fix**: `emailRedirectTo` do `signUp()`
+      usava `window.location.origin` — dentro do WebView do Capacitor
+      isso NÃO é o domínio real, é a origem interna (`https://localhost`
+      ou parecido), inalcançável de fora. O e-mail de confirmação levava
+      pra um link morto sempre que o cadastro acontecia pelo app nativo.
+      Corrigido com domínio fixo (`girocerto-mockups.vercel.app`) quando
+      `Capacitor.isNativePlatform()` for true.
+    - **`painel-loja.html`**: mostra o código da loja (grande, fácil de
+      ler) pro dono compartilhar por telefone/WhatsApp.
+    - **`capacitor-www/index.html` ressincronizado** — estava **458
+      linhas desatualizado** em relação a `mockups/app-entregador.html`
+      (achado no caminho, não só o código deste item ficaria faltando).
+    - Testado: RPC via chave anon (sem sessão), cadastro fixo e freelance
+      via `admin.createUser()` + o trigger real rodando de verdade (evita
+      rate limit de e-mail do `signUp()` real). 171/171 na suíte.
+      Commit `87d87bd`, **push feito** (17 commits acumulados da sessão
+      inteira, incluindo itens 61-74). Build de APK debug novo iniciado
+      em paralelo pro usuário reinstalar e testar o app nativo de
+      verdade (não só o site).
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -4041,14 +4105,16 @@ C:\Users\Usuário\Projetos\giro certo
       ponta depois disso — consistente com a decisão já registrada de não investir mais
       no módulo enquanto ele não roda em produção (pendência antiga, ver "motor de
       despacho da feira não roda em lugar nenhum em produção").
-- [ ] **Staleness de `lat/lng` no despacho de restaurante** (achado do item 52, não é
-      regressão desta sessão) — `app-entregador.html` nunca atualizava
-      `entregadores.lat/lng` (agora `pessoas_entregadoras.lat/lng`) pro lado restaurante,
-      só a feira fazia isso via `atualizar_localizacao_entregador()`. O motor de despacho
-      do restaurante rankeia candidato por distância usando essa coluna — pode estar
-      desatualizada. Comportamento preservado exatamente como estava (só realocado),
-      mas vale investigar numa sessão futura se o ranking por distância está mesmo
-      funcionando com dado fresco.
+- [x] ~~Staleness de `lat/lng` no despacho de restaurante~~ — **investigado e
+      corrigido no item 73 (02/09/2026)**. Achado bem mais sério do que a
+      pendência original supunha: **não era só a feira** que fazia a
+      atualização e o restaurante que ficava sem — `atualizar_localizacao_entregador()`
+      nunca era chamada por NENHUM código real (só pelo router morto do
+      item 62/63) — os DOIS motores rankeavam candidato com dado
+      congelado desde o cadastro. `enviarPosicao()` em `app-entregador.html`
+      agora chama a RPC sempre, inclusive quando o entregador só está
+      'disponível' (sem rota ativa ainda) — antes só gravava posição
+      durante entrega em andamento.
 - [x] ~~Validar capacidade do `dispatch-engine/` em volume real de loja estabelecida
       (20.000–35.000+ pedidos/mês, ~1.000/dia)~~ — **testado no item 61 (28/08/2026)**.
       Resultado: latência de despacho excelente sob pressão sustentada (p50 0,96s,
