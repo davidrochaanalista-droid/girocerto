@@ -3816,6 +3816,18 @@ C:\Users\Usuário\Projetos\giro certo
     de verdade, e o caso negativo (entregador se movendo >15m entre
     leituras não gera alerta falso). 171/171 na suíte completa. Commit
     `32e3522`.
+71. **Limpeza do resíduo de teste do módulo feira, confirmada e feita**
+    (02/09/2026, retomando "faça as outras pendências"). 5 estabelecimentos,
+    5 feiras/ocorrências, 5 usuários, 4 `pedido_grupo`+`pedido`
+    (já cancelados) e 2 `pessoas_entregadoras` de sessões anteriores a
+    28/08 — removidos em cascata na ordem certa de FK
+    (`pedido_nota`→`pedido`/`pedido_item`→`pedido_grupo`→
+    `feira_ocorrencia`(+excecao)→`feira`→`produtos`→`estabelecimentos`→
+    `usuarios`→`entregadores`/`pessoas_entregadoras`). Achado no
+    caminho: os `auth.users` correspondentes ficaram órfãos (não capturei
+    `auth_user_id` antes de apagar as linhas de negócio) — inofensivo,
+    não vale caçar retroativamente. Verificação final: 0 linhas
+    restantes em todas as tabelas checadas.
 
 ## Pendências reais no momento
 - [x] ~~Rastreio de posição/alertas de segurança só cobrem a rota "em foco"~~ —
@@ -4038,15 +4050,17 @@ C:\Users\Usuário\Projetos\giro certo
       decisão de negócio do usuário (fazer upgrade de plano) — registrado
       pra não passar despercebido, já que se o saldo acabar o próprio
       Railway pode derrubar os serviços de produção.
-- [ ] Resíduo de teste no módulo feira (achado no item 63, 28/08/2026):
-      5 `estabelecimentos` ("[TESTE] Banca Simultanea" x4, "Banca Teste
-      Hortifruti"), 5 `feira`/feira_ocorrencia associadas, 2
-      `pessoas_entregadoras` ("Ent Teste", "Entregador Teste") e 5
-      `usuarios` ("[TESTE] Cliente Simultaneo" x4, "Cliente Feira Teste")
-      de sessões anteriores a 28/08 — os `pedido_grupo` ligados a eles já
-      foram cancelados (não vão ser despachados), mas as entidades em si
-      continuam no banco. Inofensivo, baixa prioridade — limpar numa
-      sessão futura se sobrar tempo.
+- [x] ~~Resíduo de teste no módulo feira~~ — **limpo no item 71 (02/09/2026)**,
+      confirmado com o usuário antes. Removidos em cascata na ordem certa
+      (`pedido_nota` → `pedido`/`pedido_item` → `pedido_grupo` →
+      `feira_ocorrencia`/`feira_ocorrencia_excecao` → `feira` →
+      `produtos` → `estabelecimentos` → `usuarios` →
+      `entregadores`/`pessoas_entregadoras`). Achado no caminho: os `auth.users`
+      correspondentes não foram removidos (as linhas de negócio já tinham
+      sido apagadas antes de eu pensar em capturar `auth_user_id` pra
+      limpar o auth também) — inofensivo (credencial órfã sem nada ligado),
+      não vale a pena caçar retroativamente. Verificação final: 0 linhas
+      restantes em todas as tabelas checadas.
 - [x] ~~3 nits do `/ultrareview` de 14/08/2026~~ — **fechados no item 68
       (31/08/2026)**. `pin_integracoes_hash` era exposto via SELECT normal de
       `usuarios_loja` pra QUALQUER funcionário do tenant (achado real: RLS é
