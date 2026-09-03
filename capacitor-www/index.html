@@ -926,7 +926,7 @@ function pararRastreioPosicao(){
 // as rotas que ele está com pedido em mãos, não só a que está na tela
 // agora. Grava 1 linha por rota ativa (mesma lat/lng), não só a focada.
 async function enviarPosicao(lat, lng){
-  if(!entregadorId) return;
+  if(!pessoaId) return;
 
   // item 73 (02/09/2026, achado do item 52/investigação do item 11): o
   // motor de despacho rankeia candidato por distância usando
@@ -943,11 +943,22 @@ async function enviarPosicao(lat, lng){
   // PRIMEIRA oferta, não só durante uma entrega já em andamento. RPC não
   // é SECURITY DEFINER — respeita a RLS de sempre (só atualiza a própria
   // pessoa), fire-and-forget como o resto desta função.
-  supabaseClient.rpc('atualizar_localizacao_entregador', {
-    p_entregador_id: entregadorId, p_latitude: lat, p_longitude: lng,
-  }).then(({ error }) => {
+  //
+  // item 76 (02/09/2026): freelance em modo "pool aberto puro" (turno
+  // ativo, zero vínculo ainda — ver carregarPessoaSemVinculo()) não tem
+  // entregadorId nenhum pra passar pro RPC original, que exige um vínculo.
+  // atualizar_localizacao_pessoa_entregadora() faz a mesma coisa recebendo
+  // pessoaId direto — sem essa posição fresca, essa pessoa nunca seria
+  // candidata de verdade à sua PRIMEIRA oferta (rankeamento por distância
+  // usaria dado congelado desde o cadastro).
+  const rpcPosicao = entregadorId
+    ? supabaseClient.rpc('atualizar_localizacao_entregador', { p_entregador_id: entregadorId, p_latitude: lat, p_longitude: lng })
+    : supabaseClient.rpc('atualizar_localizacao_pessoa_entregadora', { p_pessoa_id: pessoaId, p_latitude: lat, p_longitude: lng });
+  rpcPosicao.then(({ error }) => {
     if(error) console.warn('Não deu pra atualizar a posição atual do entregador:', error.message);
   });
+
+  if(!entregadorId) return; // sem vínculo ainda não tem rota nenhuma pra gravar em localizacoes_entregador
 
   const rotas = rotasAtivasLista.length ? rotasAtivasLista.map(r => r.id) : (rotaAtivaId ? [rotaAtivaId] : []);
   if(!rotas.length) return;
@@ -1426,7 +1437,36 @@ async function carregarEntregador(){
   const { data: { user } } = await supabaseClient.auth.getUser();
   if(!user) return;
 
-  if(!TENANT_ID){ mostrar('view-login'); return; }
+  if(!TENANT_ID){
+    // item 76 (02/09/2026): freelance sem vínculo NENHUM ainda (item 74
+    // cria o cadastro de propósito sem loja — pool aberto — mas antes
+    // disso o app só sabia mostrar view-login em silêncio, sem
+    // explicação nenhuma; achado ao vivo testando com usuário real, ver
+    // CLAUDE.md). Primeiro tenta achar QUALQUER vínculo que a pessoa já
+    // tenha (pode ter ganhado uma corrida em pool aberto nesse
+    // meio-tempo — get_or_criar_vinculo_freelance() cria na hora, ver
+    // dispatch-engine/index.js) antes de cair no modo "pessoa pura"
+    // (turno sem loja nenhuma, ver carregarPessoaSemVinculo()).
+    const { data: vinculos } = await supabaseClient
+      .from('entregadores_completo')
+      .select('*')
+      .eq('auth_user_id', user.id)
+      .order('vinculo_criado_em', { ascending: false })
+      .limit(1);
+    if(vinculos && vinculos[0]){
+      TENANT_ID = vinculos[0].tenant_id;
+      localStorage.setItem('girocerto_tenant_id', TENANT_ID);
+    } else {
+      const { data: pessoa, error: erroPessoa } = await supabaseClient
+        .from('pessoas_entregadoras')
+        .select('*')
+        .eq('auth_user_id', user.id)
+        .maybeSingle();
+      if(erroPessoa || !pessoa){ mostrar('view-login'); return; }
+      await carregarPessoaSemVinculo(pessoa);
+      return;
+    }
+  }
 
   // item 52 (27/08/2026): entregadores_completo junta vínculo (por loja) +
   // pessoa (identidade/documentos/status, compartilhados entre lojas).
@@ -1516,6 +1556,69 @@ async function carregarEntregador(){
   } else {
     avisoBox.style.display = 'none';
   }
+
+  await checarTurnoAtivo();
+}
+
+// item 76 (02/09/2026): turno/dashboard reduzido pra freelance sem vínculo
+// nenhum ainda (cadastro em pool aberto puro, item 74) — sem loja
+// nenhuma, então sem aceita_feira/fadiga configurada por loja (não existe
+// loja nenhuma ainda; tenantConfig fica no default 8h/8h, ver declaração
+// no topo do arquivo) e sem os canais Realtime/queries escopados por
+// entregador_id (cada função correspondente já se protege sozinha, ver
+// "item 76" nos comentários de verificarRotaAtiva()/iniciarEscutaDeOfertas()/
+// etc.). checarTurnoAtivo() e iniciarTurno()/finalizarTurnoDeVerdade() já
+// eram por pessoa_id desde o item 52 — funcionam sem mudança nenhuma. No
+// instante em que essa pessoa ganha a 1ª corrida em qualquer loja
+// (get_or_criar_vinculo_freelance() cria o vínculo na hora, ver
+// dispatch-engine/index.js), o próximo carregarEntregador() já entra pelo
+// caminho normal (acha o vínculo, TENANT_ID vira o dessa loja) e destrava
+// a experiência completa — inclusive as ofertas em tempo real daí pra
+// frente, não só as passadas via push.
+async function carregarPessoaSemVinculo(pessoa){
+  entregadorId = null;
+  pessoaId = pessoa.id;
+  appNavegacaoPreferido = pessoa.app_navegacao_preferido || 'waze';
+  registrarPushEntregador();
+
+  if(documentosFaltando(pessoa)){
+    mostrarCompletarCadastro(pessoa);
+    return;
+  }
+
+  // fingerprint de dispositivo (mesmo princípio de verificarDispositivo()):
+  // sem vínculo nenhum ainda não dá pra registrar alertas_seguranca (FK
+  // exige entregadores.id — vínculo — que não existe aqui), mas o
+  // baseline de device_id_atual continua sendo atualizado normalmente; a
+  // primeira loja que essa pessoa vier a trabalhar passa a ver alertas de
+  // troca de aparelho dali em diante.
+  const deviceIdAtual = obterDeviceId();
+  await supabaseClient
+    .from('pessoas_entregadoras')
+    .update({ device_id_atual: deviceIdAtual, device_id_atualizado_em: new Date().toISOString() })
+    .eq('id', pessoa.id);
+
+  if(pessoa.status_verificacao === 'reprovado'){
+    document.getElementById('r_motivo').textContent = legendaMotivoReprovacao(pessoa.motivo_reprovacao);
+    mostrar('view-reprovado');
+    return;
+  }
+  if(pessoa.status_verificacao !== 'aprovado'){
+    mostrar('view-avaliacao');
+    iniciarEscutaDeStatusPendente();
+    return;
+  }
+
+  document.getElementById('t_nome').textContent = 'Olá, ' + pessoa.nome.split(' ')[0];
+  mostrar('view-turno');
+
+  // sem loja nenhuma pra "não mostrar por padrão" — freelance em pool
+  // aberto puro é candidato tanto a restaurante quanto a feira, então o
+  // seletor de modo sempre faz sentido aqui (diferente do fluxo com
+  // vínculo, onde só aparece se aceita_feira=true).
+  document.getElementById('modoDisponibilidadeBox').style.display = 'block';
+  marcarModoDisponibilidadeUI(pessoa.modo_disponibilidade || 'ambos');
+  document.getElementById('avisoDocumento').style.display = 'none';
 
   await checarTurnoAtivo();
 }
@@ -1983,6 +2086,7 @@ async function garantirEnderecoLoja(){
 let rotasAtivasLista = [];
 
 async function verificarRotaAtiva(){
+  if(!entregadorId) return; // item 76: freelance sem vínculo nenhum ainda não tem rota de restaurante possível
   const { data: rotas } = await supabaseClient
     .from('rotas_entrega')
     .select('*, pedidos(*)')
@@ -2133,6 +2237,7 @@ let ofertaPollingAtivo = false;
 const POLL_INTERVAL_OFERTA_MS = 15000; // mesmo valor e mesmo motivo do polling da feira (ver iniciarEscutaDeOfertasFeira)
 
 function iniciarEscutaDeOfertas(){
+  if(!entregadorId) return; // item 76: sem vínculo nenhum ainda, motor de restaurante não tem como oferecer (tentativas_despacho é por entregador_id)
   if(ofertaCanalAtivo) return; // já escutando, não duplica o channel
   ofertaCanalAtivo = true;
 
@@ -2199,6 +2304,7 @@ function iniciarEscutaDeOfertas(){
 // do motor de despacho atribuir a rota depois de um restart, por exemplo.
 let escutaAtribuicaoRotaAtiva = false;
 function iniciarEscutaDeAtribuicaoRota(){
+  if(!entregadorId) return; // item 76: sem vínculo nenhum ainda, rotas_entrega.entregador_id não existe pra escutar
   if(escutaAtribuicaoRotaAtiva) return;
   escutaAtribuicaoRotaAtiva = true;
   supabaseClient
@@ -2328,6 +2434,7 @@ const POLL_INTERVAL_FEIRA_MS = 15000; // mesmo intervalo já usado em painel-loj
 let ofertaFeiraPollingAtivo = false;
 
 function iniciarEscutaDeOfertasFeira(){
+  if(!entregadorId) return; // item 76: sem vínculo nenhum ainda, entrega_rota.entregador_id não existe pra escutar (vínculo é criado só ao ganhar a 1ª corrida, get_or_criar_vinculo_freelance())
   if(ofertaFeiraCanalAtivo) return; // já escutando, não duplica o channel
   ofertaFeiraCanalAtivo = true;
 
@@ -2507,6 +2614,7 @@ async function recusarOfertaFeira(){
 // RPC) — enquanto pendente, não reserva capacidade nenhuma.
 // ------------------------------------------------------------
 function iniciarEscutaDePropostasConsolidacao(){
+  if(!entregadorId) return; // item 76: sem vínculo nenhum ainda não tem rota de feira nenhuma pra receber parada nova
   if(propostaConsolidacaoCanalAtivo) return;
   propostaConsolidacaoCanalAtivo = true;
 
@@ -2596,6 +2704,7 @@ async function recusarPropostaConsolidacao(){
 // botão se já existir pelo menos 1 linha no extrato — mesmo princípio já
 // usado em comRotaFeira (esconder até ter algo pra mostrar).
 async function verificarHistoricoFeira(){
+  if(!entregadorId) return; // item 76: sem vínculo nenhum ainda não tem como ter extrato registrado
   const { data } = await supabaseClient
     .from('extrato_entregador')
     .select('entregador_id')
@@ -2605,6 +2714,7 @@ async function verificarHistoricoFeira(){
 }
 
 async function verificarRotaFeiraAtiva(){
+  if(!entregadorId) return; // item 76: sem vínculo nenhum ainda não tem rota de feira possível
   const { data: rotas } = await supabaseClient
     .from('entrega_rota')
     .select('id')

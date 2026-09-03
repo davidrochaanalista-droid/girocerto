@@ -3948,23 +3948,74 @@ C:\Users\Usuário\Projetos\giro certo
       suporta freelance sem tenant (`turnos` é por `pessoa_id` desde o
       item 52), só a tela não foi adaptada. **Mitigação imediata**: criei
       manualmente o vínculo do usuário de teste (`insert into
-      entregadores`) pra desbloquear o teste dele agora. **Não
-      corrigido de verdade ainda** — fica pra uma sessão dedicada
-      (repensar `carregarEntregador()`/telas de turno pra funcionar sem
-      `TENANT_ID`, usando `pessoaId` como base pro freelance puro).
+      entregadores`) pra desbloquear o teste dele agora. **Corrigido de
+      verdade no item 76**, ver abaixo.
+76. **Fix de verdade do login freelance sem vínculo** (02/09/2026,
+    pedido direto: "ataca o fix do login do freelance agora").
+    - Investigação prévia confirmou que o banco já suporta 100% um
+      freelance em "pool aberto" sem vínculo nenhum:
+      `buscar_candidatos_despacho()` tem um branch inteiro pra isso
+      (`precisa_criar_vinculo=true`, exige só `turnos.status='ativo'`
+      por `pessoa_id`) e `checarTurnoAtivo()`/`iniciarTurno()`/
+      `finalizarTurnoDeVerdade()` já eram 100% por `pessoa_id` desde o
+      item 52 — a lacuna real era só no `carregarEntregador()` e nas
+      funções que dependiam de `entregadorId` (id do VÍNCULO, não da
+      pessoa).
+    - `carregarEntregador()`: quando não tem `TENANT_ID` na URL/localStorage,
+      primeiro procura QUALQUER vínculo que a pessoa já tenha (pode ter
+      ganhado uma corrida em pool aberto nesse meio-tempo —
+      `get_or_criar_vinculo_freelance()` cria na hora, ver
+      `dispatch-engine/index.js`); se achar, adota esse `tenant_id` e
+      segue o fluxo normal de sempre. Se não achar vínculo nenhum, cai
+      numa função nova, `carregarPessoaSemVinculo(pessoa)`.
+    - `carregarPessoaSemVinculo()` (nova): mesmo fluxo de sempre
+      (documentos pendentes → avaliação/reprovado/aprovado → tela de
+      turno), mas buscando direto em `pessoas_entregadoras` por
+      `auth_user_id`, sem depender de `entregadores_completo`
+      (view sempre filtra por vínculo). Seletor de modo de
+      disponibilidade sempre visível (sem `aceita_feira` — não existe
+      loja nenhuma ainda pra ter essa config); fadiga usa o default do
+      app (8h/8h) já que não tem `config_fadiga_do_meu_tenant()` pra
+      chamar sem tenant. Fingerprint de dispositivo atualiza o
+      `device_id_atual` normalmente, mas não grava em
+      `alertas_seguranca` (a tabela exige `entregador_id references
+      entregadores(id)` — vínculo — que não existe ainda; a primeira
+      loja que essa pessoa vier a trabalhar passa a ver alertas de
+      troca de aparelho dali em diante).
+    - `entregadorId` fica `null` nesse modo — todas as funções que
+      dependiam dele pra escutar Realtime/consultar (`verificarRotaAtiva`,
+      `iniciarEscutaDeOfertas`, `iniciarEscutaDeAtribuicaoRota`,
+      `iniciarEscutaDeOfertasFeira`, `iniciarEscutaDePropostasConsolidacao`,
+      `verificarHistoricoFeira`, `verificarRotaFeiraAtiva`) ganharam um
+      guard `if(!entregadorId) return;` no topo — sem vínculo nenhum,
+      nenhuma dessas tabelas (`rotas_entrega`/`entrega_rota`/
+      `tentativas_despacho`/`proposta_consolidacao`/`extrato_entregador`)
+      tem linha nenhuma escopada por essa pessoa mesmo, então é um
+      no-op seguro, não uma perda de funcionalidade real.
+    - **Achado relacionado durante a investigação**: `enviarPosicao()`
+      (item 73) só sabia atualizar a posição via
+      `atualizar_localizacao_entregador(p_entregador_id, ...)` — sem
+      vínculo nenhum, um freelance em pool aberto nunca teria a
+      posição atualizada, o que quebraria o ranking por distância bem
+      na hora que mais importa (a candidatura à 1ª oferta). Nova função
+      no banco, `atualizar_localizacao_pessoa_entregadora(p_pessoa_id,
+      lat, lng)` — mesmo princípio de segurança do original (SECURITY
+      INVOKER, não DEFINER; respeita a RLS "pessoa atualiza seu proprio
+      cadastro" de `pessoas_entregadoras`, testado explicitamente que
+      uma pessoa NÃO consegue atualizar a posição de outra). `enviarPosicao()`
+      escolhe qual RPC chamar dependendo se `entregadorId` existe ou não.
+    - Migration aplicada em produção (Supabase). Testado com um
+      usuário freelance real via `admin.createUser()` (evita rate
+      limit de e-mail) + client **anon com login de verdade** (RLS real,
+      não a chave admin): busca de vínculo vem vazia → busca da pessoa
+      funciona → RPC de posição grava certo na própria pessoa → RPC de
+      posição falha silenciosamente (0 linhas afetadas) numa pessoa
+      alheia (RLS bloqueando de verdade, testado) → abrir turno por
+      `pessoa_id` funciona. Todos os 6 checks passaram.
+    - `capacitor-www/index.html` ressincronizado com
+      `mockups/app-entregador.html` (mesma convenção de sempre).
 
 ## Pendências reais no momento
-- [ ] **Login de entregador FREELANCE sem vínculo nenhum trava sem
-      explicação** (achado ao vivo no item 75, 02/09/2026) —
-      `carregarEntregador()` em `app-entregador.html` exige `TENANT_ID`
-      (`?loja=` na URL) pra funcionar; um freelance recém-cadastrado
-      (item 74, de propósito sem vínculo — pool aberto) não tem link
-      nenhum pra usar depois do cadastro, fica preso voltando pro login
-      sem nenhuma mensagem de erro. Precisa de uma tela/fluxo pro
-      freelance logar e abrir turno usando `pessoaId`, não `entregadorId`
-      (vínculo) — o banco já suporta (`turnos` é por pessoa desde o item
-      52), só o frontend não foi adaptado. Mitigado na hora criando
-      manualmente o vínculo do usuário de teste; não é a solução real.
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
       valia pro Railway** (achado no item 75, 02/09/2026): ficou **9
       dias sem publicar nada**, mesmo com vários `git push` no meio.

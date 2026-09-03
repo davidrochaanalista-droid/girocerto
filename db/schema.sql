@@ -6665,3 +6665,30 @@ begin
   return new;
 end;
 $$;
+
+-- item 76 (02/09/2026): login de entregador freelance sem vínculo NENHUM
+-- ainda (item 74 criou o cadastro de propósito sem tenant — pool aberto —
+-- mas o app não tinha nenhuma tela pra esse caso: carregarEntregador() em
+-- app-entregador.html exigia TENANT_ID pra tudo, então um freelance recém
+-- cadastrado ficava preso voltando pro login sem explicação nenhuma,
+-- achado ao vivo testando com usuário real). atualizar_localizacao_entregador()
+-- (item 73) só aceita p_entregador_id (vínculo) — sem vínculo nenhum não
+-- tem como uma pessoa em modo "pool aberto puro" (turno ativo, esperando
+-- a 1ª oferta de qualquer loja) atualizar sua própria posição, o que
+-- quebraria o ranking por distância pro candidato mais novo do sistema.
+-- Mesmo princípio de segurança do original: SECURITY INVOKER (não
+-- DEFINER), respeita a RLS "pessoa atualiza seu proprio cadastro" de
+-- pessoas_entregadoras — só atualiza a própria linha.
+create or replace function atualizar_localizacao_pessoa_entregadora(
+  p_pessoa_id uuid,
+  p_latitude double precision,
+  p_longitude double precision
+) returns void as $$
+begin
+  update pessoas_entregadoras
+    set lat = p_latitude,
+        lng = p_longitude,
+        localizacao_atualizada_em = now()
+    where id = p_pessoa_id;
+end;
+$$ language plpgsql;
