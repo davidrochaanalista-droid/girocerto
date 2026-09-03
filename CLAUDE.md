@@ -4041,6 +4041,33 @@ C:\Users\Usuário\Projetos\giro certo
       confiar em alguém notar e limpar manualmente toda vez.**
     - `capacitor-www/index.html` ressincronizado (só o `app-entregador.html`
       é usado pelo app nativo — `painel-admin.html` é só web).
+78. **Mapa embutido no lugar do placeholder "Aguardando a próxima rota"**
+    (03/09/2026, pedido direto do usuário).
+    - `#semRota` (tela de turno, sem rota ativa) trocou o card tracejado
+      pelo MESMO componente de mapa já usado em "em rota" (item 38/39,
+      Leaflet + `atualizarMapa()`), só chamado com `endereco=null` —
+      `geocodificar(null)` já devolvia `null` antes disso, então
+      `atualizarMapaInterno()` já sabia desenhar só o marcador "eu" sem
+      nenhuma lógica nova. Sem traçado de rota (`tracarRota()` só roda se
+      `destino && minhaPosicaoAtual`), sem heatmap de demanda (não existe
+      no produto ainda).
+    - Novo helper `iniciarMapaSemRota()` (refresh imediato +
+      `iniciarAtualizacaoPeriodicaMapa()` a cada 8s, mesmo padrão de
+      mapaLoja/mapaEntrega) chamado em `checarTurnoAtivo()` — cobre tanto
+      o caminho normal (`verificarRotaAtiva()` decide depois se esconde)
+      quanto o freelance sem vínculo do item 76 (`verificarRotaAtiva()`
+      retorna cedo, `#semRota` fica no padrão visível mesmo assim).
+      `mostrar()` ganhou um caso a mais pra reiniciar o intervalo ao
+      voltar pra `view-turno` vindo de outra tela (Saque/MFA/etc.) sem
+      passar de novo por `checarTurnoAtivo()`.
+    - Altura do mapa: `min(52vh,480px)` com piso de `260px` — a tela é
+      rolável normal (`.view{padding...}`, sem shell de altura travada),
+      então "até o rodapé dos botões" virou uma altura generosa em vh em
+      vez de um cálculo exato via JS: mais simples, sem risco de
+      regressão nos outros estados da mesma view (comRota/comRotaMultipla/
+      comRotaFeira), mas não é pixel-perfeito — se o usuário achar curto/
+      longo depois de testar no aparelho, é só ajustar esse valor.
+    - `capacitor-www/index.html` ressincronizado, APK debug reconstruído.
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já

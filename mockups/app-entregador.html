@@ -100,6 +100,13 @@ complementar). -->
 
   .waiting-box{border:1.5px dashed var(--border);border-radius:16px;padding:34px 20px;text-align:center;color:var(--gray);margin-bottom:18px;}
   .waiting-box .ic{width:44px;height:44px;border-radius:50%;background:var(--green-soft);margin:0 auto 12px;display:flex;align-items:center;justify-content:center;}
+  /* item 78: sem viewport fixo nessa tela (é página rolável comum, não um
+  shell de altura travada — ver .view{padding...} acima), então "até o
+  rodapé com os botões" vira uma altura generosa em vh com piso em px, não
+  um cálculo exato de layout — evita depender de JS só pra medir espaço
+  sobrando, e se comporta bem com ou sem os blocos condicionais (feira,
+  extrato) entre o mapa e os botões. */
+  .mapa-sem-rota{height:min(52vh,480px);min-height:260px;border-radius:16px;overflow:hidden;margin-bottom:18px;background:var(--border);}
 
   .emerg-row{display:flex;gap:10px;margin-bottom:18px;}
   .emerg-btn{flex:1;background:var(--red-soft);color:var(--red);border-radius:12px;padding:12px;text-align:center;font-weight:700;font-size:13.5px;text-decoration:none;display:block;}
@@ -408,10 +415,14 @@ complementar). -->
       </div>
 
       <div id="semRota">
-        <div class="waiting-box">
-          <div class="ic">📍</div>
-          Aguardando a próxima rota<br>Você será chamado no momento certo
-        </div>
+        <!-- item 78 (03/09/2026, pedido direto do usuário): antes era só um
+        card tracejado ("Aguardando a próxima rota"). Reaproveita o MESMO
+        componente de mapa embutido do item 38/39 (atualizarMapa()/Leaflet),
+        só que sem endereço de destino nenhum — geocodificar(null) já
+        devolve null (ver função), então atualizarMapaInterno() já sabia
+        desenhar só o marcador "eu" sem quebrar, sem precisar de nenhuma
+        lógica nova pro mapa em si. -->
+        <div id="mapaSemRota" class="mapa-sem-rota"></div>
       </div>
 
       <div id="comRota" style="display:none;">
@@ -989,6 +1000,13 @@ function mostrar(id){
   Object.keys(ultimoEnderecoPedido).forEach(containerId => {
     if(containerEstaVisivel(containerId)) atualizarMapa(containerId, ultimoEnderecoPedido[containerId]);
   });
+  // item 78: diferente de mapaLoja/mapaEntrega (abertos por uma ação
+  // explícita que já reinicia o intervalo), dá pra voltar pra view-turno
+  // por várias entradas (Voltar da tela de saque/MFA/etc.) sem passar de
+  // novo por checarTurnoAtivo() — sem isso, o refresh de 8s ficaria parado
+  // depois de qualquer volta a essa tela vindo de outro lugar que não o
+  // fluxo normal de login/checarTurnoAtivo().
+  if(id === 'view-turno' && containerEstaVisivel('mapaSemRota')) iniciarMapaSemRota();
 }
 
 // ------------------------------------------------------------
@@ -1694,6 +1712,7 @@ async function checarTurnoAtivo(){
 
     atualizarStatsTurno();
     verificarRotaAtiva();
+    iniciarMapaSemRota(); // item 78 — #semRota é visível por padrão até verificarRotaAtiva() decidir o contrário (ou nunca decidir, pro freelance sem vínculo do item 76, que retorna cedo); chamado sempre, sem custo real se acabar escondido em seguida (containerEstaVisivel() já guarda atualizarMapa())
     verificarRotaFeiraAtiva();
     verificarHistoricoFeira();
     iniciarRastreioPosicao(); // B1 — ativo enquanto turnos.status = 'ativo', pausa inclusa (ver nota na função)
@@ -1955,6 +1974,20 @@ function iniciarAtualizacaoPeriodicaMapa(containerId, endereco){
 }
 function pararAtualizacaoPeriodicaMapa(){
   if(intervalTracadoMapa){ clearInterval(intervalTracadoMapa); intervalTracadoMapa = null; }
+}
+
+// item 78 (03/09/2026): mesmo padrão de mapaLoja/mapaEntrega (refresh
+// imediato + intervalo de 8s) aplicado ao mapa embutido de "sem rota" —
+// geocodificar(null) devolve null, então só o marcador "eu" é desenhado
+// (ver atualizarMapaInterno()). intervalTracadoMapa é um slot ÚNICO
+// compartilhado entre os 3 containers (mesmo já era o caso entre
+// mapaLoja/mapaEntrega) — sem problema real, porque o próprio tick do
+// interval já para sozinho quando o container correspondente sai de tela
+// (ver iniciarAtualizacaoPeriodicaMapa acima), e cada abertura de mapa
+// novo chama isso de novo pro container certo.
+function iniciarMapaSemRota(){
+  atualizarMapa('mapaSemRota', null);
+  iniciarAtualizacaoPeriodicaMapa('mapaSemRota', null);
 }
 
 // item 40 (25/08/2026): previsão do tempo flutuante — pedido explícito do
