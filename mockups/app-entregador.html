@@ -118,6 +118,34 @@ complementar). -->
   .stop-addr{font-weight:700;font-size:14.5px;}
   .stop-meta{font-size:12px;color:var(--gray);margin-left:36px;}
   .pay-pill{display:inline-block;margin-left:36px;margin-top:8px;padding:4px 10px;border-radius:10px;font-size:11.5px;font-weight:700;}
+
+  /* item 79 (03/09/2026): timeline loja->cliente + swipe-to-confirm,
+  redesenho de "Detalhes da entrega" (referência de interação: app de
+  motorista da 99 — só a lógica/hierarquia, sem nenhum texto/ícone/asset
+  copiado; cores/fontes 100% da paleta GiroCerto já existente). */
+  .entrega-timeline{display:flex;gap:12px;}
+  .tl-col{display:flex;flex-direction:column;align-items:center;width:22px;flex-shrink:0;}
+  .tl-ic{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;color:var(--paper);}
+  .tl-ic.origem{background:var(--marigold);}
+  .tl-ic.destino{background:var(--leaf);}
+  .tl-linha{flex:1;width:2px;background:var(--sage);opacity:.4;min-height:22px;margin:2px 0;}
+  .tl-textos{padding-bottom:16px;padding-top:1px;}
+  .tl-label{font-size:11px;color:var(--gray);text-transform:uppercase;letter-spacing:.03em;font-weight:700;margin-bottom:2px;}
+  .tl-endereco{font-size:14px;font-weight:600;}
+
+  .cliente-nome{font-size:20px;margin:2px 0 2px;}
+
+  .acoes-icone-row{display:flex;gap:10px;margin:16px 0;}
+  .acao-icone{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 6px;border-radius:12px;background:var(--bg);text-decoration:none;color:var(--ink);border:none;cursor:pointer;font-family:'Inter',sans-serif;}
+  .acao-icone .ic{width:34px;height:34px;border-radius:50%;background:var(--card);border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:16px;}
+  .acao-icone.ativo .ic{background:var(--leaf);color:var(--paper);border-color:var(--leaf);}
+  .acao-icone .lbl{font-size:11px;font-weight:600;color:var(--gray);}
+
+  .swipe-confirm{position:relative;height:58px;border-radius:100px;background:var(--bg);border:1.5px solid var(--border);overflow:hidden;touch-action:pan-y;margin-top:6px;}
+  .swipe-confirm .swipe-fill{position:absolute;top:0;left:0;bottom:0;width:0;background:var(--marigold);pointer-events:none;}
+  .swipe-confirm .swipe-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13.5px;color:var(--ink);pointer-events:none;}
+  .swipe-confirm .swipe-handle{position:absolute;top:3px;left:3px;width:52px;height:52px;border-radius:50%;background:var(--card);box-shadow:0 2px 8px rgba(0,0,0,.2);display:flex;align-items:center;justify-content:center;font-size:20px;cursor:grab;touch-action:none;}
+  .swipe-confirm.desabilitado{opacity:.5;pointer-events:none;}
   .pay-pill.pix{background:var(--green-soft);color:var(--leaf);}
   .pay-pill.qrcode{background:var(--amber-soft);color:var(--amber-ink);}
 
@@ -615,23 +643,41 @@ complementar). -->
     </div>
 
     <div id="entregaHeaderNormal">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
       <button class="link-btn" onclick="mostrar('view-rota')">← Voltar pra rota</button>
       <button class="link-btn" style="color:var(--red);" onclick="abrirProblemaVeiculo()">🔧 Problema com o veículo</button>
     </div>
+
+    <!-- item 79 (03/09/2026, pedido direto do usuário — referência de
+    interação: tela de detalhes do 99, sem copiar texto/ícone/asset,
+    reskinado 100% na paleta GiroCerto já existente): timeline
+    loja(origem)->cliente(destino) — enderecoLojaAtual já é buscado 1x por
+    turno em garantirEnderecoLoja(), nenhum dado novo precisou entrar. -->
+    <div class="entrega-timeline">
+      <div class="tl-col"><div class="tl-ic origem">↑</div><div class="tl-linha"></div></div>
+      <div class="tl-textos"><div class="tl-label">Retirada</div><div class="tl-endereco" id="e_enderecoLojaTimeline">—</div></div>
+    </div>
+    <div class="entrega-timeline">
+      <div class="tl-col"><div class="tl-ic destino">↓</div></div>
+      <div class="tl-textos"><div class="tl-label">Entrega · parada <span id="e_indice">1</span></div><div class="tl-endereco" id="e_endereco">—</div></div>
+    </div>
+
+    <h2 class="cliente-nome" id="e_clienteNome">—</h2>
+
     <!-- item 58 (27/08/2026, pedido direto do usuário): "falar com o
     cliente" (por parada, some se o pedido não tiver telefone cadastrado)
     e "problemas com a entrega" (endereço não encontrado, cliente não
     atende etc — diferente de problema_veiculo, que é sobre a rota
-    inteira/o veículo). -->
+    inteira/o veículo). Mantidos como estavam (mesma função, mesmo
+    destino) — o redesenho do item 79 é só de "Detalhes da entrega" em si;
+    a tela de "Ajuda"/comunicar problema unificada (item 7 do pedido
+    original) fica pra depois, por decisão explícita do usuário. -->
     <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
       <div id="e_ligarClienteBox" style="display:none;flex:1;">
         <a class="btn-outline" id="e_ligarCliente" style="display:block;text-align:center;text-decoration:none;">📞 Falar com o cliente</a>
       </div>
       <button class="btn-outline" style="flex:1;color:var(--red);border-color:var(--red);" onclick="abrirProblemaEntrega()">⚠️ Problemas com a entrega</button>
     </div>
-    <p style="color:var(--gray);font-size:13px;">Parada <span id="e_indice">1</span></p>
-    <h2 id="e_endereco" style="margin-bottom:16px;">—</h2>
 
     <!-- item 34 (25/08/2026): passo novo "cheguei no local de entrega" ANTES
     de digitar o código — mesmo princípio de chegadaLojaBox em view-rota,
@@ -658,7 +704,7 @@ complementar). -->
     estático "Aguardando pagamento..." por um status vindo de webhook.
     ============================================================== -->
     <div class="qr-card" id="e_pixCard">
-      <div style="font-weight:700;color:var(--teal-2);font-size:13px;">COBRANÇA VIA PIX · <span id="e_valor">R$ 0,00</span></div>
+      <div style="font-weight:700;color:var(--teal-2);font-size:13px;">COBRANÇA VIA PIX · <span id="e_valor" style="font-family:'Space Mono',monospace;">R$ 0,00</span></div>
       <div class="qr-placeholder">QR Code Pix<br>(gerado pelo provedor de pagamento)</div>
       <div id="e_statusPix" class="status-aguardando">Aguardando pagamento...</div>
       <p style="font-size:11.5px;color:var(--gray-soft);margin-top:12px;">O valor cai direto na conta da loja — você não precisa levar troco.</p>
@@ -666,7 +712,7 @@ complementar). -->
 
     <div class="field codigo-box">
       <label style="text-align:center;">Código que o cliente vai te falar</label>
-      <input type="text" id="e_codigoInput" maxlength="4" placeholder="0000">
+      <input type="text" id="e_codigoInput" maxlength="4" placeholder="0000" style="font-family:'Space Mono',monospace;font-size:22px;letter-spacing:.15em;text-align:center;">
     </div>
 
     <div class="field">
@@ -675,7 +721,16 @@ complementar). -->
     </div>
 
     <div class="msg" id="entregaMsg"></div>
-    <button class="btn-primary" onclick="confirmarEntrega()">Confirmar entrega</button>
+
+    <!-- item 79: swipe-to-confirm em vez de tap simples — pedido explícito
+    do usuário ("pra manter a confirmação intencional"). criarSwipeConfirm()
+    é genérico (ver definição perto de confirmarEntrega()), reaproveitável
+    quando as telas 3/5 saírem do gap de schema/decisão de produto. -->
+    <div class="swipe-confirm" id="swipeValidarEntrega">
+      <div class="swipe-fill"></div>
+      <div class="swipe-label">Arraste para validar entrega</div>
+      <div class="swipe-handle">➜</div>
+    </div>
     </div>
     </div>
   </div>
@@ -825,6 +880,7 @@ let turnoIniciadoEm = null;
 let tenantConfig = { horas_alerta_fadiga: 8, horas_descanso_obrigatorio: 8 };
 let ganhoVisivel = true;
 let paradaAtualPedidoId = null;
+let swipeValidarEntrega = null; // item 79 — instanciado mais abaixo, depois de criarSwipeConfirm() existir
 
 // Módulo feira (sessão de 22/08/2026) — mesma conta, mesma tela, sem
 // seletor de modo. Ver CLAUDE.md item 23 pro histórico da integração.
@@ -2245,7 +2301,7 @@ function montarRota(rota){
       <div class="pay-pill ${p.pago_antecipado ? 'pix' : 'qrcode'}">
         ${p.pago_antecipado ? 'Pix · já pago' : 'Pix QR Code · a cobrar'}
       </div>
-      <button class="btn-primary" style="margin-top:12px;" data-pedido-id="${escapeHtml(p.id)}" data-endereco="${escapeHtml(p.endereco)}" data-valor="${p.valor_pedido}" data-indice="${i+1}" data-chegou="${p.chegou_entrega_em ? '1' : ''}" data-cliente-telefone="${escapeHtml(p.cliente_telefone || '')}">
+      <button class="btn-primary" style="margin-top:12px;" data-pedido-id="${escapeHtml(p.id)}" data-endereco="${escapeHtml(p.endereco)}" data-valor="${p.valor_pedido}" data-indice="${i+1}" data-chegou="${p.chegou_entrega_em ? '1' : ''}" data-cliente-telefone="${escapeHtml(p.cliente_telefone || '')}" data-cliente-nome="${escapeHtml(p.cliente_nome || '')}">
         ${p.status === 'entregue' ? 'Entregue ✓' : 'Ir pra essa parada'}
       </button>
     </div>
@@ -2253,7 +2309,7 @@ function montarRota(rota){
 
   paradasBox.querySelectorAll('button[data-pedido-id]').forEach(btn => {
     btn.addEventListener('click', () => {
-      abrirEntrega(btn.dataset.pedidoId, btn.dataset.endereco, Number(btn.dataset.valor), Number(btn.dataset.indice), !!btn.dataset.chegou, btn.dataset.clienteTelefone);
+      abrirEntrega(btn.dataset.pedidoId, btn.dataset.endereco, Number(btn.dataset.valor), Number(btn.dataset.indice), !!btn.dataset.chegou, btn.dataset.clienteTelefone, btn.dataset.clienteNome);
     });
   });
 }
@@ -3216,7 +3272,7 @@ async function enviarProblemaEntrega(){
 // ------------------------------------------------------------
 // ENTREGA / PAGAMENTO
 // ------------------------------------------------------------
-function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou, clienteTelefone){
+function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou, clienteTelefone, clienteNome){
   paradaAtualPedidoId = pedidoId;
   clienteTelefoneAtual = clienteTelefone || '';
   const ligarClienteBox = document.getElementById('e_ligarClienteBox');
@@ -3228,6 +3284,8 @@ function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou, clienteTelefo
   }
   document.getElementById('e_endereco').textContent = endereco;
   document.getElementById('e_enderecoEntregaFlutuante').textContent = endereco;
+  document.getElementById('e_enderecoLojaTimeline').textContent = enderecoLojaAtual || 'Endereço da loja não cadastrado';
+  document.getElementById('e_clienteNome').textContent = clienteNome || 'Cliente';
   document.getElementById('e_valor').textContent = formatarReal(Number(valor));
   document.getElementById('e_indice').textContent = indice;
   document.getElementById('e_codigoInput').value = '';
@@ -3249,6 +3307,9 @@ function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou, clienteTelefo
   ultimoEnderecoPedido['mapaEntrega'] = jaChegou ? null : endereco;
   mostrar('view-entrega');
   if(!jaChegou) iniciarAtualizacaoPeriodicaMapa('mapaEntrega', endereco);
+  // item 79: depois de mostrar() (não antes) — resetar() mede clientWidth/
+  // offsetWidth de verdade, que só faz sentido com a view já visível.
+  if(swipeValidarEntrega) swipeValidarEntrega.resetar();
 }
 
 async function confirmarChegadaEntrega(){
@@ -3257,6 +3318,65 @@ async function confirmarChegadaEntrega(){
   if(error){ alert('Não deu pra confirmar a chegada: ' + error.message); return; }
   document.getElementById('chegadaEntregaBox').style.display = 'none';
   document.getElementById('entregaHeaderNormal').style.display = 'block';
+}
+
+// item 79 (03/09/2026, pedido direto do usuário — "swipe-to-confirm...
+// pra manter a confirmação intencional"): componente genérico, sem
+// dependência nenhuma da tela de entrega em si — reaproveitável quando
+// as telas 3/5 (coleta/expresso) saírem do gap de schema/decisão de
+// produto (ver o que foi reportado ao usuário). Ponteiro único
+// (mouse+touch via Pointer Events) em vez de handlers separados de
+// mouse/touch — evita duplicar a mesma lógica duas vezes.
+function criarSwipeConfirm(containerId, onConfirm){
+  const el = document.getElementById(containerId);
+  const handle = el.querySelector('.swipe-handle');
+  const fill = el.querySelector('.swipe-fill');
+  let arrastando = false;
+  let offsetInicial = 0;
+  let confirmado = false;
+
+  function largoUtil(){ return el.clientWidth - handle.offsetWidth - 6; }
+
+  function aplicar(x){
+    x = Math.max(0, Math.min(x, largoUtil()));
+    handle.style.transform = `translateX(${x}px)`;
+    fill.style.width = (x + handle.offsetWidth + 3) + 'px';
+    return x;
+  }
+
+  function onDown(e){
+    if(confirmado) return;
+    arrastando = true;
+    offsetInicial = e.clientX - handle.getBoundingClientRect().left;
+    handle.setPointerCapture(e.pointerId);
+    handle.style.cursor = 'grabbing';
+  }
+  function onMoveEv(e){
+    if(!arrastando) return;
+    aplicar(e.clientX - el.getBoundingClientRect().left - offsetInicial);
+  }
+  function onUp(e){
+    if(!arrastando) return;
+    arrastando = false;
+    handle.style.cursor = 'grab';
+    const xAtual = e.clientX - el.getBoundingClientRect().left - offsetInicial;
+    if(xAtual >= largoUtil() * 0.82){
+      confirmado = true;
+      aplicar(largoUtil());
+      onConfirm();
+    } else {
+      aplicar(0);
+    }
+  }
+
+  handle.addEventListener('pointerdown', onDown);
+  handle.addEventListener('pointermove', onMoveEv);
+  handle.addEventListener('pointerup', onUp);
+  handle.addEventListener('pointercancel', onUp);
+
+  return {
+    resetar(){ confirmado = false; arrastando = false; aplicar(0); },
+  };
 }
 
 async function confirmarEntrega(){
@@ -3358,7 +3478,16 @@ async function confirmarEntrega(){
   mostrar('view-turno');
   verificarRotaAtiva();
   atualizarStatsTurno();
+  return true; // item 79 — swipeValidarEntrega usa isso pra saber se reseta a barra (falha) ou deixa cheia (sucesso, tela já mudou)
 }
+
+// item 79: instanciado 1x (mesmo padrão de "canal fica vivo pelo resto da
+// sessão" já usado nos Realtime channels deste arquivo) — abrirEntrega()
+// chama .resetar() a cada abertura, não precisa recriar o componente.
+swipeValidarEntrega = criarSwipeConfirm('swipeValidarEntrega', async () => {
+  const ok = await confirmarEntrega();
+  if(!ok) swipeValidarEntrega.resetar();
+});
 
 // ------------------------------------------------------------
 // sessão já ativa? — mas só entra direto se a sessão já resolveu o

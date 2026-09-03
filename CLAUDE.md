@@ -4068,6 +4068,66 @@ C:\Users\Usuário\Projetos\giro certo
       comRotaFeira), mas não é pixel-perfeito — se o usuário achar curto/
       longo depois de testar no aparelho, é só ajustar esse valor.
     - `capacitor-www/index.html` ressincronizado, APK debug reconstruído.
+79. **Redesenho das telas do entregador estilo 99 (referência de UX/interação
+    apontada pelo usuário, sem copiar texto/ícone/asset — só a paleta
+    GiroCerto já existente)** — pedido original tinha 8 telas + o item 78
+    (mapa embutido, já feito acima). Antes de escrever qualquer coisa,
+    investiguei o que já existia pra não duplicar nem mockar dado que não
+    existe (pedido explícito do usuário: "sinalizar antes de implementar
+    em vez de mockar"). Achados que corrigiram minha primeira leitura:
+    - **Tela 4 (código de verificação) NÃO é gap** — já existe de verdade:
+      `pedidos.codigo_entrega` (4 dígitos, auto-gerado), já validado em
+      `confirmarEntrega()`.
+    - **Tela 7 (comunicar problema) NÃO é do zero** — `view-problema-veiculo`
+      e `view-problema-entrega` já existem, com taxonomia própria (4 itens
+      cada) e submissão funcionando. Gap real: unificar em abas
+      coleta/entrega, ~6 itens novos de taxonomia (nada hoje cobre
+      problema do lado da LOJA — atraso no preparo, endereço errado, loja
+      fechada), e a lógica de cooldown por item ("ainda não é possível
+      comunicar Xmin Ys") — isso sim é lógica nova, precisa de regras reais
+      por item (o "Xmin Ys" do pedido original era só exemplo).
+    - **Tela 1 ("Pedidos na rota", "Aceitar (N)") tem um gap de verdade,
+      não só de dado**: conferi `dispatch-engine/index.js` — hoje toda
+      oferta pro motor de restaurante é de 1 pedido só, cada um cria sua
+      própria rota nova (sem bundling). Rota multi-pedido EXISTE no banco
+      (`ordem_na_rota`, testes com "4 pedidos numa rota") e no
+      `montarRota()`/`paradasBox` (pós-aceite), mas nunca na OFERTA em si
+      — diferente da feira, que já bundla via `proposta_consolidacao`.
+      "Aceitar (N)" bundlado exigiria mexer na lógica de matching do motor
+      de despacho, fora do escopo que o usuário definiu pra essa tarefa
+      ("não alterar lógica de negócio"). **Fica pendente uma decisão do
+      usuário**, não implementado ainda.
+    - **Tela 5 ("Entregar em até N minutos") tem gap de schema real**: não
+      existe NENHUM campo de prazo/SLA/urgência em `pedidos` — não tem de
+      onde tirar o "N minutos". Layout reaproveitaria a tela 2 inteira, só
+      falta o dado real por trás do badge.
+    - **Construído nesta sessão (o que sobrou sem gap nenhum)**: redesenho
+      de "Detalhes da entrega" (`view-entrega`/`entregaHeaderNormal`) —
+      timeline loja→cliente (setas ↑/↓, linha sage), nome do cliente em
+      destaque (Fraunces, novo parâmetro `clienteNome` em `abrirEntrega()`/
+      `montarRota()`, dado que já existia em `pedidos.cliente_nome` mas
+      nunca chegava até essa função), valor/código em Space Mono. "Falar
+      com o cliente"/"Problemas com a entrega" mantidos EXATAMENTE como
+      estavam (mesma função, mesmo destino) — não é onde o redesenho
+      mexeu, e evita reintroduzir escondido o que ficou fora de escopo
+      (Mensagem/Ajuda unificada dependem das telas 6/7, gapeadas).
+    - **Componente novo, genérico**: `criarSwipeConfirm(containerId,
+      onConfirm)` — Pointer Events (mouse+touch com o mesmo handler, sem
+      duplicar lógica), usado no botão "Confirmar entrega" (virou
+      swipe-to-confirm, pedido explícito "pra manter a confirmação
+      intencional"). `confirmarEntrega()` ganhou `return true` no caminho
+      de sucesso (era `undefined` sempre antes) — o swipe usa isso pra
+      saber se reseta a barra (código errado/sem foto/etc, todos os
+      `return` de erro já existentes continuam devolvendo `undefined`) ou
+      deixa cheia (sucesso, a tela já muda pra view-turno). Pronto pra
+      reaproveitar quando as telas 3/5 saírem dos gaps acima.
+    - `capacitor-www/index.html` ressincronizado, APK debug reconstruído.
+    - **Ainda pendente, decisão do usuário**: telas 1, 3, 4(unificar com o
+      resto), 5, 6, 7, 8 — cada uma com o gap específico documentado acima
+      ou no próprio pedido original (foto do estabelecimento sem coluna/
+      bucket pra tela 3; chat sem tabela nenhuma pra tela 6; navegação
+      turn-by-turn interna reverte decisão de produto já tomada no item 37
+      pra tela 8).
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
