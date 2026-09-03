@@ -382,9 +382,10 @@ complementar). -->
       <a class="emerg-btn" href="tel:192">🚑 192 — SAMU/Resgate</a>
     </div>
 
-    <p style="text-align:right;margin:-8px 0 14px;display:flex;justify-content:flex-end;gap:16px;">
+    <p style="text-align:right;margin:-8px 0 14px;display:flex;justify-content:flex-end;gap:16px;flex-wrap:wrap;">
       <button class="link-btn" style="font-size:12.5px;" onclick="abrirSaque()">💰 Saque</button>
       <button class="link-btn" style="font-size:12.5px;" onclick="abrirViewMfa()">🔒 Verificação em duas etapas</button>
+      <button class="link-btn" style="font-size:12.5px;" onclick="deslogar()">🚪 Sair</button>
     </p>
 
     <div id="turnoOffline">
@@ -1287,6 +1288,26 @@ async function login(){
   }
 
   await carregarEntregador();
+}
+
+// item 77 (03/09/2026, pedido direto do usuário): não existia nenhum jeito
+// de sair da conta pelo app — precisava desinstalar/limpar dados pra
+// trocar de usuário de teste. pararRastreioPosicao() primeiro: sem isso o
+// GPS continuaria rodando e tentando gravar posição numa sessão que já
+// não tem auth.uid() (RLS bloquearia silenciosamente, mas não faz sentido
+// manter o watch ligado depois do logout).
+async function deslogar(){
+  pararRastreioPosicao();
+  await supabaseClient.auth.signOut();
+  entregadorId = null;
+  pessoaId = null;
+  turnoAtualId = null;
+  rotaAtivaId = null;
+  rotaFeiraAtivaId = null;
+  rotasAtivasLista = [];
+  mostrar('view-login');
+  document.getElementById('li_email').value = '';
+  document.getElementById('li_senha').value = '';
 }
 
 let mfaFactorIdPendente = null;

@@ -4014,6 +4014,33 @@ C:\Users\Usuário\Projetos\giro certo
       `pessoa_id` funciona. Todos os 6 checks passaram.
     - `capacitor-www/index.html` ressincronizado com
       `mockups/app-entregador.html` (mesma convenção de sempre).
+77. **Faltava "Sair" no app do entregador e "Mudar senha" no painel admin**
+    (03/09/2026, pedido direto do usuário).
+    - `app-entregador.html`: botão "🚪 Sair" na tela de turno, ao lado de
+      Saque/Verificação em duas etapas. `deslogar()` chama
+      `pararRastreioPosicao()` antes do `signOut()` (sem isso o GPS
+      continuaria tentando gravar posição numa sessão já sem
+      `auth.uid()`), zera `entregadorId`/`pessoaId`/estado de rota em
+      memória e volta pra `view-login`.
+    - `painel-admin.html`: botão "Mudar senha" no topbar (ao lado de
+      "Sair"), modal novo com `supabaseClient.auth.updateUser({password})`
+      — usa a sessão já logada, sem RPC nova. Motivo direto: até aqui a
+      única forma de trocar a senha admin era eu resetar via API
+      (`admin.auth.admin.updateUserById`), que tive que fazer nessa
+      mesma sessão porque o usuário não lembrava a senha.
+    - **Achado no caminho, não é bug novo**: `despacho_motor.test.js`
+      voltou a falhar de forma diferente do padrão já documentado —
+      dessa vez o serviço nem respondia `/health` dentro de 10s (`FAIL`
+      logo no primeiro teste, ECONNREFUSED no resto). Mesma causa raiz
+      de sempre (debris de teste acumulado atrasando a reconciliação de
+      startup, ver item da sessão anterior) — tenant `is_teste=true`
+      "Loja Motor Real" com 3 `rotas_entrega` presas. Limpo (`delete
+      from tenants where is_teste=true and nome='Loja Motor Real'`),
+      suíte isolada voltou a 29/29 limpo. **Padrão que se repete —
+      considerar automatizar essa limpeza no início da suíte em vez de
+      confiar em alguém notar e limpar manualmente toda vez.**
+    - `capacitor-www/index.html` ressincronizado (só o `app-entregador.html`
+      é usado pelo app nativo — `painel-admin.html` é só web).
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já

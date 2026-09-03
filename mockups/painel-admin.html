@@ -90,7 +90,8 @@
   .modal-card .entregador-nome{font-weight:700;color:var(--ink);}
   .modal-card .field{margin-bottom:14px;}
   .modal-card label{display:block;font-size:12.5px;font-weight:600;color:var(--gray);margin-bottom:5px;}
-  .modal-card select{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;font-family:'Inter',sans-serif;}
+  .modal-card select,.modal-card input{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;font-family:'Inter',sans-serif;}
+  .modal-card input:focus{outline:none;border-color:var(--marigold);}
   .nav2{display:flex;justify-content:flex-end;gap:10px;margin-top:18px;}
   .btn-primary{background:var(--marigold);color:var(--ink);border:none;border-radius:100px;padding:11px 18px;font-weight:700;font-size:14px;cursor:pointer;font-family:'Inter',sans-serif;box-shadow:0 8px 20px -6px rgba(217,166,46,.4);}
   .btn-ghost{background:var(--bg);color:var(--gray);border:none;border-radius:100px;padding:11px 18px;font-weight:700;font-size:14px;cursor:pointer;font-family:'Inter',sans-serif;}
@@ -130,7 +131,10 @@
       <div class="brand">Giro<span>Certo</span></div>
       <div class="admin-tag">Admin</div>
     </div>
-    <button class="sair-btn" onclick="sair()">Sair</button>
+    <div style="display:flex;gap:8px;">
+      <button class="sair-btn" onclick="abrirModalMudarSenha()">Mudar senha</button>
+      <button class="sair-btn" onclick="sair()">Sair</button>
+    </div>
   </div>
   <div class="aviso-interno">⚠ Painel administrativo da plataforma — acesso restrito à equipe GiroCerto, nunca à loja.</div>
 
@@ -226,6 +230,27 @@
   </div>
 </div>
 
+<!-- ---------- MODAL: MUDAR SENHA (item 77, 03/09/2026) ---------- -->
+<div class="overlay" id="modalMudarSenha">
+  <div class="modal-card">
+    <h2 style="margin-bottom:4px;">Mudar senha</h2>
+    <p>Troca a senha da conta admin logada agora.</p>
+    <div class="msg" id="msModalMsg"></div>
+    <div class="field">
+      <label>Nova senha</label>
+      <input type="password" id="msNovaSenha" placeholder="Mínimo 6 caracteres" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label>Confirmar nova senha</label>
+      <input type="password" id="msConfirmarSenha" placeholder="Repita a senha" autocomplete="new-password">
+    </div>
+    <div class="nav2">
+      <button class="btn-ghost" onclick="fecharModalMudarSenha()">Cancelar</button>
+      <button class="btn-primary" id="msConfirmBtn" onclick="confirmarMudarSenha()">Salvar</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const SUPABASE_URL = 'https://ntmxkwzhumiqspxijuln.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_2f1de7VdoaxdWnGHHZenGQ_3ROsSDSi';
@@ -287,6 +312,52 @@ async function sair(){
   document.getElementById('loginGate').style.display = 'flex';
   document.getElementById('loginEmail').value = '';
   document.getElementById('loginSenha').value = '';
+}
+
+// item 77 (03/09/2026, pedido direto do usuário): não existia nenhum jeito
+// de trocar a própria senha admin pela ferramenta — a única saída era eu
+// resetar via API admin (`admin.auth.admin.updateUserById`) toda vez que
+// esquecesse. `auth.updateUser()` já usa a sessão logada de verdade, sem
+// precisar de nenhuma RPC nova nem tocar em desenvolvedores_admin.
+function abrirModalMudarSenha(){
+  document.getElementById('msNovaSenha').value = '';
+  document.getElementById('msConfirmarSenha').value = '';
+  document.getElementById('msModalMsg').className = 'msg';
+  document.getElementById('modalMudarSenha').classList.add('show');
+}
+function fecharModalMudarSenha(){
+  document.getElementById('modalMudarSenha').classList.remove('show');
+}
+async function confirmarMudarSenha(){
+  const msg = document.getElementById('msModalMsg');
+  msg.className = 'msg';
+  const novaSenha = document.getElementById('msNovaSenha').value;
+  const confirmarSenha = document.getElementById('msConfirmarSenha').value;
+
+  if(novaSenha.length < 6){
+    msg.textContent = 'A senha precisa ter pelo menos 6 caracteres.';
+    msg.className = 'msg error';
+    return;
+  }
+  if(novaSenha !== confirmarSenha){
+    msg.textContent = 'As senhas não coincidem.';
+    msg.className = 'msg error';
+    return;
+  }
+
+  const btn = document.getElementById('msConfirmBtn');
+  btn.disabled = true; btn.textContent = 'Salvando...';
+  const { error } = await supabaseClient.auth.updateUser({ password: novaSenha });
+  btn.disabled = false; btn.textContent = 'Salvar';
+
+  if(error){
+    msg.textContent = 'Não deu pra trocar: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+  msg.textContent = 'Senha trocada com sucesso.';
+  msg.className = 'msg success';
+  setTimeout(fecharModalMudarSenha, 1500);
 }
 
 function trocarView(view){
