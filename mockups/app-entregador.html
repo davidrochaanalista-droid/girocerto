@@ -41,7 +41,7 @@ complementar). -->
   .brand span{color:var(--marigold);}
 
   .view{display:none;padding:22px 20px 100px;}
-  .view.active{display:block;animation:fade .2s ease;}
+  .view.active{display:block;animation:fade .2s ease;position:relative;z-index:1;}
   @keyframes fade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
 
   /* item 39 (25/08/2026): mapa em tela cheia, pedido explícito do usuário
@@ -100,13 +100,29 @@ complementar). -->
 
   .waiting-box{border:1.5px dashed var(--border);border-radius:16px;padding:34px 20px;text-align:center;color:var(--gray);margin-bottom:18px;}
   .waiting-box .ic{width:44px;height:44px;border-radius:50%;background:var(--green-soft);margin:0 auto 12px;display:flex;align-items:center;justify-content:center;}
-  /* item 78: sem viewport fixo nessa tela (é página rolável comum, não um
-  shell de altura travada — ver .view{padding...} acima), então "até o
-  rodapé com os botões" vira uma altura generosa em vh com piso em px, não
-  um cálculo exato de layout — evita depender de JS só pra medir espaço
-  sobrando, e se comporta bem com ou sem os blocos condicionais (feira,
-  extrato) entre o mapa e os botões. */
-  .mapa-sem-rota{height:min(52vh,480px);min-height:260px;border-radius:16px;overflow:hidden;margin-bottom:18px;background:var(--border);}
+  /* item 80 (03/09/2026, correção do item 78 — pedido direto do usuário:
+  "o mapa tem que cobrir a tela toda mesmo sem rota na tela, como na
+  rota"): fixed/inset:0, mesmo princípio de .mapa-tela-cheia (mapaLoja/
+  mapaEntrega), mas SEM copiar o mecanismo delas de esconder o resto da
+  tela atrás de uma folha inferior — aqui o mapa fica no fundo (z-index
+  baixo) e o conteúdo normal da view (header/stats/turno/botões) flutua
+  por cima, com fundo próprio (cards já opacos) — .view.active ganhou
+  position:relative;z-index:1 só pra isso (ver regra abaixo). Escolhido
+  assim de propósito: diferente das telas "a caminho" (estados curtos,
+  de minutos), "sem rota" pode durar o turno inteiro — esconder
+  190/192/Saque/Sair atrás do mapa por esse tempo todo seria pior que o
+  ganho visual. Sem shell de altura travada nesta página (.view{padding
+  ...} normal, rolável), mas position:fixed ignora isso de propósito —
+  cobre o viewport inteiro sempre, independente de scroll. */
+  .mapa-sem-rota{position:fixed;top:0;left:0;right:0;bottom:0;z-index:0;background:var(--border);}
+  /* qualquer conteúdo normal (não-posicionado) de view-turno perde AUTOMATICAMENTE
+  pra um descendente position:fixed na ordem de pintura do CSS (categoria
+  "não-posicionado em fluxo" sempre fica atrás de qualquer elemento
+  posicionado, não importa o z-index) — por isso os elementos que devem
+  flutuar por cima do mapa (header/stats/turno/botões) precisam da própria
+  posição+z-index pra competir de verdade, não só um z-index maior no
+  ancestral comum. */
+  .flutua-sobre-mapa{position:relative;z-index:1;}
 
   .emerg-row{display:flex;gap:10px;margin-bottom:18px;}
   .emerg-btn{flex:1;background:var(--red-soft);color:var(--red);border-radius:12px;padding:12px;text-align:center;font-weight:700;font-size:13.5px;text-decoration:none;display:block;}
@@ -392,18 +408,18 @@ complementar). -->
 
   <!-- ===================== VIEW: TURNO (home) ===================== -->
   <div class="view" id="view-turno">
-    <div class="header-turno">
+    <div class="header-turno flutua-sobre-mapa">
       <div class="nome" id="t_nome">—</div>
       <div class="sub" id="t_status_sub"><span class="status-dot"></span>Offline</div>
     </div>
 
-    <div id="avisoDocumento" style="display:none;background:var(--amber-soft);color:var(--amber-ink);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:13px;font-weight:600;"></div>
+    <div id="avisoDocumento" class="flutua-sobre-mapa" style="display:none;background:var(--amber-soft);color:var(--amber-ink);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:13px;font-weight:600;"></div>
 
     <!-- item 52 (27/08/2026), pedido do usuário: quem atende restaurante E
     feira escolhe onde está disponível agora, pra não ser chamado nos dois
     ao mesmo tempo (feira só acontece de manhã, mas a escolha é manual, não
     por horário). Só aparece pra quem realmente tem os dois contextos. -->
-    <div id="modoDisponibilidadeBox" style="display:none;margin-bottom:14px;">
+    <div id="modoDisponibilidadeBox" class="flutua-sobre-mapa" style="display:none;margin-bottom:14px;">
       <div style="font-size:11.5px;font-weight:700;color:var(--gray);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;">Disponível agora pra</div>
       <div class="toggle-tipo" style="margin-bottom:0;">
         <div class="tipo-opt" id="modo-opt-restaurante" onclick="definirModoDisponibilidade('restaurante')" style="font-size:13px;">🍔 Restaurante</div>
@@ -412,23 +428,23 @@ complementar). -->
       </div>
     </div>
 
-    <div class="emerg-row">
+    <div class="emerg-row flutua-sobre-mapa">
       <a class="emerg-btn" href="tel:190">🚓 190 — Polícia</a>
       <a class="emerg-btn" href="tel:192">🚑 192 — SAMU/Resgate</a>
     </div>
 
-    <p style="text-align:right;margin:-8px 0 14px;display:flex;justify-content:flex-end;gap:16px;flex-wrap:wrap;">
+    <p class="flutua-sobre-mapa" style="text-align:right;margin:-8px 0 14px;display:flex;justify-content:flex-end;gap:16px;flex-wrap:wrap;">
       <button class="link-btn" style="font-size:12.5px;" onclick="abrirSaque()">💰 Saque</button>
       <button class="link-btn" style="font-size:12.5px;" onclick="abrirViewMfa()">🔒 Verificação em duas etapas</button>
       <button class="link-btn" style="font-size:12.5px;" onclick="deslogar()">🚪 Sair</button>
     </p>
 
-    <div id="turnoOffline">
+    <div id="turnoOffline" class="flutua-sobre-mapa">
       <button class="btn-primary" onclick="iniciarTurno()">Iniciar turno</button>
     </div>
 
     <div id="turnoAtivo" style="display:none;">
-      <div class="stats-row">
+      <div class="stats-row flutua-sobre-mapa">
         <div class="stat-card">
           <div class="lbl">Entregas hoje</div>
           <div class="val" id="t_entregas">0</div>
@@ -453,6 +469,11 @@ complementar). -->
         <div id="mapaSemRota" class="mapa-sem-rota"></div>
       </div>
 
+      <!-- item 80: wrapper só pra flutuar por cima do #mapaSemRota fixed —
+      mesmo motivo do .flutua-sobre-mapa acima dos elementos antes de
+      #turnoAtivo (posicionado, não-posicionado sempre perde a ordem de
+      pintura pra um irmão fixed, não importa o z-index do ancestral). -->
+      <div class="flutua-sobre-mapa">
       <div id="comRota" style="display:none;">
         <button class="btn-primary" onclick="mostrar('view-rota')" style="margin-bottom:12px;">Ver rota ativa</button>
       </div>
@@ -476,6 +497,7 @@ complementar). -->
       <button class="btn-primary" id="btnContinuar" onclick="clicarContinuar()" style="margin-bottom:10px;display:none;">Continuar</button>
       <button class="btn-outline" id="btnPausar" onclick="clicarPausar()" style="margin-bottom:10px;">Pausar</button>
       <button class="btn-ghost" onclick="clicarFinalizar()">Finalizar turno</button>
+      </div>
     </div>
   </div>
 
@@ -487,7 +509,14 @@ complementar). -->
   <div class="view" id="view-saque">
     <button class="link-btn" onclick="mostrar('view-turno')" style="margin-bottom:14px;">← Voltar</button>
     <h2 style="margin-bottom:4px;">Saque</h2>
-    <p style="color:var(--gray);font-size:13px;margin:0 0 18px;">Valores das suas entregas no restaurante. A loja paga direto no seu Pix cadastrado — o GiroCerto não transfere dinheiro.</p>
+    <!-- item 80 (03/09/2026, pedido direto do usuário): texto assumia
+    vínculo fixo com uma loja específica ("a loja paga", "fale com a
+    loja") — errado pra quem é freelance (pool aberto, sem loja fixa
+    nenhuma, ou com vínculo mas atendendo várias). Condicional por
+    tipoVinculoAtual, setado em carregarEntregador()/carregarPessoaSemVinculo()
+    (item 76) — nenhum campo novo no banco, o dado já existia
+    (entregadores.tipo_vinculo). -->
+    <p style="color:var(--gray);font-size:13px;margin:0 0 18px;" id="sq_textoExplicativo">Valores das suas entregas no restaurante. A loja paga direto no seu Pix cadastrado — o GiroCerto não transfere dinheiro.</p>
 
     <div class="stats-row">
       <div class="stat-card">
@@ -508,7 +537,7 @@ complementar). -->
     </div>
 
     <p style="color:var(--gray);font-size:12.5px;margin:6px 0 8px;font-weight:700;">Sem chave Pix cadastrada?</p>
-    <p style="color:var(--gray);font-size:12.5px;margin:0 0 18px;">Fale com a loja pra atualizar seu cadastro — sem isso ela não consegue te pagar.</p>
+    <p style="color:var(--gray);font-size:12.5px;margin:0 0 18px;" id="sq_semPix">Fale com a loja pra atualizar seu cadastro — sem isso ela não consegue te pagar.</p>
 
     <p style="font-weight:700;font-size:13.5px;margin-bottom:10px;">Últimas entregas</p>
     <div id="sq_lista"><div class="empty">Carregando…</div></div>
@@ -872,6 +901,7 @@ let appNavegacaoPreferido = 'waze';
 let enderecoLojaAtual = null;
 let telefoneLojaAtual = null; // item 58 (27/08/2026): "Falar com a loja"
 let clienteTelefoneAtual = null; // item 58: "Falar com o cliente" (por parada, muda a cada abrirEntrega())
+let tipoVinculoAtual = null; // item 80 (03/09/2026): 'fixo' (vínculo com uma loja específica) | 'freelance' | null (sem vínculo nenhum ainda, ver carregarPessoaSemVinculo() do item 76) — usado pra texto da tela de Saque não prometer "fale com a loja" pra quem não tem uma loja específica
 let minhaPosicaoAtual = null; // item 38 — última posição conhecida, pro mapa embutido
 let statusEntregadorCanalAtivo = false;
 let pollStatusEntregadorTimer = null;
@@ -1370,7 +1400,23 @@ async function login(){
 // GPS continuaria rodando e tentando gravar posição numa sessão que já
 // não tem auth.uid() (RLS bloquearia silenciosamente, mas não faz sentido
 // manter o watch ligado depois do logout).
+//
+// item 81 (03/09/2026, achado ao vivo pelo usuário: "quando eu sai do
+// aplicativo e loguei novamente o turno estava ativo, isso é errado"):
+// a versão original só limpava estado do FRONTEND — a linha em `turnos`
+// continuava com status='ativo' no banco, então o próximo login achava
+// esse mesmo turno e mostrava tudo como se nada tivesse acontecido. Pior:
+// a pessoa continuava candidata de verdade a receber oferta de despacho
+// (buscar_candidatos_despacho só olha turnos.status/pessoas_entregadoras.status,
+// não sessão de auth nenhuma) mesmo deslogada, sem tela nenhuma aberta pra
+// receber a oferta a não ser por push. Reaproveita finalizarTurnoDeVerdade(false)
+// — mesma função que o botão "Finalizar turno" já usa, sem bloqueio de
+// fadiga (sair da conta não é o mesmo gatilho de "dirigiu demais", não
+// faz sentido mostrar aquele modal aqui) — antes de derrubar a sessão.
 async function deslogar(){
+  if(turnoAtualId){
+    await finalizarTurnoDeVerdade(false);
+  }
   pararRastreioPosicao();
   await supabaseClient.auth.signOut();
   entregadorId = null;
@@ -1587,6 +1633,7 @@ async function carregarEntregador(){
 
   entregadorId = entregador.id;
   pessoaId = entregador.pessoa_id;
+  tipoVinculoAtual = entregador.tipo_vinculo; // item 80 — 'fixo' | 'freelance', já vem de entregadores_completo
   appNavegacaoPreferido = entregador.app_navegacao_preferido || 'waze'; // item 37
   registrarPushEntregador(); // no-op fora do app nativo (Capacitor) — ver função
 
@@ -1673,6 +1720,7 @@ async function carregarEntregador(){
 async function carregarPessoaSemVinculo(pessoa){
   entregadorId = null;
   pessoaId = pessoa.id;
+  tipoVinculoAtual = null; // item 80 — sem vínculo nenhum, não é nem 'fixo' nem 'freelance' formalmente; tela de Saque trata como freelance (sem loja específica)
   appNavegacaoPreferido = pessoa.app_navegacao_preferido || 'waze';
   registrarPushEntregador();
 
@@ -3081,8 +3129,30 @@ async function abrirExtratoFeira(){
 // existe: "solicitar saque" só marca saque_solicitado_em pra loja ver e
 // pagar por fora, usando entregadores.chave_pix já cadastrada.
 // ------------------------------------------------------------
+// item 80 (03/09/2026): texto explicativo + bloco "sem chave Pix" mudam
+// conforme o vínculo — 'fixo' mantém o texto original (correto pra quem
+// atende 1 loja só); freelance/sem-vínculo (tipoVinculoAtual !== 'fixo')
+// não pode prometer "a loja" (pode ser várias, ou nenhuma ainda) nem
+// mandar "fale com a loja" (não tem uma loja específica pra falar).
+// NÃO existe hoje nenhuma tela de editar/cadastrar chave Pix depois do
+// cadastro inicial (chave_pix só é gravada 1x, no formulário de
+// cadastro — grep confirmado antes de escrever isto) — por isso o texto
+// freelance fica só informativo, sem link/ação nenhuma; construir essa
+// tela é uma decisão de produto separada, sinalizada aqui em vez de
+// inventada.
+function atualizarTextoSaquePorPerfil(){
+  const ehFixo = tipoVinculoAtual === 'fixo';
+  document.getElementById('sq_textoExplicativo').textContent = ehFixo
+    ? 'Valores das suas entregas no restaurante. A loja paga direto no seu Pix cadastrado — o GiroCerto não transfere dinheiro.'
+    : 'Valores das suas entregas. O repasse é feito direto no seu Pix cadastrado — o GiroCerto não transfere dinheiro.';
+  document.getElementById('sq_semPix').textContent = ehFixo
+    ? 'Fale com a loja pra atualizar seu cadastro — sem isso ela não consegue te pagar.'
+    : 'Cadastre ou atualize sua chave Pix pra receber seus repasses. (Ainda não existe uma tela pra isso no app — pendência sinalizada, fale com o suporte por enquanto.)';
+}
+
 async function abrirSaque(){
   mostrar('view-saque');
+  atualizarTextoSaquePorPerfil();
   await carregarSaque();
 }
 
@@ -3091,6 +3161,19 @@ async function carregarSaque(){
   const msg = document.getElementById('sq_msg');
   msg.className = 'msg';
   lista.innerHTML = '<div class="empty">Carregando…</div>';
+
+  // item 80/76: freelance em pool aberto puro (zero vínculo ainda) não
+  // tem entregador_id nenhum pra filtrar — repasses.entregador_id é NOT
+  // NULL (FK pra entregadores), então a query nem faz sentido chamar
+  // aqui. Mostra vazio direto em vez de um erro confuso.
+  if(!entregadorId){
+    document.getElementById('sq_pendente').textContent = formatarReal(0);
+    document.getElementById('sq_pago').textContent = formatarReal(0);
+    document.getElementById('sq_btnSolicitar').style.display = 'none';
+    document.getElementById('sq_jaSolicitado').style.display = 'none';
+    lista.innerHTML = '<p style="color:var(--gray);font-size:13px;">Nenhuma entrega repassada ainda.</p>';
+    return;
+  }
 
   const { data, error } = await supabaseClient
     .from('repasses')

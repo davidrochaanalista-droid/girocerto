@@ -4128,6 +4128,65 @@ C:\Users\Usuário\Projetos\giro certo
       bucket pra tela 3; chat sem tabela nenhuma pra tela 6; navegação
       turn-by-turn interna reverte decisão de produto já tomada no item 37
       pra tela 8).
+80. **Tela de Saque condicional por perfil (fixo/freelance) + correção do
+    mapa "sem rota" pra tela cheia** (03/09/2026, pedido direto do
+    usuário).
+    - **Saque**: texto assumia vínculo fixo com 1 loja só ("a loja
+      paga direto no seu Pix", "fale com a loja"), errado pra freelance
+      (pool aberto, sem loja fixa, ou atendendo várias). Confirmado antes
+      de mexer: o dado que distingue o perfil já existia
+      (`entregadores.tipo_vinculo`, usado no teste de carga do item 60
+      — "18 fixos, 14 freelance, 10 feira-only, 8 mistos" eram todos
+      combinações desse campo + vínculo existir ou não + `modo_disponibilidade`,
+      não um campo novo). Nova variável `tipoVinculoAtual`, setada em
+      `carregarEntregador()`/`carregarPessoaSemVinculo()` (item 76).
+      Texto branch: `fixo` mantém original; qualquer outro caso vira
+      texto genérico de Pix, sem mencionar loja nenhuma.
+    - **Achado no caminho**: NÃO existe hoje nenhuma tela pra
+      editar/cadastrar `chave_pix` depois do cadastro inicial (só é
+      gravada 1x, no formulário de cadastro — grep confirmado). O texto
+      freelance pedido ("Cadastre ou atualize sua chave Pix") ficou só
+      informativo, sem link nenhum — sinalizado em vez de inventar uma
+      tela nova, como o usuário pediu explicitamente.
+    - **Achado relacionado, não corrigido ainda**: `repasses.entregador_id`
+      é `NOT NULL` (FK pra `entregadores`, vínculo) — um freelance que já
+      trabalhou pra MAIS de 1 loja teria repasses espalhados em vínculos
+      diferentes, mas a tela de Saque só filtra pelo vínculo "mais
+      recente" escolhido em `carregarEntregador()` (item 76). Silenciosamente
+      esconderia ganhos de lojas anteriores. Fica pendente — precisa de
+      decisão de produto (agregado entre lojas? lista por loja?).
+      Corrigido no mesmo pull, sem decisão de produto nenhuma: guard pra
+      `entregadorId` null (pool aberto puro, zero vínculo) não quebrar
+      mais a query com um erro confuso — mostra vazio direto.
+    - **Mapa "sem rota" (correção do item 78)**: o usuário testou e pediu
+      pra cobrir a tela inteira, "como na rota". Diferente de
+      mapaLoja/mapaEntrega (que escondem TUDO atrás de uma folha
+      inferior — aceitável porque são estados curtos, de minutos), "sem
+      rota" pode durar o turno inteiro — escondendo 190/192/Saque/Sair
+      por esse tempo todo seria pior que o ganho visual. Implementado
+      diferente de propósito: `#mapaSemRota` vira `position:fixed;inset:0`
+      (mesmo princípio de `.mapa-tela-cheia`), mas o conteúdo normal da
+      tela (header/stats/turno/botões) flutua por cima via nova classe
+      `.flutua-sobre-mapa` (`position:relative;z-index:1`) — necessária
+      porque conteúdo NÃO-posicionado sempre perde a ordem de pintura
+      CSS pra um irmão `position:fixed`, não importa o z-index do
+      ancestral comum (achado ao revisar a mecânica de stacking do CSS
+      antes de implementar, não assumido).
+81. **Turno continuava "ativo" depois de deslogar — achado ao vivo pelo
+    usuário testando o item 77** ("quando eu sai do aplicativo e loguei
+    novamente o turno estava ativo, isso é errado"). `deslogar()` só
+    limpava estado do FRONTEND — a linha em `turnos` continuava
+    `status='ativo'` no banco, então o próximo login achava o mesmo
+    turno e mostrava tudo como se nada tivesse acontecido. Mais sério
+    que só visual: a pessoa continuava candidata de verdade a receber
+    oferta de despacho (`buscar_candidatos_despacho()` só olha
+    `turnos.status`/`pessoas_entregadoras.status`, nenhuma sessão de
+    auth) mesmo deslogada, sem tela nenhuma aberta pra receber a oferta
+    a não ser por push. Corrigido: `deslogar()` agora chama
+    `finalizarTurnoDeVerdade(false)` (mesma função que "Finalizar
+    turno" já usa, sem o modal de fadiga — sair da conta não é o
+    mesmo gatilho de "dirigiu demais") antes de derrubar a sessão,
+    quando havia turno ativo.
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
