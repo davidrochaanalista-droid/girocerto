@@ -4519,6 +4519,53 @@ C:\Users\Usuário\Projetos\giro certo
       provável desaparece junto — **não confirmado visualmente ainda,
       vale confirmar no próximo teste em aparelho real**.
     - `capacitor-www/index.html` ressincronizado.
+94-95. **Identidade visual da tela "Olá, [nome]" — painel único + 5
+    ajustes menores** (04/09/2026, 2 rodadas de correção do usuário na
+    mesma sessão). Rodada do item 94: pediu só unificar a linha "Saque/
+    Verificação/Sair" com o painel de estatísticas (mesmo fundo `--leaf`,
+    sem fresta de mapa no meio) — implementado (`.acoes-turno.sobre-mapa`
+    + `.stats-row.sobre-mapa` com raio partido), mas **nunca chegou a ser
+    commitado nem publicado**: antes disso, o usuário já emendou o pedido
+    maior do item 95 (nova mensagem, mesma sessão), que supera essa
+    abordagem inteira (os números saem do `.stats-row` e entram no
+    `.header-turno`) — o código do item 94 foi substituído direto pelo do
+    item 95 no mesmo commit, sem passar por um commit próprio. Os
+    comentários no código (`app-entregador.html`) por isso citam só
+    "item 95" nos trechos que sobreviveram — o "item 94" existiu só
+    nesta conversa, não deixou marca própria no arquivo.
+    - **Painel único** (pedido principal): `.header-turno` ("Olá,
+      [nome]/Turno ativo desde") ganhou uma `.linha-stats` interna (2
+      números, Entregas hoje/Ganho no turno) — MESMO painel, sem
+      `.stats-row` separado nem fresta de mapa entre os dois. Só existe
+      conteúdo relevante ali com turno ativo — `#linhaStatsTurno` alterna
+      a classe `show` no mesmo lugar de `checarTurnoAtivo()` que já
+      alternava `turnoOffline`/`turnoAtivo`. Padding reduzido (20px→
+      16/18) — objetivo explícito do usuário de sobrar mais mapa visível.
+    - **"Problema com o veículo" ganhou chip** (`.chip-problema-veiculo`,
+      fundo paper sólido + sombra) — mesmo bug de legibilidade dos outros
+      elementos sobre o mapa, mesma correção.
+    - **190/192 recoloridos**: `--terracota`/`--terracota-soft` novos no
+      `:root` (`#B5562E`), substituindo `--red`/`--red-soft` (rosa-salmão
+      "fora da paleta", nas palavras do usuário) só em `.emerg-btn`. Os
+      dois erro-genéricos (`--red`/`.msg.error` etc.) não foram tocados —
+      fora do escopo pedido.
+    - **Fraunces nos números**: já estava em `.stat-card .val` desde o
+      item 84, mantido explicitamente na nova `.header-turno .stat .val`.
+    - **`.acoes-turno` virou chip próprio** (fundo paper, sempre — turno
+      ativo ou não), mais simples que a classe alternada via JS da
+      primeira rodada — deixou de fazer sentido "colar" no painel verde
+      desde que os números saíram do `.stats-row`.
+    - **"Finalizar turno" ganhou contraste real no estado bloqueado**:
+      antes o botão (`.btn-ghost`) tinha a MESMA aparência pálida sempre,
+      bloqueado ou não — só um `alert()` no clique avisava
+      (`existeEntregaEmAndamento()`, item 82/90, lógica intocada). Nova
+      `atualizarEstadoBotaoFinalizar()` alterna `.bloqueado` (opacidade
+      .4 + cor mais apagada) — chamada no fim de `verificarRotaAtiva()`/
+      `verificarRotaFeiraAtiva()` (únicos 2 lugares que escrevem
+      `rotasAtivasLista`/`rotaFeiraAtivaId`; todo caminho que muda essas
+      variáveis já rechama uma das duas depois, confirmado lendo o
+      código — não precisou de mais nenhum ponto de chamada).
+    - `capacitor-www/index.html` ressincronizado.
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já

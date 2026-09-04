@@ -28,6 +28,13 @@ complementar). -->
     --amber:#D9A62E; --amber-ink:#7A5A16; --amber-soft:rgba(217,166,46,.15);
     --red:#B84343; --red-soft:#FBEAEA; --green-soft:rgba(59,91,63,.10);
     --paper:#EDE7D9; --marigold:#D9A62E; --sage:#7C8B6F; --leaf:#3B5B3F;
+    /* item 95 (04/09/2026, correção do usuário): "rosa-salmão + vermelho"
+    do --red/--red-soft ficava fora da paleta ink/paper/marigold/sage/
+    leaf nos cards de emergência (190/192) — terracota novo, sóbrio,
+    mantém urgência sem parecer emprestado de outro app. --red/--red-soft
+    continuam existindo pra erro/alerta genérico (mensagens .msg.error
+    etc.) — não trocados em outros lugares, fora do escopo pedido. */
+    --terracota:#B5562E; --terracota-soft:rgba(181,86,46,.15);
   }
   *{box-sizing:border-box;}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',-apple-system,sans-serif;-webkit-font-smoothing:antialiased;}
@@ -87,36 +94,44 @@ complementar). -->
   .cond.show{display:block;}
 
   /* -------- turno home -------- */
-  .header-turno{background:var(--leaf);border-radius:18px;padding:20px;color:var(--paper);margin-bottom:18px;}
-  .header-turno .nome{font-size:19px;font-weight:700;font-family:'Fraunces',serif;}
-  .header-turno .sub{font-size:13px;opacity:.9;margin-top:2px;}
+  /* item 95 (04/09/2026, correção do usuário): painel único — antes eram
+  2 blocos separados (.header-turno + .stats-row), quase metade da tela
+  antes do mapa aparecer, com uma fresta de mapa visível entre os dois.
+  Agora nome/status e os 2 números ficam dentro do MESMO .header-turno;
+  padding reduzido (20px→16/18) pra sobrar mais mapa visível. */
+  .header-turno{background:var(--leaf);border-radius:18px;padding:16px 18px;color:var(--paper);margin-bottom:14px;}
+  .header-turno .nome{font-size:18px;font-weight:700;font-family:'Fraunces',serif;}
+  .header-turno .sub{font-size:12.5px;opacity:.85;margin-top:2px;}
   .status-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--marigold);margin-right:6px;}
+  .header-turno .linha-stats{display:none;gap:22px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.15);}
+  .header-turno .linha-stats.show{display:flex;}
+  .header-turno .stat{flex:1;}
+  .header-turno .stat .lbl{font-size:10.5px;opacity:.72;text-transform:uppercase;letter-spacing:.03em;}
+  .header-turno .stat .val{font-size:21px;font-weight:700;font-family:'Fraunces',serif;display:flex;align-items:center;gap:6px;margin-top:2px;}
+  .header-turno .eye{cursor:pointer;opacity:.75;font-size:13px;}
 
-  /* item 84 (03/09/2026, correção do usuário): .stat-card nunca teve
-  background próprio (só borda) — funcionava porque a página sempre tinha
-  um fundo sólido atrás. Desde o item 80 (mapa de fundo em "sem rota"),
-  isso deixou os números ilegíveis dependendo da região do mapa. Painel
-  único com fundo sólido + sombra (em vez de dar background pra cada
-  .stat-card separado). z-index já vem de .flutua-sobre-mapa (item 80);
-  Leaflet não tem control de zoom habilitado (zoomControl:false, ver
-  atualizarMapaInterno()) e a atribuição fica no canto oposto — sem
-  disputa espacial com este painel, que fica ancorado no topo. */
+  /* .stats-row (item 84) segue existindo só pra tela de Saque (nunca teve
+  mapa atrás, sem motivo pra virar --leaf) — a instância que ficava sobre
+  o mapa em "turno ativo" saiu daqui no item 95, virou a .linha-stats
+  dentro do próprio .header-turno (ver acima). */
   .stats-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;background:var(--paper);border-radius:16px;padding:14px;box-shadow:0 4px 14px rgba(34,53,38,.14);}
-  /* item 93 (04/09/2026, correção do usuário sobre o item 92: o mapa
-  precisa voltar a ocupar a tela inteira — o problema nunca foi o
-  TAMANHO do mapa, era a legibilidade dos cards sobre ele). Mesmo
-  tratamento visual que .header-turno já usa (fundo --leaf sólido, texto
-  --paper) — só nesta variante "sobre-mapa", pra não mudar a aparência
-  do MESMO .stats-row reaproveitado na tela de Saque (sem mapa atrás,
-  sem motivo pra ficar verde). */
-  .stats-row.sobre-mapa{background:var(--leaf);box-shadow:0 4px 16px rgba(0,0,0,.35);}
-  .stats-row.sobre-mapa .stat-card{border-color:rgba(255,255,255,.22);}
-  .stats-row.sobre-mapa .lbl{color:rgba(255,255,255,.75);}
-  .stats-row.sobre-mapa .val{color:var(--paper);}
-  .stats-row.sobre-mapa .eye{opacity:.8;}
   .stat-card{border:1px solid var(--border);border-radius:14px;padding:14px;}
   .stat-card .lbl{font-size:11.5px;color:var(--gray);}
   .stat-card .val{font-size:22px;font-weight:700;font-family:'Fraunces',serif;display:flex;align-items:center;gap:8px;}
+  /* item 95 (04/09/2026, correção do usuário): .acoes-turno (Saque/
+  Verificação/Sair) e .chip-problema-veiculo (mesma ideia, botão único)
+  viram chips com fundo paper sólido — sempre, turno ativo ou não, sem
+  precisar de classe alternada via JS (o item 94 tentava "colar" essa
+  linha no painel verde de baixo; ficou mais simples desde que os
+  números saíram do .stats-row e foram pro .header-turno). */
+  .acoes-turno{margin:0 0 14px;background:var(--paper);border-radius:14px;padding:10px 14px;box-shadow:0 3px 10px rgba(34,53,38,.16);}
+  .chip-problema-veiculo{width:100%;text-align:center;margin-bottom:14px;background:var(--paper);border-radius:14px;padding:12px;box-shadow:0 3px 10px rgba(34,53,38,.16);color:var(--red);}
+  /* item 95: contraste real pro "Finalizar turno" bloqueado — antes o
+  botão tinha SEMPRE a mesma aparência pálida (.btn-ghost), sem
+  diferenciar quando existeEntregaEmAndamento() bloqueia o clique (só um
+  alert() na hora, nada visual). atualizarEstadoBotaoFinalizar() alterna
+  esta classe — não muda a checagem/bloqueio em si. */
+  .btn-ghost.bloqueado{opacity:.4;color:var(--gray-soft);cursor:not-allowed;}
   .eye{cursor:pointer;opacity:.5;}
 
   .waiting-box{border:1.5px dashed var(--border);border-radius:16px;padding:34px 20px;text-align:center;color:var(--gray);margin-bottom:18px;}
@@ -139,7 +154,9 @@ complementar). -->
   .flutua-sobre-mapa{position:relative;z-index:1;}
 
   .emerg-row{display:flex;gap:10px;margin-bottom:18px;}
-  .emerg-btn{flex:1;background:var(--red-soft);color:var(--red);border-radius:12px;padding:12px;text-align:center;font-weight:700;font-size:13.5px;text-decoration:none;display:block;}
+  /* item 95 (04/09/2026, correção do usuário): --red/--red-soft
+  substituídos por --terracota/--terracota-soft (ver :root) — só aqui. */
+  .emerg-btn{flex:1;background:var(--terracota-soft);color:var(--terracota);border-radius:12px;padding:12px;text-align:center;font-weight:700;font-size:13.5px;text-decoration:none;display:block;}
 
   /* -------- rota / paradas -------- */
   .stop-card{border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px;}
@@ -433,9 +450,28 @@ complementar). -->
 
   <!-- ===================== VIEW: TURNO (home) ===================== -->
   <div class="view" id="view-turno">
+    <!-- item 95 (04/09/2026, correção do usuário): painel único —
+    nome/turno e os 2 números (antes um .stats-row separado, com fresta
+    de mapa entre os dois blocos) viram uma linha só dentro do MESMO
+    .header-turno. #linhaStatsTurno começa escondida (só existe conteúdo
+    depois que o turno fica ativo) — checarTurnoAtivo() alterna a classe
+    "show" no mesmo lugar que já alternava turnoOffline/turnoAtivo. -->
     <div class="header-turno flutua-sobre-mapa">
       <div class="nome" id="t_nome">—</div>
       <div class="sub" id="t_status_sub"><span class="status-dot"></span>Offline</div>
+      <div class="linha-stats" id="linhaStatsTurno">
+        <div class="stat">
+          <div class="lbl">Entregas hoje</div>
+          <div class="val" id="t_entregas">0</div>
+        </div>
+        <div class="stat">
+          <div class="lbl">Ganho no turno</div>
+          <div class="val">
+            <span id="t_ganho">R$ 0,00</span>
+            <span class="eye" onclick="toggleGanho()">👁️</span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div id="avisoDocumento" class="flutua-sobre-mapa" style="display:none;background:var(--amber-soft);color:var(--amber-ink);border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:13px;font-weight:600;"></div>
@@ -458,7 +494,12 @@ complementar). -->
       <a class="emerg-btn" href="tel:192">🚑 192 — SAMU/Resgate</a>
     </div>
 
-    <p class="flutua-sobre-mapa" style="text-align:right;margin:-8px 0 14px;display:flex;justify-content:flex-end;gap:16px;flex-wrap:wrap;">
+    <!-- item 94 deu fundo a esta linha só quando "colada" no .stats-row de
+    baixo (que não existe mais nesse lugar desde o item 95, ver
+    .header-turno). item 95: chip próprio (fundo paper sólido), sempre,
+    turno ativo ou não — mesmo padrão do chip de "Problema com o
+    veículo" logo abaixo, mais simples que alternar classe via JS. -->
+    <p class="flutua-sobre-mapa acoes-turno" id="acoesTurno" style="text-align:right;display:flex;justify-content:flex-end;gap:16px;flex-wrap:wrap;">
       <button class="link-btn" style="font-size:12.5px;" onclick="abrirSaque()">💰 Saque</button>
       <button class="link-btn" style="font-size:12.5px;" onclick="abrirViewMfa()">🔒 Verificação em duas etapas</button>
       <button class="link-btn" style="font-size:12.5px;" onclick="deslogar()">🚪 Sair</button>
@@ -469,20 +510,6 @@ complementar). -->
     </div>
 
     <div id="turnoAtivo" style="display:none;">
-      <div class="stats-row flutua-sobre-mapa sobre-mapa">
-        <div class="stat-card">
-          <div class="lbl">Entregas hoje</div>
-          <div class="val" id="t_entregas">0</div>
-        </div>
-        <div class="stat-card">
-          <div class="lbl">Ganho no turno</div>
-          <div class="val">
-            <span id="t_ganho">R$ 0,00</span>
-            <span class="eye" onclick="toggleGanho()">👁️</span>
-          </div>
-        </div>
-      </div>
-
       <div id="semRota">
         <!-- item 78 (03/09/2026, pedido direto do usuário): antes era só um
         card tracejado ("Aguardando a próxima rota"). Reaproveita o MESMO
@@ -516,11 +543,17 @@ complementar). -->
 
       <button class="link-btn" id="btnExtratoFeira" onclick="abrirExtratoFeira()" style="display:none;text-align:center;width:100%;margin-bottom:14px;">Ver extrato da feira</button>
 
-      <button class="link-btn" onclick="abrirProblemaVeiculo()" style="text-align:center;width:100%;margin-bottom:14px;color:var(--red);">🔧 Problema com o veículo</button>
+      <!-- item 95: chip próprio (fundo paper), mesmo bug de legibilidade
+      já corrigido nos outros elementos sobre o mapa. -->
+      <button class="link-btn chip-problema-veiculo" onclick="abrirProblemaVeiculo()">🔧 Problema com o veículo</button>
 
       <button class="btn-primary" id="btnContinuar" onclick="clicarContinuar()" style="margin-bottom:10px;display:none;">Continuar</button>
       <button class="btn-outline" id="btnPausar" onclick="clicarPausar()" style="margin-bottom:10px;">Pausar</button>
-      <button class="btn-ghost" onclick="clicarFinalizar()">Finalizar turno</button>
+      <!-- item 95: id novo pra atualizarEstadoBotaoFinalizar() poder dar
+      contraste real ao estado bloqueado (com entrega em andamento) — só
+      camada visual, existeEntregaEmAndamento()/clicarFinalizar() não
+      mudaram nada da checagem/bloqueio em si. -->
+      <button class="btn-ghost" id="btnFinalizarTurno" onclick="clicarFinalizar()">Finalizar turno</button>
       </div>
     </div>
   </div>
@@ -1522,6 +1555,20 @@ async function login(){
 function existeEntregaEmAndamento(){
   return rotasAtivasLista.length > 0 || !!rotaFeiraAtivaId;
 }
+// item 95 (04/09/2026, correção do usuário): "Finalizar turno" sempre
+// teve a MESMA aparência pálida (.btn-ghost), bloqueado ou não — só um
+// alert() na hora do clique avisava. Camada visual nova, chamada sempre
+// que rotasAtivasLista/rotaFeiraAtivaId podem ter mudado (fim de
+// verificarRotaAtiva()/verificarRotaFeiraAtiva(), os dois únicos lugares
+// que escrevem nessas variáveis — todo caminho que as muda já rechama
+// uma das duas na sequência, ver comentários nelas). Não mexe em
+// existeEntregaEmAndamento()/clicarFinalizar() — o bloqueio de verdade
+// continua sendo o mesmo de sempre.
+function atualizarEstadoBotaoFinalizar(){
+  const btn = document.getElementById('btnFinalizarTurno');
+  if(!btn) return;
+  btn.classList.toggle('bloqueado', existeEntregaEmAndamento());
+}
 async function deslogar(){
   if(existeEntregaEmAndamento()){
     alert('Você tem uma entrega em andamento — conclua antes de sair da conta.');
@@ -1921,6 +1968,7 @@ async function checarTurnoAtivo(){
     turnoIniciadoEm = new Date(turno.iniciado_em);
     document.getElementById('turnoOffline').style.display = 'none';
     document.getElementById('turnoAtivo').style.display = 'block';
+    document.getElementById('linhaStatsTurno').classList.add('show'); // item 95 — números só existem dentro do header-turno com turno ativo
     document.getElementById('t_status_sub').innerHTML =
       '<span class="status-dot"></span>Turno ativo desde ' + turnoIniciadoEm.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
 
@@ -1944,6 +1992,8 @@ async function checarTurnoAtivo(){
   } else {
     document.getElementById('turnoOffline').style.display = 'block';
     document.getElementById('turnoAtivo').style.display = 'none';
+    document.getElementById('linhaStatsTurno').classList.remove('show');
+    atualizarEstadoBotaoFinalizar();
     pararRastreioPosicao();
   }
 }
@@ -2417,6 +2467,7 @@ async function verificarRotaAtiva(){
         </button>
       `).join('');
   }
+  atualizarEstadoBotaoFinalizar(); // item 95 — todo caminho que muda rotasAtivasLista passa por aqui de novo depois
 }
 
 async function abrirRotaEspecifica(indice){
@@ -3224,6 +3275,7 @@ async function verificarRotaFeiraAtiva(){
     rotaFeiraAtivaId = null;
     document.getElementById('comRotaFeira').style.display = 'none';
   }
+  atualizarEstadoBotaoFinalizar(); // item 95 — todo caminho que muda rotaFeiraAtivaId passa por aqui de novo depois
 }
 
 function abrirRotaFeira(){
