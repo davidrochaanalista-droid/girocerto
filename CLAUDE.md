@@ -4566,6 +4566,73 @@ C:\Users\Usuário\Projetos\giro certo
       variáveis já rechama uma das duas depois, confirmado lendo o
       código — não precisou de mais nenhum ponto de chamada).
     - `capacitor-www/index.html` ressincronizado.
+96. **Login "travado" — bug real, achado analisando a tela juntos ao vivo**
+    (04/09/2026, "abre a tela do entregador no navegador, vamos analisar
+    juntos"). Usuário tentou logar na sua conta de teste real e reportou
+    "não está logando". Investigação (rede + banco, não suposição):
+    autenticação funcionava normal (200) — o problema era DEPOIS. Este
+    navegador tinha um `TENANT_ID` velho salvo em `localStorage`
+    (`girocerto_tenant_id`) apontando pra um tenant que já não existe mais
+    no banco. `carregarEntregador()` tentava criar um vínculo novo pra
+    esse tenant morto (`solicitar_vinculo_loja`), a query falhava por
+    violação de chave estrangeira (Postgres 23503 → PostgREST 409) — e o
+    código tratava QUALQUER erro desse caminho assim:
+    `if(erroVinculo){ mostrar('view-login'); return; }`, sem nenhuma
+    mensagem. De fora parecia "login não funciona"; na real, autenticação
+    OK, só a etapa seguinte falhava em silêncio total.
+    - `mostrarErroLogin(texto)` (nova, reaproveita `#loginMsg`, mesmo
+      elemento que `login()` já usava pra "E-mail ou senha incorretos")
+      substitui todo `mostrar('view-login'); return;` silencioso dentro
+      de `carregarEntregador()` — 4 pontos ao todo.
+    - **Autocorreção pro caso específico do tenant morto**: quando
+      `erroVinculo.code === '23503'`, em vez de só mostrar erro, o app
+      esquece o `TENANT_ID` salvo (`localStorage.removeItem`) e tenta de
+      novo UMA vez (`carregarEntregador(true)`, novo parâmetro
+      `p_forcarRedescoberta` — guarda contra loop infinito), redescobrindo
+      o vínculo de verdade da pessoa pelo mesmo caminho já usado quando
+      não há `TENANT_ID` nenhum. Testado ao vivo reproduzindo o cenário
+      quebrado (`localStorage.setItem` com o tenant morto + login real):
+      confirmado por rede que o app se recupera sozinho e chega em
+      `view-turno` normalmente, sem esse erro nunca mais aparecer pro
+      usuário.
+97. **Cards 190/192 quase invisíveis sobre o mapa** (04/09/2026, achado do
+    usuário testando no celular após o item 95). `--terracota-soft`
+    (`rgba` com alfa .15) funcionava sobre o fundo sólido da página, mas
+    sobre o mapa `fixed` em tela cheia (item 93) fica quase invisível —
+    mesma categoria de bug já corrigida em `.acoes-turno`/
+    `.chip-problema-veiculo`/`.stats-row`, só que esta ficou pra trás
+    porque o item 95 só trocou a COR (`--red`→`--terracota`), não deu
+    fundo sólido. Corrigido (fundo paper sólido) — depois substituído de
+    vez pela faixa compacta do item 98, abaixo.
+98. **"Os cards que estão no meio da tela, posicionar de forma
+    estratégica"** (04/09/2026, pedido direto do usuário, mesma sessão de
+    análise ao vivo). Duas tentativas:
+    - **Tentativa 1 (não resolveu)**: reparentar o bloco emergência+Saque/
+      Verificação/Sair pro rodapé (perto de Pausar/Finalizar) quando o
+      turno está ativo. Testado e constatado sem efeito visual real —
+      `#mapaSemRota` é `position:fixed`, não ocupa espaço nenhum no fluxo
+      do documento, então mover CONTAINERS de lugar no DOM não abre gap
+      nenhum: o mapa já preenche o fundo inteiro atrás de tudo,
+      independente de onde os cards estão. A infraestrutura de reparent
+      (`#slotAcoesTopo`/`#slotAcoesRodape`, alternados em
+      `checarTurnoAtivo()`) foi mantida — inofensiva, sem efeito colateral
+      — mas o problema real era outro.
+    - **Tentativa 2 (resolveu de verdade)**: a causa real é a ALTURA TOTAL
+      da pilha empilhada desde o topo (header + emergência + Saque/
+      Verificação/Sair + Problema com o veículo + Pausar + Finalizar, sem
+      gap nenhum entre eles, porque nada empurra pra baixo). Fix: card de
+      emergência (190/192) e o de Saque/Verificação/Sair — antes 2 caixas
+      empilhadas — viraram UMA faixa compacta só (`.utilidades-turno`/
+      `.util-btn`), com ícones em vez de texto por extenso pras 3 ações de
+      conta (já conhecidas depois do primeiro uso) e só o número (sem
+      "— Polícia"/"— SAMU/Resgate") pra emergência, mantendo a informação
+      que importa numa emergência real. `.emerg-row`/`.emerg-btn`
+      (clássicos) continuam existindo só pra `view-problema-veiculo`
+      (formulário próprio, fundo sólido da página, nunca teve esse bug).
+      Testado ao vivo no navegador: altura da pilha caiu visivelmente,
+      mapa aparece com bem mais espaço livre (inclusive uma faixa boa
+      abaixo de "Finalizar turno").
+    - `capacitor-www/index.html` ressincronizado.
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já

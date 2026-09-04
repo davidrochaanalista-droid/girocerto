@@ -118,14 +118,23 @@ complementar). -->
   .stat-card{border:1px solid var(--border);border-radius:14px;padding:14px;}
   .stat-card .lbl{font-size:11.5px;color:var(--gray);}
   .stat-card .val{font-size:22px;font-weight:700;font-family:'Fraunces',serif;display:flex;align-items:center;gap:8px;}
-  /* item 95 (04/09/2026, correção do usuário): .acoes-turno (Saque/
-  Verificação/Sair) e .chip-problema-veiculo (mesma ideia, botão único)
-  viram chips com fundo paper sólido — sempre, turno ativo ou não, sem
-  precisar de classe alternada via JS (o item 94 tentava "colar" essa
-  linha no painel verde de baixo; ficou mais simples desde que os
-  números saíram do .stats-row e foram pro .header-turno). */
-  .acoes-turno{margin:0 0 14px;background:var(--paper);border-radius:14px;padding:10px 14px;box-shadow:0 3px 10px rgba(34,53,38,.16);}
+  /* item 95: .chip-problema-veiculo — fundo paper sólido, mesmo padrão
+  dos outros chips sobre o mapa. */
   .chip-problema-veiculo{width:100%;text-align:center;margin-bottom:14px;background:var(--paper);border-radius:14px;padding:12px;box-shadow:0 3px 10px rgba(34,53,38,.16);color:var(--red);}
+  /* item 98 (04/09/2026, achado ao vivo do usuário — "os cards que estão
+  no meio da tela, posicionar de forma estratégica"): emergência (190/
+  192, antes .emerg-row/.emerg-btn) e Saque/Verificação/Sair (antes
+  .acoes-turno, com texto por extenso) viravam 2 caixas empilhadas —
+  boa parte da altura útil da tela. Uma faixa só, ícones (Saque/
+  Verificação/Sair perdem o texto — já são ações conhecidas depois do
+  primeiro uso; 190/192 mantêm o número, é a informação que importa numa
+  emergência de verdade) — mesma largura, metade da altura. */
+  .utilidades-turno{display:flex;align-items:center;gap:6px;margin-bottom:14px;background:var(--paper);border-radius:14px;padding:8px;box-shadow:0 3px 10px rgba(34,53,38,.16);}
+  .util-btn{display:flex;align-items:center;justify-content:center;gap:4px;background:none;border:none;border-radius:9px;padding:8px 10px;font-size:17px;text-decoration:none;color:var(--ink);cursor:pointer;font-family:'Inter',sans-serif;}
+  .util-btn:active{background:var(--bg);}
+  .util-btn-texto{font-size:12.5px;font-weight:700;color:var(--terracota);}
+  .util-btn:not(.util-btn-texto){width:36px;padding:8px 0;}
+  .util-sep{flex:1;}
   /* item 95: contraste real pro "Finalizar turno" bloqueado — antes o
   botão tinha SEMPRE a mesma aparência pálida (.btn-ghost), sem
   diferenciar quando existeEntregaEmAndamento() bloqueia o clique (só um
@@ -153,9 +162,11 @@ complementar). -->
   .mapa-sem-rota{position:fixed;inset:0;z-index:0;background:var(--border);}
   .flutua-sobre-mapa{position:relative;z-index:1;}
 
-  .emerg-row{display:flex;gap:10px;margin-bottom:18px;}
-  /* item 95 (04/09/2026, correção do usuário): --red/--red-soft
-  substituídos por --terracota/--terracota-soft (ver :root) — só aqui. */
+  /* item 98 (04/09/2026): a versão sobre-mapa (view-turno) virou
+  .utilidades-turno/.util-btn (ver acima) — .emerg-row/.emerg-btn
+  continuam existindo só pra view-problema-veiculo (tela de formulário
+  normal, fundo sólido da página, nunca teve o bug de legibilidade). */
+  .emerg-row{display:flex;gap:8px;}
   .emerg-btn{flex:1;background:var(--terracota-soft);color:var(--terracota);border-radius:12px;padding:12px;text-align:center;font-weight:700;font-size:13.5px;text-decoration:none;display:block;}
 
   /* -------- rota / paradas -------- */
@@ -489,21 +500,33 @@ complementar). -->
       </div>
     </div>
 
-    <div class="emerg-row flutua-sobre-mapa">
-      <a class="emerg-btn" href="tel:190">🚓 190 — Polícia</a>
-      <a class="emerg-btn" href="tel:192">🚑 192 — SAMU/Resgate</a>
+    <!-- item 98 (04/09/2026, achado ao vivo do usuário: "os cards que
+    estão no meio da tela, posicionar de forma estratégica"). Tentativa 1
+    (reparentar pro rodapé com turno ativo) não resolveu nada de verdade:
+    #mapaSemRota é position:fixed, não ocupa espaço no fluxo — mover os
+    blocos de contêiner não abre gap nenhum, o mapa já preenche o fundo
+    inteiro atrás de tudo independente de onde os cards estão no DOM. A
+    causa real é ALTURA TOTAL da pilha (header + emergência + Saque/
+    Verificação/Sair + Problema com o veículo + Pausar + Finalizar, tudo
+    empilhado sem gap desde o topo). Fix de verdade: emergência e Saque/
+    Verificação/Sair viram UMA faixa compacta só (ícones, sem texto longo)
+    em vez de 2 caixas empilhadas — reduz a altura ocupada por esse trecho
+    pela metade. #slotAcoesTopo/#slotAcoesRodape (reparent por
+    checarTurnoAtivo(), ver função) mantidos — inofensivos, sem efeito
+    colateral, e já prontos se um dia fizer sentido de verdade mover isso
+    pro rodapé (ex: pilha ficar baixa o bastante pra sobrar gap real). -->
+    <div id="slotAcoesTopo">
+      <div id="blocoAcoesSecundarias">
+        <div class="flutua-sobre-mapa utilidades-turno" id="acoesTurno">
+          <a class="util-btn util-btn-texto" href="tel:190">🚓 190</a>
+          <a class="util-btn util-btn-texto" href="tel:192">🚑 192</a>
+          <span class="util-sep"></span>
+          <button class="util-btn" onclick="abrirSaque()" title="Saque">💰</button>
+          <button class="util-btn" onclick="abrirViewMfa()" title="Verificação em duas etapas">🔒</button>
+          <button class="util-btn" onclick="deslogar()" title="Sair">🚪</button>
+        </div>
+      </div>
     </div>
-
-    <!-- item 94 deu fundo a esta linha só quando "colada" no .stats-row de
-    baixo (que não existe mais nesse lugar desde o item 95, ver
-    .header-turno). item 95: chip próprio (fundo paper sólido), sempre,
-    turno ativo ou não — mesmo padrão do chip de "Problema com o
-    veículo" logo abaixo, mais simples que alternar classe via JS. -->
-    <p class="flutua-sobre-mapa acoes-turno" id="acoesTurno" style="text-align:right;display:flex;justify-content:flex-end;gap:16px;flex-wrap:wrap;">
-      <button class="link-btn" style="font-size:12.5px;" onclick="abrirSaque()">💰 Saque</button>
-      <button class="link-btn" style="font-size:12.5px;" onclick="abrirViewMfa()">🔒 Verificação em duas etapas</button>
-      <button class="link-btn" style="font-size:12.5px;" onclick="deslogar()">🚪 Sair</button>
-    </p>
 
     <div id="turnoOffline" class="flutua-sobre-mapa">
       <button class="btn-primary" onclick="iniciarTurno()">Iniciar turno</button>
@@ -525,6 +548,10 @@ complementar). -->
       do item 93 reverter o mapa pra fixed — mantido só porque não
       atrapalha nada, sem motivo pra mexer no markup por causa disso. -->
       <div class="flutua-sobre-mapa" id="rodapeBotoesTurno">
+      <!-- item 98: destino do reparent de #blocoAcoesSecundarias com
+      turno ativo — ver checarTurnoAtivo() e o comentário em
+      #slotAcoesTopo, acima. -->
+      <div id="slotAcoesRodape"></div>
       <div id="comRota" style="display:none;">
         <button class="btn-primary" onclick="mostrar('view-rota')" style="margin-bottom:12px;">Ver rota ativa</button>
       </div>
@@ -1222,6 +1249,22 @@ function mostrar(id){
   if(id === 'view-turno' && containerEstaVisivel('mapaSemRota')) iniciarMapaSemRota();
 }
 
+// item 96 (04/09/2026, achado ao vivo analisando a tela com o usuário):
+// carregarEntregador() tinha vários pontos que, ao falhar, só chamavam
+// mostrar('view-login') SEM mensagem nenhuma — de fora parecia "login não
+// funciona", quando na verdade a autenticação tinha dado certo e o
+// problema era depois (ex: TENANT_ID salvo no localStorage apontando pra
+// um tenant que não existe mais — RPC solicitar_vinculo_loja falhava com
+// violação de FK, e o erro sumia em silêncio). #loginMsg é o mesmo
+// elemento que login() já usa pra "E-mail ou senha incorretos" — mesmo
+// padrão visual, só reaproveitado aqui.
+function mostrarErroLogin(texto){
+  const msg = document.getElementById('loginMsg');
+  msg.textContent = texto;
+  msg.className = 'msg error';
+  mostrar('view-login');
+}
+
 // ------------------------------------------------------------
 // CADASTRO
 // ------------------------------------------------------------
@@ -1734,9 +1777,16 @@ async function verificarDispositivo(entregador){
     .eq('id', entregador.pessoa_id);
 }
 
-async function carregarEntregador(){
+// item 96: p_forcarRedescoberta é usado SÓ pela auto-recuperação de
+// tenant morto abaixo (chamada uma vez, nunca pelo resto do app) — evita
+// loop infinito se por algum motivo o TENANT_ID recém-limpo continuar
+// dando problema (aí sim mostra erro de verdade, em vez de tentar de
+// novo pra sempre).
+async function carregarEntregador(p_forcarRedescoberta){
   const { data: { user } } = await supabaseClient.auth.getUser();
   if(!user) return;
+
+  if(p_forcarRedescoberta){ TENANT_ID = null; }
 
   if(!TENANT_ID){
     // item 76 (02/09/2026): freelance sem vínculo NENHUM ainda (item 74
@@ -1763,7 +1813,7 @@ async function carregarEntregador(){
         .select('*')
         .eq('auth_user_id', user.id)
         .maybeSingle();
-      if(erroPessoa || !pessoa){ mostrar('view-login'); return; }
+      if(erroPessoa || !pessoa){ mostrarErroLogin('Não conseguimos carregar seu cadastro. Tente novamente.'); return; }
       await carregarPessoaSemVinculo(pessoa);
       return;
     }
@@ -1778,17 +1828,33 @@ async function carregarEntregador(){
     .eq('tenant_id', TENANT_ID)
     .maybeSingle();
 
-  if(error){ mostrar('view-login'); return; }
+  if(error){ mostrarErroLogin('Não conseguimos carregar seu cadastro. Tente novamente.'); return; }
 
   if(!entregador){
     // pessoa já tem conta (login funcionou) mas nunca trabalhou pra ESSA
     // loja — cria o vínculo na hora (documentos/verificação são da pessoa,
     // não precisa repetir cadastro pra cada loja nova).
     const { data: novoVinculoId, error: erroVinculo } = await supabaseClient.rpc('solicitar_vinculo_loja', { p_tenant_id: TENANT_ID });
-    if(erroVinculo){ mostrar('view-login'); return; }
+    if(erroVinculo){
+      // item 96 (04/09/2026, achado ao vivo): 23503 = violação de chave
+      // estrangeira — o TENANT_ID (vindo de localStorage OU de ?loja= na
+      // URL) aponta pra um tenant que não existe mais (ex: link antigo,
+      // ou localStorage nunca limpo depois de um tenant de teste ser
+      // apagado). Em vez de travar aqui pra sempre, esquece esse valor e
+      // tenta de novo UMA vez, redescobrindo o vínculo de verdade da
+      // pessoa (mesmo caminho do "sem TENANT_ID nenhum" acima) — só
+      // mostra erro de verdade se isso também falhar.
+      if(erroVinculo.code === '23503' && !p_forcarRedescoberta){
+        localStorage.removeItem('girocerto_tenant_id');
+        await carregarEntregador(true);
+        return;
+      }
+      mostrarErroLogin('Não conseguimos vincular seu cadastro a essa loja. Tente novamente.');
+      return;
+    }
     const retry = await supabaseClient.from('entregadores_completo').select('*').eq('id', novoVinculoId).single();
     entregador = retry.data;
-    if(!entregador){ mostrar('view-login'); return; }
+    if(!entregador){ mostrarErroLogin('Não conseguimos carregar seu cadastro. Tente novamente.'); return; }
   }
 
   entregadorId = entregador.id;
@@ -1969,6 +2035,7 @@ async function checarTurnoAtivo(){
     document.getElementById('turnoOffline').style.display = 'none';
     document.getElementById('turnoAtivo').style.display = 'block';
     document.getElementById('linhaStatsTurno').classList.add('show'); // item 95 — números só existem dentro do header-turno com turno ativo
+    document.getElementById('slotAcoesRodape').appendChild(document.getElementById('blocoAcoesSecundarias')); // item 98 — mapa em tela cheia: controles secundários migram pro rodapé, meio do mapa fica livre
     document.getElementById('t_status_sub').innerHTML =
       '<span class="status-dot"></span>Turno ativo desde ' + turnoIniciadoEm.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
 
@@ -1993,6 +2060,7 @@ async function checarTurnoAtivo(){
     document.getElementById('turnoOffline').style.display = 'block';
     document.getElementById('turnoAtivo').style.display = 'none';
     document.getElementById('linhaStatsTurno').classList.remove('show');
+    document.getElementById('slotAcoesTopo').appendChild(document.getElementById('blocoAcoesSecundarias')); // item 98 — sem mapa atrás nesse estado, volta pro topo
     atualizarEstadoBotaoFinalizar();
     pararRastreioPosicao();
   }
