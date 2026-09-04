@@ -4445,6 +4445,51 @@ C:\Users\Usuário\Projetos\giro certo
       credencial de verdade) cria feira + adiciona um 2º dia de
       funcionamento; feirante se cadastra self-service; consegue ler as
       ocorrências e se vincular a uma. 171/171 na suíte completa depois.
+92. **Correções pós-teste real em celular do item 85 (cancelamento) e do
+    layout do item 80** (04/09/2026, correções diretas do usuário depois
+    de testar num aparelho de verdade).
+    - **Cards "Entregas hoje"/"Ganho no turno" — mudança de abordagem**:
+      a correção do item 84 (fundo sólido no `.stats-row` flutuando sobre
+      o mapa) não resolveu na prática — o usuário reportou continuar
+      ilegível no celular real, apesar do raciocínio de stacking CSS
+      parecer correto no código. Em vez de insistir no mesmo caminho às
+      cegas (sem acesso a browser/dispositivo pra depurar visualmente),
+      segui a mudança de abordagem que o usuário pediu explicitamente:
+      os cards saem de cima do mapa e viram uma faixa própria, FORA da
+      área do mapa, entre os botões do topo e o mapa. `.mapa-sem-rota`
+      voltou a não ser `position:fixed` (revertendo o item 80); o mapa
+      agora tem altura calculada em JS (`ajustarAlturaMapaSemRota()`,
+      baseada em `getBoundingClientRect()` do topo do mapa e do rodapé de
+      botões `#rodapeBotoesTurno`) pra preencher exatamente o espaço
+      restante — sem depender de z-index/stacking nenhum. Recalculada no
+      resize também.
+    - **Botão "Sacar" — pendência falsa, já existia**: o usuário pediu
+      pra verificar se existia RPC de saque antes de criar lógica nova.
+      Investigação: `solicitar_saque()` (item 51, RPC já existente desde
+      26-27/08) e o botão "Solicitar saque" (`#sq_btnSolicitar`) já
+      estavam implementados na tela de Saque desde aquela sessão — só o
+      rótulo é diferente do mockup de referência da 99 ("Sacar"), a ação
+      já existe e funciona. Nenhuma mudança de código necessária aqui.
+    - **Teste real em celular do fluxo de cancelamento (item 85, lado
+      restaurante) — primeira vez testado fora de script/RLS simulada**:
+      cenário criado via SQL direto (turno ativo + vínculo + rota
+      `em_entrega` + pedido `a_caminho`, endereço real) pro celular do
+      próprio usuário (`pessoa_id 51d9c706-...`), depois `update pedidos
+      set status='cancelado'` simulando o que uma integração externa
+      faria. Resultado: **o card/modal de cancelamento apareceu
+      corretamente no app** (Realtime/poll funcionando, sem o entregador
+      precisar recarregar nada) — **mas sem som**. Log de produção do
+      dispatch-engine confirmou que nenhum push foi enviado (conta de
+      teste sem `push_token` registrado) — comportamento esperado, o
+      alerta chegou por Realtime/poll mesmo assim, como projetado.
+    - **Causa do som ausente, achada e corrigida**: `tocarSomCancelamento()`
+      usa Web Audio API — `AudioContext` nasce (ou fica) em estado
+      `"suspended"` por política de autoplay do navegador/webview, e
+      `osc.start()` não lança erro nesse estado, só toca inaudível.
+      Adicionado `ctx.resume()` antes de tocar os beeps quando o estado
+      está suspenso. Correção pontual, sem mudar mais nada do fluxo (a
+      detecção/modal/log já estavam corretos).
+    - `capacitor-www/index.html` ressincronizado.
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
@@ -4786,6 +4831,11 @@ C:\Users\Usuário\Projetos\giro certo
       inteiro ainda não está em produção real (só os 2 serviços Railway
       rodando 24/7, mas sem volume de pedido real ainda) — dependência
       dupla, não é só "falta código".
+- [x] ~~Cancelamento de pedido em rota, lado restaurante, sem teste em
+      dispositivo real~~ — **testado no item 92** (04/09/2026): cenário
+      real no celular do usuário, card/modal apareceu corretamente via
+      Realtime/poll; achado (sem som, por `AudioContext` suspenso) já
+      corrigido no mesmo item.
 
 **Incidente de processo (03-04/09/2026, deploy do item 82-91):** `railway
 up -c -s girocerto-feira-dispatch` retornou status "killed" no processo

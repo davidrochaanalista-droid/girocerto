@@ -111,28 +111,23 @@ complementar). -->
 
   .waiting-box{border:1.5px dashed var(--border);border-radius:16px;padding:34px 20px;text-align:center;color:var(--gray);margin-bottom:18px;}
   .waiting-box .ic{width:44px;height:44px;border-radius:50%;background:var(--green-soft);margin:0 auto 12px;display:flex;align-items:center;justify-content:center;}
-  /* item 80 (03/09/2026, correção do item 78 — pedido direto do usuário:
-  "o mapa tem que cobrir a tela toda mesmo sem rota na tela, como na
-  rota"): fixed/inset:0, mesmo princípio de .mapa-tela-cheia (mapaLoja/
-  mapaEntrega), mas SEM copiar o mecanismo delas de esconder o resto da
-  tela atrás de uma folha inferior — aqui o mapa fica no fundo (z-index
-  baixo) e o conteúdo normal da view (header/stats/turno/botões) flutua
-  por cima, com fundo próprio (cards já opacos) — .view.active ganhou
-  position:relative;z-index:1 só pra isso (ver regra abaixo). Escolhido
-  assim de propósito: diferente das telas "a caminho" (estados curtos,
-  de minutos), "sem rota" pode durar o turno inteiro — esconder
-  190/192/Saque/Sair atrás do mapa por esse tempo todo seria pior que o
-  ganho visual. Sem shell de altura travada nesta página (.view{padding
-  ...} normal, rolável), mas position:fixed ignora isso de propósito —
-  cobre o viewport inteiro sempre, independente de scroll. */
-  .mapa-sem-rota{position:fixed;top:0;left:0;right:0;bottom:0;z-index:0;background:var(--border);}
-  /* qualquer conteúdo normal (não-posicionado) de view-turno perde AUTOMATICAMENTE
-  pra um descendente position:fixed na ordem de pintura do CSS (categoria
-  "não-posicionado em fluxo" sempre fica atrás de qualquer elemento
-  posicionado, não importa o z-index) — por isso os elementos que devem
-  flutuar por cima do mapa (header/stats/turno/botões) precisam da própria
-  posição+z-index pra competir de verdade, não só um z-index maior no
-  ancestral comum. */
+  /* item 92 (04/09/2026, correção do usuário — a tentativa do item 80 de
+  flutuar o conteúdo POR CIMA de um mapa position:fixed não resultou
+  legível na prática, mesmo com fundo sólido nos cards: relatado ao vivo
+  testando no aparelho). Abordagem trocada — em vez de mapa fixed
+  cobrindo o viewport inteiro com conteúdo flutuando por cima via
+  z-index, o mapa volta a ser um elemento NORMAL do fluxo da página
+  (nunca sobrepõe nada, porque não tem como sobrepor — não é fixed), com
+  altura calculada em JS (ajustarAlturaMapaSemRota()) pra preencher só o
+  espaço realmente livre entre o fim da faixa "Saque/Verificação/Sair" +
+  cards e o início dos botões Pausar/Finalizar — mesmo resultado visual
+  pretendido no item 80 ("mapa grande, dominando a tela"), sem a
+  fragilidade de depender de camada/z-index pra legibilidade. Classe
+  .flutua-sobre-mapa (ver HTML) fica definida mas nunca mais é
+  necessária de verdade agora que nada é fixed — não removida do
+  markup de propósito (position:relative sem fixed nenhum pra competir
+  é inofensivo, menos uma mudança arriscada pra fazer nesta correção). */
+  .mapa-sem-rota{border-radius:16px;overflow:hidden;background:var(--border);margin-bottom:18px;min-height:220px;}
   .flutua-sobre-mapa{position:relative;z-index:1;}
 
   .emerg-row{display:flex;gap:10px;margin-bottom:18px;}
@@ -491,11 +486,11 @@ complementar). -->
         <div id="mapaSemRota" class="mapa-sem-rota"></div>
       </div>
 
-      <!-- item 80: wrapper só pra flutuar por cima do #mapaSemRota fixed —
-      mesmo motivo do .flutua-sobre-mapa acima dos elementos antes de
-      #turnoAtivo (posicionado, não-posicionado sempre perde a ordem de
-      pintura pra um irmão fixed, não importa o z-index do ancestral). -->
-      <div class="flutua-sobre-mapa">
+      <!-- item 92: id próprio (não só a classe .flutua-sobre-mapa, que
+      .stats-row também usa) — ajustarAlturaMapaSemRota() precisa achar
+      ESTE wrapper especificamente, pra saber quanto espaço reservar pro
+      rodapé de botões ao calcular a altura do mapa acima. -->
+      <div class="flutua-sobre-mapa" id="rodapeBotoesTurno">
       <div id="comRota" style="display:none;">
         <button class="btn-primary" onclick="mostrar('view-rota')" style="margin-bottom:12px;">Ver rota ativa</button>
       </div>
@@ -2213,10 +2208,42 @@ function pararAtualizacaoPeriodicaMapa(){
 // interval já para sozinho quando o container correspondente sai de tela
 // (ver iniciarAtualizacaoPeriodicaMapa acima), e cada abertura de mapa
 // novo chama isso de novo pro container certo.
+// item 92 (04/09/2026, correção do usuário — a tentativa do item 80 de
+// flutuar os cards POR CIMA de um mapa position:fixed via z-index não
+// resultou legível no aparelho real. Mapa voltou a ser um elemento
+// normal do fluxo (não pode sobrepor nada porque não é mais fixed) —
+// isso mede quanto espaço realmente sobra entre onde o mapa começa
+// (depois de header/stats/faixa de cima, que variam de altura conforme
+// avisoDocumento/modoDisponibilidadeBox aparecerem ou não) e o topo do
+// rodapé de botões (#rodapeBotoesTurno), pra preencher só isso — mesmo
+// efeito visual "mapa grande" pretendido desde o item 80, sem depender
+// de camada/z-index pra legibilidade.
+function ajustarAlturaMapaSemRota(){
+  const mapaEl = document.getElementById('mapaSemRota');
+  const rodape = document.getElementById('rodapeBotoesTurno');
+  if(!mapaEl) return;
+  const topoMapa = mapaEl.getBoundingClientRect().top;
+  const alturaRodape = rodape ? rodape.getBoundingClientRect().height : 0;
+  const alturaDisponivel = window.innerHeight - topoMapa - alturaRodape - 18; // 18px = mesma margin-bottom do próprio mapa (.mapa-sem-rota)
+  mapaEl.style.height = Math.max(220, alturaDisponivel) + 'px';
+}
+
 function iniciarMapaSemRota(){
+  ajustarAlturaMapaSemRota();
   atualizarMapa('mapaSemRota', null);
   iniciarAtualizacaoPeriodicaMapa('mapaSemRota', null);
 }
+
+// recalcula em resize/rotação de tela — teclado abrindo/fechando (ex: ao
+// digitar em algum modal aberto por cima) também dispara resize no
+// Android, o que é o comportamento certo aqui (o mapa não deveria mudar
+// de altura só por causa do teclado, mas se mudar, o recálculo mantém
+// consistente em vez de deixar a altura antiga errada).
+window.addEventListener('resize', () => {
+  if(!containerEstaVisivel('mapaSemRota')) return;
+  ajustarAlturaMapaSemRota();
+  if(mapasLeaflet['mapaSemRota']) mapasLeaflet['mapaSemRota'].invalidateSize();
+});
 
 // item 40 (25/08/2026): previsão do tempo flutuante — pedido explícito do
 // usuário ("acompanhar em tempo real o clima"). Open-Meteo: gratuito, sem
@@ -2452,6 +2479,12 @@ function tocarSomCancelamento(){
     if(!Ctx) return;
     if(!somCancelamentoCtx) somCancelamentoCtx = new Ctx();
     const ctx = somCancelamentoCtx;
+    // item 92b (04/09/2026, achado no teste real): AudioContext nasce/fica
+    // "suspended" por política de autoplay do navegador/webview — start()
+    // não lança erro nesse estado, só toca sem som nenhum. resume() aqui
+    // corrige o caso comum (app já teve alguma interação antes, tipo o
+    // botão de pausar/continuar turno).
+    if(ctx.state === 'suspended') ctx.resume();
     const tocarBeep = (atrasoSeg) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
