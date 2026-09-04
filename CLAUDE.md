@@ -4490,6 +4490,35 @@ C:\Users\Usuário\Projetos\giro certo
       está suspenso. Correção pontual, sem mudar mais nada do fluxo (a
       detecção/modal/log já estavam corretos).
     - `capacitor-www/index.html` ressincronizado.
+93. **Correção do item 92: mapa volta a ocupar a tela inteira** (04/09/2026,
+    correção direta do usuário depois de testar o item 92 num aparelho
+    real). O problema nunca foi o TAMANHO do mapa — era a legibilidade dos
+    cards "Entregas hoje"/"Ganho no turno" quando ficavam sobrepostos a
+    ele; o item 92 tentou resolver isso encolhendo o mapa (efeito
+    colateral indesejado, reportado pelo usuário) em vez de resolver a
+    legibilidade em si.
+    - `.mapa-sem-rota` voltou a `position:fixed;inset:0;z-index:0` (padrão
+      do item 80, tela cheia de verdade). `ajustarAlturaMapaSemRota()`
+      (item 92) removida inteira — sem cálculo de altura em JS, o CSS
+      sozinho preenche o viewport.
+    - Cards ganharam uma variante nova, `.stats-row.sobre-mapa`: mesmo
+      tratamento visual que `.header-turno` ("Olá, [nome]") já usava —
+      fundo `--leaf` sólido, texto `--paper`, sombra mais forte — só
+      nesta instância (tela de turno ativo, sobre o mapa fixed). A MESMA
+      classe `.stats-row` reaproveitada na tela de Saque (sem mapa atrás)
+      não leva o modificador, continua com o fundo claro original.
+    - **Bug relatado junto**: um "quadrado" passou a aparecer ao redor do
+      ícone da moto no mapa nesta versão do item 92. Não encontrada causa
+      direta no código do marker em si (item 39, `L.divIcon` com
+      `className:''` — já desenhado pra não ter a caixa padrão do
+      Leaflet, inalterado). Hipótese mais provável: timing entre
+      `ajustarAlturaMapaSemRota()` redimensionando o container via JS e o
+      Leaflet medindo esse mesmo container no meio do processo. Como essa
+      função foi removida e o mapa volta a ter tamanho fixo desde o
+      início (sem redimensionamento dinâmico nenhum), a causa mais
+      provável desaparece junto — **não confirmado visualmente ainda,
+      vale confirmar no próximo teste em aparelho real**.
+    - `capacitor-www/index.html` ressincronizado.
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já

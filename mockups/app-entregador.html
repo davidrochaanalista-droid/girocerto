@@ -96,14 +96,24 @@ complementar). -->
   background próprio (só borda) — funcionava porque a página sempre tinha
   um fundo sólido atrás. Desde o item 80 (mapa de fundo em "sem rota"),
   isso deixou os números ilegíveis dependendo da região do mapa. Painel
-  único com fundo sólido paper + sombra (em vez de dar background pra
-  cada .stat-card separado) — --bg e --paper são o mesmo hex (#EDE7D9),
-  então isso não muda nada visualmente na tela de Saque (mesmo .stats-row,
-  sem mapa atrás). z-index já vem de .flutua-sobre-mapa (item 80); Leaflet
-  não tem control de zoom habilitado (zoomControl:false, ver
+  único com fundo sólido + sombra (em vez de dar background pra cada
+  .stat-card separado). z-index já vem de .flutua-sobre-mapa (item 80);
+  Leaflet não tem control de zoom habilitado (zoomControl:false, ver
   atualizarMapaInterno()) e a atribuição fica no canto oposto — sem
-  disputa espacial com este painel, que fica ancorado no topo. -->
+  disputa espacial com este painel, que fica ancorado no topo. */
   .stats-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;background:var(--paper);border-radius:16px;padding:14px;box-shadow:0 4px 14px rgba(34,53,38,.14);}
+  /* item 93 (04/09/2026, correção do usuário sobre o item 92: o mapa
+  precisa voltar a ocupar a tela inteira — o problema nunca foi o
+  TAMANHO do mapa, era a legibilidade dos cards sobre ele). Mesmo
+  tratamento visual que .header-turno já usa (fundo --leaf sólido, texto
+  --paper) — só nesta variante "sobre-mapa", pra não mudar a aparência
+  do MESMO .stats-row reaproveitado na tela de Saque (sem mapa atrás,
+  sem motivo pra ficar verde). */
+  .stats-row.sobre-mapa{background:var(--leaf);box-shadow:0 4px 16px rgba(0,0,0,.35);}
+  .stats-row.sobre-mapa .stat-card{border-color:rgba(255,255,255,.22);}
+  .stats-row.sobre-mapa .lbl{color:rgba(255,255,255,.75);}
+  .stats-row.sobre-mapa .val{color:var(--paper);}
+  .stats-row.sobre-mapa .eye{opacity:.8;}
   .stat-card{border:1px solid var(--border);border-radius:14px;padding:14px;}
   .stat-card .lbl{font-size:11.5px;color:var(--gray);}
   .stat-card .val{font-size:22px;font-weight:700;font-family:'Fraunces',serif;display:flex;align-items:center;gap:8px;}
@@ -111,23 +121,21 @@ complementar). -->
 
   .waiting-box{border:1.5px dashed var(--border);border-radius:16px;padding:34px 20px;text-align:center;color:var(--gray);margin-bottom:18px;}
   .waiting-box .ic{width:44px;height:44px;border-radius:50%;background:var(--green-soft);margin:0 auto 12px;display:flex;align-items:center;justify-content:center;}
-  /* item 92 (04/09/2026, correção do usuário — a tentativa do item 80 de
-  flutuar o conteúdo POR CIMA de um mapa position:fixed não resultou
-  legível na prática, mesmo com fundo sólido nos cards: relatado ao vivo
-  testando no aparelho). Abordagem trocada — em vez de mapa fixed
-  cobrindo o viewport inteiro com conteúdo flutuando por cima via
-  z-index, o mapa volta a ser um elemento NORMAL do fluxo da página
-  (nunca sobrepõe nada, porque não tem como sobrepor — não é fixed), com
-  altura calculada em JS (ajustarAlturaMapaSemRota()) pra preencher só o
-  espaço realmente livre entre o fim da faixa "Saque/Verificação/Sair" +
-  cards e o início dos botões Pausar/Finalizar — mesmo resultado visual
-  pretendido no item 80 ("mapa grande, dominando a tela"), sem a
-  fragilidade de depender de camada/z-index pra legibilidade. Classe
-  .flutua-sobre-mapa (ver HTML) fica definida mas nunca mais é
-  necessária de verdade agora que nada é fixed — não removida do
-  markup de propósito (position:relative sem fixed nenhum pra competir
-  é inofensivo, menos uma mudança arriscada pra fazer nesta correção). */
-  .mapa-sem-rota{border-radius:16px;overflow:hidden;background:var(--border);margin-bottom:18px;min-height:220px;}
+  /* item 93 (04/09/2026, correção do usuário): volta ao padrão do item 80
+  — mapa position:fixed cobrindo o viewport inteiro, atrás de tudo
+  (z-index:0), com o conteúdo real (.flutua-sobre-mapa) flutuando por
+  cima via z-index:1. O item 92 tinha trocado isso por um mapa não-fixed
+  com altura calculada em JS pra tentar evitar depender de z-index — na
+  prática o usuário testou no aparelho e reportou dois problemas novos:
+  o mapa ficou pequeno (não era o efeito pretendido) e um "quadrado"
+  passou a aparecer ao redor do ícone da moto (efeito colateral mais
+  provável do timing entre o resize via JS/ajustarAlturaMapaSemRota() e
+  o momento em que o Leaflet mede o container — ver nota antiga em
+  atualizarMapaInterno() sobre isso). Removendo o cálculo de altura via
+  JS (função inteira apagada) e voltando o container a fixed elimina as
+  duas causas de uma vez, sem tocar no ícone/marker em si (código do
+  item 39, inalterado). */
+  .mapa-sem-rota{position:fixed;inset:0;z-index:0;background:var(--border);}
   .flutua-sobre-mapa{position:relative;z-index:1;}
 
   .emerg-row{display:flex;gap:10px;margin-bottom:18px;}
@@ -461,7 +469,7 @@ complementar). -->
     </div>
 
     <div id="turnoAtivo" style="display:none;">
-      <div class="stats-row flutua-sobre-mapa">
+      <div class="stats-row flutua-sobre-mapa sobre-mapa">
         <div class="stat-card">
           <div class="lbl">Entregas hoje</div>
           <div class="val" id="t_entregas">0</div>
@@ -486,10 +494,9 @@ complementar). -->
         <div id="mapaSemRota" class="mapa-sem-rota"></div>
       </div>
 
-      <!-- item 92: id próprio (não só a classe .flutua-sobre-mapa, que
-      .stats-row também usa) — ajustarAlturaMapaSemRota() precisa achar
-      ESTE wrapper especificamente, pra saber quanto espaço reservar pro
-      rodapé de botões ao calcular a altura do mapa acima. -->
+      <!-- id do item 92 (ajustarAlturaMapaSemRota()) ficou sem uso depois
+      do item 93 reverter o mapa pra fixed — mantido só porque não
+      atrapalha nada, sem motivo pra mexer no markup por causa disso. -->
       <div class="flutua-sobre-mapa" id="rodapeBotoesTurno">
       <div id="comRota" style="display:none;">
         <button class="btn-primary" onclick="mostrar('view-rota')" style="margin-bottom:12px;">Ver rota ativa</button>
@@ -2208,40 +2215,21 @@ function pararAtualizacaoPeriodicaMapa(){
 // interval já para sozinho quando o container correspondente sai de tela
 // (ver iniciarAtualizacaoPeriodicaMapa acima), e cada abertura de mapa
 // novo chama isso de novo pro container certo.
-// item 92 (04/09/2026, correção do usuário — a tentativa do item 80 de
-// flutuar os cards POR CIMA de um mapa position:fixed via z-index não
-// resultou legível no aparelho real. Mapa voltou a ser um elemento
-// normal do fluxo (não pode sobrepor nada porque não é mais fixed) —
-// isso mede quanto espaço realmente sobra entre onde o mapa começa
-// (depois de header/stats/faixa de cima, que variam de altura conforme
-// avisoDocumento/modoDisponibilidadeBox aparecerem ou não) e o topo do
-// rodapé de botões (#rodapeBotoesTurno), pra preencher só isso — mesmo
-// efeito visual "mapa grande" pretendido desde o item 80, sem depender
-// de camada/z-index pra legibilidade.
-function ajustarAlturaMapaSemRota(){
-  const mapaEl = document.getElementById('mapaSemRota');
-  const rodape = document.getElementById('rodapeBotoesTurno');
-  if(!mapaEl) return;
-  const topoMapa = mapaEl.getBoundingClientRect().top;
-  const alturaRodape = rodape ? rodape.getBoundingClientRect().height : 0;
-  const alturaDisponivel = window.innerHeight - topoMapa - alturaRodape - 18; // 18px = mesma margin-bottom do próprio mapa (.mapa-sem-rota)
-  mapaEl.style.height = Math.max(220, alturaDisponivel) + 'px';
-}
-
+// item 93 (04/09/2026, correção do usuário sobre o item 92): mapa voltou
+// a ser position:fixed (tela cheia, ver .mapa-sem-rota no <style>) —
+// ajustarAlturaMapaSemRota() do item 92 foi removida, o CSS sozinho já
+// preenche o viewport inteiro, sem cálculo nenhum em JS.
 function iniciarMapaSemRota(){
-  ajustarAlturaMapaSemRota();
   atualizarMapa('mapaSemRota', null);
   iniciarAtualizacaoPeriodicaMapa('mapaSemRota', null);
 }
 
 // recalcula em resize/rotação de tela — teclado abrindo/fechando (ex: ao
 // digitar em algum modal aberto por cima) também dispara resize no
-// Android, o que é o comportamento certo aqui (o mapa não deveria mudar
-// de altura só por causa do teclado, mas se mudar, o recálculo mantém
-// consistente em vez de deixar a altura antiga errada).
+// Android; o mapa fixed já ocupa 100% via CSS, só o Leaflet precisa
+// saber que o viewport mudou (invalidateSize()).
 window.addEventListener('resize', () => {
   if(!containerEstaVisivel('mapaSemRota')) return;
-  ajustarAlturaMapaSemRota();
   if(mapasLeaflet['mapaSemRota']) mapasLeaflet['mapaSemRota'].invalidateSize();
 });
 
