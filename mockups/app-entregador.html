@@ -92,7 +92,18 @@ complementar). -->
   .header-turno .sub{font-size:13px;opacity:.9;margin-top:2px;}
   .status-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--marigold);margin-right:6px;}
 
-  .stats-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;}
+  /* item 84 (03/09/2026, correção do usuário): .stat-card nunca teve
+  background próprio (só borda) — funcionava porque a página sempre tinha
+  um fundo sólido atrás. Desde o item 80 (mapa de fundo em "sem rota"),
+  isso deixou os números ilegíveis dependendo da região do mapa. Painel
+  único com fundo sólido paper + sombra (em vez de dar background pra
+  cada .stat-card separado) — --bg e --paper são o mesmo hex (#EDE7D9),
+  então isso não muda nada visualmente na tela de Saque (mesmo .stats-row,
+  sem mapa atrás). z-index já vem de .flutua-sobre-mapa (item 80); Leaflet
+  não tem control de zoom habilitado (zoomControl:false, ver
+  atualizarMapaInterno()) e a atribuição fica no canto oposto — sem
+  disputa espacial com este painel, que fica ancorado no topo. -->
+  .stats-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px;background:var(--paper);border-radius:16px;padding:14px;box-shadow:0 4px 14px rgba(34,53,38,.14);}
   .stat-card{border:1px solid var(--border);border-radius:14px;padding:14px;}
   .stat-card .lbl{font-size:11.5px;color:var(--gray);}
   .stat-card .val{font-size:22px;font-weight:700;font-family:'Fraunces',serif;display:flex;align-items:center;gap:8px;}
@@ -253,6 +264,10 @@ complementar). -->
     <div class="field"><label>Nome completo</label><input type="text" id="c_nome"></div>
     <div class="field"><label>E-mail</label><input type="email" id="c_email"></div>
     <div class="field"><label>Senha</label><input type="password" id="c_senha"></div>
+    <!-- item 86 (03/09/2026, pedido direto do usuário): telefone —
+    pessoas_entregadoras.telefone já existia desde sempre, só nunca era
+    coletado aqui. -->
+    <div class="field"><label>Telefone (com WhatsApp)</label><input type="tel" id="c_telefone" placeholder="(11) 91234-5678"></div>
     <div class="field"><label>Data de nascimento</label><input type="date" id="c_nasc"></div>
 
     <div class="row2">
@@ -261,6 +276,13 @@ complementar). -->
     </div>
     <div class="field"><label>CEP</label><input type="text" id="c_cep"></div>
     <div class="field"><label>Chave Pix</label><input type="text" id="c_pix"></div>
+
+    <!-- item 86: contato de emergência (familiar) — colunas novas,
+    pessoas_entregadoras.contato_emergencia_nome/_telefone. -->
+    <div class="row2">
+      <div class="field"><label>Contato de emergência (nome)</label><input type="text" id="c_emerg_nome" placeholder="Ex: mãe, irmão..."></div>
+      <div class="field"><label>Telefone do contato</label><input type="tel" id="c_emerg_telefone" placeholder="(11) 91234-5678"></div>
+    </div>
 
     <!-- campos MOTO -->
     <div class="cond show" id="cond-moto">
@@ -345,7 +367,7 @@ complementar). -->
       <label class="upload"><input type="file" id="d_comprovante" accept="image/*"><div>Toque pra enviar</div><div class="fname" id="d_comprovante_n"></div></label>
     </div>
 
-    <button class="btn-primary" id="btnCompletarCadastro" onclick="enviarDocumentosPendentes()">Enviar documentos</button>
+    <button class="btn-primary" id="btnCompletarCadastro" onclick="pedirConfirmacaoSenha(enviarDocumentosPendentes)">Enviar documentos</button>
   </div>
 
   <!-- ===================== VIEW: EM AVALIAÇÃO ===================== -->
@@ -536,8 +558,25 @@ complementar). -->
       Saque solicitado — aguardando a loja pagar no seu Pix.
     </div>
 
-    <p style="color:var(--gray);font-size:12.5px;margin:6px 0 8px;font-weight:700;">Sem chave Pix cadastrada?</p>
-    <p style="color:var(--gray);font-size:12.5px;margin:0 0 18px;" id="sq_semPix">Fale com a loja pra atualizar seu cadastro — sem isso ela não consegue te pagar.</p>
+    <!-- item 83 (03/09/2026, correção do usuário): o cadastro já exige
+    chave Pix no onboarding — não existe estado real de "faltando" pra
+    tratar como alerta. Seção neutra, mostra o que já está cadastrado
+    (mascarado) + ação de editar, mesmo padrão RLS de sempre ("pessoa
+    atualiza seu proprio cadastro" já cobre pessoas_entregadoras.chave_pix,
+    update direto, sem RPC nova). -->
+    <p style="font-weight:700;font-size:13.5px;margin-bottom:6px;" id="sq_pixLabel">Sua chave Pix</p>
+    <div id="sq_pixView" style="margin-bottom:18px;">
+      <p style="color:var(--gray);font-size:14px;margin:0 0 6px;font-family:'Space Mono',monospace;" id="sq_pixMascarada">—</p>
+      <button class="link-btn" style="font-size:12.5px;padding:0;" onclick="abrirEdicaoPix()">Alterar chave Pix</button>
+    </div>
+    <div id="sq_pixEdit" style="display:none;margin-bottom:18px;">
+      <input type="text" id="sq_pixInput" placeholder="Nova chave Pix" style="width:100%;padding:11px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;margin-bottom:8px;">
+      <div style="display:flex;gap:8px;">
+        <button class="btn-ghost" style="flex:1;" onclick="fecharEdicaoPix()">Cancelar</button>
+        <button class="btn-primary" style="flex:1;" id="sq_pixSalvarBtn" onclick="pedirConfirmacaoSenha(salvarChavePix)">Salvar</button>
+      </div>
+      <div class="msg" id="sq_pixMsg"></div>
+    </div>
 
     <p style="font-weight:700;font-size:13.5px;margin-bottom:10px;">Últimas entregas</p>
     <div id="sq_lista"><div class="empty">Carregando…</div></div>
@@ -833,6 +872,39 @@ referências a tentativas_despacho no arquivo inteiro antes desta sessão). -->
   </div>
 </div>
 
+<!-- ===================== MODAL: CONFIRMAR SENHA (item 86) ===================== -->
+<!-- item 86 (03/09/2026, pedido direto do usuário): confirmação antes de
+alterar dado sensível (documentos, chave Pix). Verificação por SMS ficou
+sinalizada como pendência (não existe provedor de SMS configurado no
+projeto) — senha é a opção que dá pra construir agora, sem depender de
+nada externo. -->
+<div class="overlay" id="modalConfirmarSenha">
+  <div class="modal">
+    <h2 style="margin-bottom:4px;">Confirme sua senha</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 16px;">Por segurança, digite sua senha de novo antes de continuar.</p>
+    <div class="field"><input type="password" id="cs_senha" placeholder="Sua senha"></div>
+    <div class="msg" id="cs_msg"></div>
+    <div style="display:flex;gap:10px;">
+      <button class="btn-ghost" style="flex:1;" onclick="fecharConfirmarSenha()">Cancelar</button>
+      <button class="btn-primary" style="flex:1;" id="cs_confirmarBtn" onclick="confirmarSenhaEContinuar()">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== MODAL: PEDIDO CANCELADO ===================== -->
+<!-- item 85 (03/09/2026): usado tanto pelo lado restaurante quanto feira
+— é só a CASCA visual que é compartilhada (mesmo componente .overlay/.modal
+de sempre); a lógica de detecção/fila/ajuste de rota por trás é totalmente
+separada pra cada lado (ver tratarPedidoCanceladoRestaurante() vs
+tratarPedidoGrupoCanceladoFeira()), como pedido explícito do usuário. -->
+<div class="overlay" id="modalPedidoCancelado">
+  <div class="modal">
+    <h2 style="margin-bottom:4px;color:var(--red);">⛔ Pedido cancelado</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 16px;" id="mpc_resumo">—</p>
+    <button class="btn-danger" onclick="confirmarVisualizacaoCancelamento()">Entendi</button>
+  </div>
+</div>
+
 <!-- ===================== MODAL: AVALIAR APÓS ROTA DE FEIRA ===================== -->
 <div class="overlay" id="modalAvaliacaoFeira">
   <div class="modal">
@@ -902,6 +974,7 @@ let enderecoLojaAtual = null;
 let telefoneLojaAtual = null; // item 58 (27/08/2026): "Falar com a loja"
 let clienteTelefoneAtual = null; // item 58: "Falar com o cliente" (por parada, muda a cada abrirEntrega())
 let tipoVinculoAtual = null; // item 80 (03/09/2026): 'fixo' (vínculo com uma loja específica) | 'freelance' | null (sem vínculo nenhum ainda, ver carregarPessoaSemVinculo() do item 76) — usado pra texto da tela de Saque não prometer "fale com a loja" pra quem não tem uma loja específica
+let chavePixAtual = null; // item 83 (03/09/2026): já vem no select('*') de pessoas_entregadoras/entregadores_completo, só nunca tinha sido capturada numa variável própria — usado pra mostrar a chave mascarada na tela de Saque
 let minhaPosicaoAtual = null; // item 38 — última posição conhecida, pro mapa embutido
 let statusEntregadorCanalAtivo = false;
 let pollStatusEntregadorTimer = null;
@@ -911,6 +984,25 @@ let tenantConfig = { horas_alerta_fadiga: 8, horas_descanso_obrigatorio: 8 };
 let ganhoVisivel = true;
 let paradaAtualPedidoId = null;
 let swipeValidarEntrega = null; // item 79 — instanciado mais abaixo, depois de criarSwipeConfirm() existir
+
+// item 85 (03/09/2026): cancelamento de pedido em rota. Implementações
+// SEPARADAS pro restaurante e pra feira (pedido explícito do usuário,
+// mesma decisão arquitetural de duplicação deliberada já usada no
+// projeto pra entrega_rota/rota_parada) — cada lado com seu próprio
+// canal/poll/fila, mas os dois usam a MESMA fila de alerta
+// (filaAlertaCancelamento) e o mesmo modal (modalPedidoCancelado), só
+// pra não empilhar 2 modais diferentes se os dois cancelamentos
+// acontecerem quase juntos (cenário raro, mas simples de cobrir com uma
+// fila única).
+let cancelamentoRestauranteCanalAtivo = false;
+let cancelamentoRestaurantePollingAtivo = false;
+const pedidosCanceladosVistosRestaurante = new Set(); // idempotência entre Realtime e poll
+let cancelamentoFeiraCanalAtivo = false;
+let cancelamentoFeiraPollingAtivo = false;
+const gruposCanceladosVistosFeira = new Set();
+let filaAlertaCancelamento = []; // { tipo: 'restaurante'|'feira', pedido/grupo, rota }
+let cancelamentoModalAberto = false;
+const POLL_INTERVAL_CANCELAMENTO_MS = 30000; // 30s, explícito no pedido do usuário
 
 // Módulo feira (sessão de 22/08/2026) — mesma conta, mesma tela, sem
 // seletor de modo. Ver CLAUDE.md item 23 pro histórico da integração.
@@ -1220,12 +1312,15 @@ async function enviarCadastro(){
     const metadata = {
       tipo_vinculo: window._tipoVinculo || 'fixo',
       nome: document.getElementById('c_nome').value,
+      telefone: document.getElementById('c_telefone').value, // item 86
       tipo_veiculo: tipo,
       data_nascimento: document.getElementById('c_nasc').value,
       endereco: document.getElementById('c_end').value,
       numero_residencia: document.getElementById('c_num').value,
       cep: document.getElementById('c_cep').value,
       chave_pix: document.getElementById('c_pix').value,
+      contato_emergencia_nome: document.getElementById('c_emerg_nome').value, // item 86
+      contato_emergencia_telefone: document.getElementById('c_emerg_telefone').value, // item 86
     };
     if(TENANT_ID) metadata.tenant_id = TENANT_ID;
 
@@ -1413,7 +1508,23 @@ async function login(){
 // — mesma função que o botão "Finalizar turno" já usa, sem bloqueio de
 // fadiga (sair da conta não é o mesmo gatilho de "dirigiu demais", não
 // faz sentido mostrar aquele modal aqui) — antes de derrubar a sessão.
+//
+// item 82 (03/09/2026, pedido direto do usuário): "Sair" aqui É logout de
+// conta de verdade — chama supabaseClient.auth.signOut(), não é um
+// "fechar app" nem um "encerrar turno" disfarçado (isso já é efeito
+// colateral do item 81, não o propósito). Confirmado lendo o código, não
+// suposto. Pedido do usuário assumia que "Finalizar turno" já bloqueava
+// com rota ativa — checado e NÃO bloqueava (clicarFinalizar() só olha
+// fadiga, nunca rotasAtivasLista/rotaFeiraAtivaId). Checagem nova,
+// compartilhada pelas duas (evita duplicar, como o usuário pediu).
+function existeEntregaEmAndamento(){
+  return rotasAtivasLista.length > 0 || !!rotaFeiraAtivaId;
+}
 async function deslogar(){
+  if(existeEntregaEmAndamento()){
+    alert('Você tem uma entrega em andamento — conclua antes de sair da conta.');
+    return;
+  }
   if(turnoAtualId){
     await finalizarTurnoDeVerdade(false);
   }
@@ -1634,6 +1745,7 @@ async function carregarEntregador(){
   entregadorId = entregador.id;
   pessoaId = entregador.pessoa_id;
   tipoVinculoAtual = entregador.tipo_vinculo; // item 80 — 'fixo' | 'freelance', já vem de entregadores_completo
+  chavePixAtual = entregador.chave_pix; // item 83
   appNavegacaoPreferido = entregador.app_navegacao_preferido || 'waze'; // item 37
   registrarPushEntregador(); // no-op fora do app nativo (Capacitor) — ver função
 
@@ -1721,6 +1833,7 @@ async function carregarPessoaSemVinculo(pessoa){
   entregadorId = null;
   pessoaId = pessoa.id;
   tipoVinculoAtual = null; // item 80 — sem vínculo nenhum, não é nem 'fixo' nem 'freelance' formalmente; tela de Saque trata como freelance (sem loja específica)
+  chavePixAtual = pessoa.chave_pix; // item 83
   appNavegacaoPreferido = pessoa.app_navegacao_preferido || 'waze';
   registrarPushEntregador();
 
@@ -1824,6 +1937,8 @@ async function checarTurnoAtivo(){
     iniciarEscutaDeAtribuicaoRota(); // achado ao vivo (25/08/2026): ver comentário na função
     iniciarEscutaDeOfertasFeira(); // motor de despacho (feira) — mesmo turno, mesma tela, sem seletor de modo
     iniciarEscutaDePropostasConsolidacao(); // parada nova numa rota de feira já aceita — aceite/recusa próprios
+    iniciarEscutaDeCancelamentoRestaurante(); // item 85 — pedido cancelado pela plataforma de origem enquanto já em rota
+    iniciarEscutaDeCancelamentoFeira(); // item 85 — mesmo tratamento, lado feira (hoje inerte, ver comentário na função)
   } else {
     document.getElementById('turnoOffline').style.display = 'block';
     document.getElementById('turnoAtivo').style.display = 'none';
@@ -1881,7 +1996,16 @@ async function clicarContinuar(){
 }
 
 // ---- finalizar, com checagem de fadiga ----
+// item 90 (03/09/2026): mesmo guard do item 82 ("Sair"), agora também em
+// "Finalizar turno" — era a mesma lacuna, só ainda não tinha sido
+// corrigida aqui (sinalizado ao usuário antes, corrigido agora que ele
+// pediu "todas as correções possíveis"). existeEntregaEmAndamento() já
+// existe, só reaproveitada.
 function clicarFinalizar(){
+  if(existeEntregaEmAndamento()){
+    alert('Você tem uma entrega em andamento — conclua antes de finalizar o turno.');
+    return;
+  }
   const horasAtivo = (new Date() - turnoIniciadoEm) / 1000 / 3600;
   supabaseClient.from('turnos').select('teve_pausa').eq('id', turnoAtualId).single().then(({data}) => {
     if(horasAtivo >= tenantConfig.horas_alerta_fadiga && !data.teve_pausa){
@@ -2289,8 +2413,199 @@ async function abrirRotaEspecifica(indice){
   mostrar('view-rota');
 }
 
+// ------------------------------------------------------------
+// CANCELAMENTO DE PEDIDO EM ROTA (item 85, 03/09/2026)
+//
+// Contexto confirmado antes de escrever este código: o aviso de
+// cancelamento no lado RESTAURANTE vem de uma plataforma de delivery
+// externa (iFood/99/Rappi etc) — integração que NÃO EXISTE no projeto
+// hoje (grep completo, nada encontrado: sem webhook, sem polling de API
+// externa, nem coluna nenhuma recebendo esse status). O que existe é só
+// o "ponto de integração pronto": pedidos.status já aceita 'cancelado'
+// no enum, e um trigger novo (notificar_pedido_cancelado(), db/schema.sql)
+// reage a QUALQUER coisa que grave esse valor num pedido já em rota —
+// hoje só testável via update manual, no futuro seria o webhook/RPC da
+// integração externa. Tudo abaixo reage a pedidos.status='cancelado',
+// não importa quem/o que causou isso.
+//
+// No lado FEIRA, o cliente é um consumidor com cadastro próprio dentro
+// do GiroCerto — cancelamento seria uma ação INTERNA, não uma
+// integração externa. Confirmado também: não existe hoje nenhum app de
+// consumidor nem botão de cancelar em lugar nenhum do projeto — o
+// tratamento abaixo fica pronto no código, mas INERTE (nada dispara o
+// trigger correspondente ainda), e depende também do módulo feira sair
+// da fase de teste (ver CLAUDE.md).
+// ------------------------------------------------------------
+
+// item 85 (2): som distinto do buzina_bi_bi da oferta — 2 beeps graves,
+// curtos, sem melodia nenhuma ("atenção/pare", não "oportunidade nova").
+// Web Audio puro (sem asset de áudio novo pra carregar/hospedar) —
+// funciona com o app em primeiro plano; a notificação push (fora do
+// app, ver dispatch-engine/index.js e feira-dispatch/src/notifications.js)
+// usa o som PADRÃO do Android de propósito, pelo mesmo motivo de "sem
+// asset novo pra bundlar/rebuild nativo", e já soa diferente da buzina
+// customizada só por ser o som padrão do sistema.
+let somCancelamentoCtx = null;
+function tocarSomCancelamento(){
+  try{
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if(!Ctx) return;
+    if(!somCancelamentoCtx) somCancelamentoCtx = new Ctx();
+    const ctx = somCancelamentoCtx;
+    const tocarBeep = (atrasoSeg) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = 220;
+      const inicio = ctx.currentTime + atrasoSeg;
+      gain.gain.setValueAtTime(0.0001, inicio);
+      gain.gain.exponentialRampToValueAtTime(0.3, inicio + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, inicio + 0.35);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(inicio); osc.stop(inicio + 0.4);
+    };
+    tocarBeep(0);
+    tocarBeep(0.45);
+  } catch(err){
+    console.warn('Não deu pra tocar o som de cancelamento:', err.message);
+  }
+}
+
+// item 85 (6): log local, sem lógica de pagamento nenhuma associada
+// (fora do escopo do GiroCerto — decisão explícita do usuário: quem
+// reembolsa é a plataforma de origem). localStorage simples, cap de 100
+// entradas pra não crescer sem limite; consultável via suporte/disputa.
+function logCancelamentoLocal(identificador, tipo, detalhe){
+  try{
+    const chave = 'giro_log_cancelamentos';
+    const log = JSON.parse(localStorage.getItem(chave) || '[]');
+    log.push({ tipo, identificador, detalhe, em: new Date().toISOString() });
+    while(log.length > 100) log.shift();
+    localStorage.setItem(chave, JSON.stringify(log));
+  } catch(err){
+    console.warn('Não deu pra gravar o log local de cancelamento:', err.message);
+  }
+}
+
+// item 85 (5): fila única pros dois lados — o card/parada cancelada só
+// some da tela DEPOIS que o entregador confirma ter visto o alerta
+// ("Entendi"), nunca antes (evita sumiço abrupto sem aviso). Enquanto o
+// modal está aberto, mais nenhum alerta novo aparece por cima — só
+// entra na fila e espera a vez.
+function mostrarProximoAlertaCancelamento(){
+  if(cancelamentoModalAberto) return;
+  if(!filaAlertaCancelamento.length) return;
+  const item = filaAlertaCancelamento[0];
+  cancelamentoModalAberto = true;
+  document.getElementById('mpc_resumo').textContent = item.mensagem;
+  document.getElementById('modalPedidoCancelado').classList.add('show');
+  tocarSomCancelamento();
+  if(navigator.vibrate) navigator.vibrate([250,120,250,120,250]); // padrão longo/repetido de propósito — "pare", diferente de qualquer vibração de oferta
+}
+
+async function confirmarVisualizacaoCancelamento(){
+  const item = filaAlertaCancelamento.shift();
+  document.getElementById('modalPedidoCancelado').classList.remove('show');
+  cancelamentoModalAberto = false;
+  if(item){
+    if(item.tipo === 'restaurante') await ajustarRotaAposCancelamentoRestaurante(item.pedido, item.rota);
+    else if(item.tipo === 'feira') await ajustarRotaAposCancelamentoFeira(item.pedidoGrupo, item.entregaRotaId);
+  }
+  mostrarProximoAlertaCancelamento(); // próximo da fila, se houver
+}
+
+// ---- RESTAURANTE ----
+function iniciarEscutaDeCancelamentoRestaurante(){
+  if(!entregadorId) return; // item 76 — sem vínculo nenhum ainda não tem rota de restaurante possível
+  if(cancelamentoRestauranteCanalAtivo) return;
+  cancelamentoRestauranteCanalAtivo = true;
+
+  supabaseClient
+    .channel('cancelamento-pedido-restaurante')
+    .on('postgres_changes', {
+      event: 'UPDATE', schema: 'public', table: 'pedidos',
+    }, (payload) => {
+      if(payload.new.status === 'cancelado' && payload.old.status !== 'cancelado'){
+        tratarPedidoCanceladoRestaurante(payload.new);
+      }
+    })
+    .subscribe();
+
+  // item 85 (1): mesmo PADRÃO de poll de fallback já usado nas ofertas —
+  // intervalo de 30s explícito no pedido do usuário (diferente do
+  // POLL_INTERVAL_OFERTA_MS de 15s já existente, então uma constante
+  // própria em vez de reaproveitar aquela) — cancelamento é tão crítico
+  // quanto oferta perdida se o Realtime cair com o app em segundo plano.
+  if(!cancelamentoRestaurantePollingAtivo){
+    cancelamentoRestaurantePollingAtivo = true;
+    setInterval(async () => {
+      const idsRotas = rotasAtivasLista.map(r => r.id);
+      if(!idsRotas.length) return;
+      const { data: cancelados } = await supabaseClient
+        .from('pedidos')
+        .select('*')
+        .in('rota_id', idsRotas)
+        .eq('status', 'cancelado');
+      (cancelados || []).forEach(p => tratarPedidoCanceladoRestaurante(p));
+    }, POLL_INTERVAL_CANCELAMENTO_MS);
+  }
+}
+
+function tratarPedidoCanceladoRestaurante(pedido){
+  if(pedidosCanceladosVistosRestaurante.has(pedido.id)) return; // idempotência entre Realtime e poll
+  const rotaAfetada = rotasAtivasLista.find(r => r.id === pedido.rota_id);
+  if(!rotaAfetada) return; // não é uma das minhas rotas ativas agora
+  pedidosCanceladosVistosRestaurante.add(pedido.id);
+
+  logCancelamentoLocal(pedido.id, 'restaurante', { rota_id: pedido.rota_id, endereco: pedido.endereco });
+  filaAlertaCancelamento.push({
+    tipo: 'restaurante',
+    pedido,
+    rota: rotaAfetada,
+    mensagem: 'O pedido em ' + (pedido.endereco || 'endereço não informado') + ' foi cancelado pela plataforma de origem. Ele não faz mais parte da sua rota.',
+  });
+  mostrarProximoAlertaCancelamento();
+}
+
+async function ajustarRotaAposCancelamentoRestaurante(pedidoCancelado, rota){
+  const outrosPedidosAtivos = (rota.pedidos || []).filter(p =>
+    p.id !== pedidoCancelado.id && p.status !== 'entregue' && p.status !== 'cancelado');
+
+  if(outrosPedidosAtivos.length > 0){
+    // item 85 (3): múltiplos pedidos na rota — remove só essa parada.
+    // "Recalcular a rota" aqui é o refresh da lista de paradas
+    // (montarRota() já filtra pedidos cancelados, ver mais abaixo) — o
+    // app não faz otimização de trajeto multi-parada hoje (cada parada
+    // tem seu próprio mapa/navegação sob demanda, independentes entre
+    // si), então não existe traçado nenhum pra recalcular de verdade;
+    // "sem interromper a navegação dos outros" já é natural dessa
+    // arquitetura (nada em outra parada depende da que foi cancelada).
+    await verificarRotaAtiva();
+    return;
+  }
+
+  // item 85 (4): pedido único ativo na rota — sem fluxo de devolução
+  // física (fora do escopo do GiroCerto, decisão explícita do usuário:
+  // o produto fica com o entregador, o que fazer com ele não é problema
+  // desta tela). Encerra a navegação dessa rota e volta pro estado
+  // "aguardando próxima rota" (mesmo mapa em tela cheia do item 78/80).
+  await supabaseClient.from('rotas_entrega').update({ status: 'cancelada' }).eq('id', rota.id);
+  rotasAtivasLista = rotasAtivasLista.filter(r => r.id !== rota.id);
+  if(rotaAtivaId === rota.id) rotaAtivaId = null;
+  if(document.getElementById('view-rota').classList.contains('active') ||
+     document.getElementById('view-entrega').classList.contains('active')){
+    mostrar('view-turno');
+  }
+  await verificarRotaAtiva();
+}
+
 function montarRota(rota){
-  const pedidos = (rota.pedidos || []).sort((a,b) => (a.ordem_na_rota||0) - (b.ordem_na_rota||0));
+  // item 85: pedido cancelado não aparece mais na lista de paradas — só
+  // depois da confirmação do alerta (ver ajustarRotaAposCancelamentoRestaurante(),
+  // que é quem chama verificarRotaAtiva()/montarRota() de novo; antes
+  // disso o pedido ainda mostra normal, o card não some "na cara" sem
+  // aviso).
+  const pedidos = (rota.pedidos || []).filter(p => p.status !== 'cancelado').sort((a,b) => (a.ordem_na_rota||0) - (b.ordem_na_rota||0));
   document.getElementById('r_resumo').textContent =
     pedidos.length + ' parada(s) · código de retirada ' + rota.codigo_retirada;
 
@@ -2895,24 +3210,118 @@ function abrirRotaFeira(){
   montarRotaFeira();
 }
 
+// ---- FEIRA (item 85) ----
+// Implementação PRÓPRIA, não reaproveita nada da seção "RESTAURANTE"
+// acima — decisão arquitetural já tomada no projeto (duplicação
+// deliberada entre feira e restaurante). PENDENTE, sinalizado ao
+// usuário: não existe hoje nenhuma ação real que cancele um
+// pedido_grupo depois de já ter entrega_rota ativa (sem app de
+// consumidor no projeto) — fica pronto e inerte até essa ação existir,
+// e depende também do módulo feira sair da fase de teste.
+function iniciarEscutaDeCancelamentoFeira(){
+  if(!entregadorId) return; // entrega_rota também exige vínculo (entregador_id not null), mesmo motivo do lado restaurante
+  if(cancelamentoFeiraCanalAtivo) return;
+  cancelamentoFeiraCanalAtivo = true;
+
+  supabaseClient
+    .channel('cancelamento-pedido-grupo-feira')
+    .on('postgres_changes', {
+      event: 'UPDATE', schema: 'public', table: 'pedido_grupo',
+    }, (payload) => {
+      if(payload.new.status === 'cancelado' && payload.old.status !== 'cancelado'){
+        tratarPedidoGrupoCanceladoFeira(payload.new);
+      }
+    })
+    .subscribe();
+
+  if(!cancelamentoFeiraPollingAtivo){
+    cancelamentoFeiraPollingAtivo = true;
+    setInterval(async () => {
+      if(!rotaFeiraAtivaId) return;
+      const { data: grupos } = await supabaseClient
+        .from('entrega_rota_grupo')
+        .select('pedido_grupo:pedido_grupo_id(*)')
+        .eq('entrega_rota_id', rotaFeiraAtivaId);
+      (grupos || [])
+        .map(g => g.pedido_grupo)
+        .filter(g => g && g.status === 'cancelado')
+        .forEach(g => tratarPedidoGrupoCanceladoFeira(g));
+    }, POLL_INTERVAL_CANCELAMENTO_MS);
+  }
+}
+
+function tratarPedidoGrupoCanceladoFeira(pedidoGrupo){
+  if(gruposCanceladosVistosFeira.has(pedidoGrupo.id)) return; // idempotência entre Realtime e poll
+  // pedido_grupo não carrega entrega_rota_id direto (só via entrega_rota_grupo,
+  // a tabela de junção) — a RLS ("entregador ve pedido grupo da sua rota")
+  // já garante que só recebo eventos de grupos ligados a alguma rota
+  // minha; aqui só confere se tenho uma rota de feira ATIVA agora (se não
+  // tiver, não sobrou nada pra ajustar de qualquer forma).
+  if(!rotaFeiraAtivaId) return;
+  gruposCanceladosVistosFeira.add(pedidoGrupo.id);
+
+  logCancelamentoLocal(pedidoGrupo.id, 'feira', { entrega_rota_id: rotaFeiraAtivaId });
+  filaAlertaCancelamento.push({
+    tipo: 'feira',
+    pedidoGrupo,
+    entregaRotaId: rotaFeiraAtivaId,
+    mensagem: 'Um pedido da sua rota de feira foi cancelado. Ele não faz mais parte da sua rota.',
+  });
+  mostrarProximoAlertaCancelamento();
+}
+
+async function ajustarRotaAposCancelamentoFeira(pedidoGrupoCancelado, entregaRotaId){
+  const { data: outrosGrupos } = await supabaseClient
+    .from('entrega_rota_grupo')
+    .select('pedido_grupo:pedido_grupo_id(id, status)')
+    .eq('entrega_rota_id', entregaRotaId);
+  const aindaAtivos = (outrosGrupos || [])
+    .map(g => g.pedido_grupo)
+    .filter(g => g && g.id !== pedidoGrupoCancelado.id && g.status !== 'cancelado');
+
+  if(aindaAtivos.length > 0){
+    // item 85 (3), lado feira: outros pedido_grupo ainda ativos na mesma
+    // entrega_rota — só recarrega a lista de paradas (montarRotaFeira()
+    // já vai refletir o grupo cancelado sumindo, ver filtro abaixo).
+    await montarRotaFeira();
+    return;
+  }
+
+  // item 85 (4), lado feira: nenhum pedido_grupo ativo sobrando —
+  // encerra a rota e volta pro estado "aguardando próxima rota".
+  await supabaseClient.from('entrega_rota').update({ status: 'cancelada' }).eq('id', entregaRotaId);
+  rotaFeiraAtivaId = null;
+  if(document.getElementById('view-rota-feira').classList.contains('active')){
+    mostrar('view-turno');
+  }
+  await verificarRotaFeiraAtiva();
+}
+
 async function montarRotaFeira(){
   if(!rotaFeiraAtivaId) return;
 
+  // item 85: embute pedido_grupo(status) só pra poder filtrar parada
+  // 'entrega' de um grupo já cancelado — parada 'coleta' não tem
+  // pedido_grupo_id direto (só pedido_id), fica de fora desse filtro por
+  // ora (cancelamento de feira, nesta primeira versão, é por
+  // pedido_grupo — a coleta na banca de um item específico dentro de um
+  // grupo cancelado é um caso mais fino, não coberto ainda).
   const { data: paradas, error } = await supabaseClient
     .from('rota_parada')
-    .select('*, pedido:pedido_id(id, estabelecimento_id, estabelecimentos(nome))')
+    .select('*, pedido:pedido_id(id, estabelecimento_id, estabelecimentos(nome)), pedido_grupo:pedido_grupo_id(status)')
     .eq('entrega_rota_id', rotaFeiraAtivaId)
     .order('ordem', { ascending: true });
 
   if(error){ console.error('Não deu pra carregar a rota da feira:', error.message); return; }
 
-  const pendentes = (paradas || []).filter(p => p.status !== 'concluida');
+  const paradasVisiveis = (paradas || []).filter(p => !(p.tipo === 'entrega' && p.pedido_grupo && p.pedido_grupo.status === 'cancelado'));
+  const pendentes = paradasVisiveis.filter(p => p.status !== 'concluida');
   const proximaId = pendentes[0]?.id;
 
   document.getElementById('rf_resumo').textContent =
-    (paradas.length - pendentes.length) + '/' + paradas.length + ' paradas concluídas';
+    (paradasVisiveis.length - pendentes.length) + '/' + paradasVisiveis.length + ' paradas concluídas';
 
-  document.getElementById('rfParadasBox').innerHTML = (paradas || []).map((p, i) => {
+  document.getElementById('rfParadasBox').innerHTML = paradasVisiveis.map((p, i) => {
     const concluida = p.status === 'concluida';
     const atual = p.id === proximaId;
     const isEntrega = p.tipo === 'entrega';
@@ -3129,25 +3538,70 @@ async function abrirExtratoFeira(){
 // existe: "solicitar saque" só marca saque_solicitado_em pra loja ver e
 // pagar por fora, usando entregadores.chave_pix já cadastrada.
 // ------------------------------------------------------------
-// item 80 (03/09/2026): texto explicativo + bloco "sem chave Pix" mudam
-// conforme o vínculo — 'fixo' mantém o texto original (correto pra quem
-// atende 1 loja só); freelance/sem-vínculo (tipoVinculoAtual !== 'fixo')
-// não pode prometer "a loja" (pode ser várias, ou nenhuma ainda) nem
-// mandar "fale com a loja" (não tem uma loja específica pra falar).
-// NÃO existe hoje nenhuma tela de editar/cadastrar chave Pix depois do
-// cadastro inicial (chave_pix só é gravada 1x, no formulário de
-// cadastro — grep confirmado antes de escrever isto) — por isso o texto
-// freelance fica só informativo, sem link/ação nenhuma; construir essa
-// tela é uma decisão de produto separada, sinalizada aqui em vez de
-// inventada.
+// item 80 (03/09/2026): texto explicativo muda conforme o vínculo —
+// 'fixo' mantém o texto original (correto pra quem atende 1 loja só);
+// freelance/sem-vínculo (tipoVinculoAtual !== 'fixo') não pode prometer
+// "a loja" (pode ser várias, ou nenhuma ainda).
+//
+// item 83 (03/09/2026, correção do usuário): o bloco de chave Pix não é
+// mais tratado como alerta de pendência — o cadastro já exige a chave no
+// onboarding, então o estado normal é "já tem uma". Mostra mascarada
+// (chavePixAtual, capturado em carregarEntregador()/carregarPessoaSemVinculo())
+// com ação de editar. O caso de chave realmente ausente (conta antiga,
+// dado de teste inserido direto no banco) ainda é tratado, mas sem tom de
+// alerta — só texto neutro convidando a cadastrar.
+function mascararChavePix(chave){
+  if(!chave) return '';
+  const limpa = String(chave).trim();
+  if(limpa.length <= 6) return limpa; // muito curta pra mascarar com sentido nenhum
+  return limpa.slice(0, 3) + '••••' + limpa.slice(-3);
+}
 function atualizarTextoSaquePorPerfil(){
   const ehFixo = tipoVinculoAtual === 'fixo';
   document.getElementById('sq_textoExplicativo').textContent = ehFixo
     ? 'Valores das suas entregas no restaurante. A loja paga direto no seu Pix cadastrado — o GiroCerto não transfere dinheiro.'
     : 'Valores das suas entregas. O repasse é feito direto no seu Pix cadastrado — o GiroCerto não transfere dinheiro.';
-  document.getElementById('sq_semPix').textContent = ehFixo
-    ? 'Fale com a loja pra atualizar seu cadastro — sem isso ela não consegue te pagar.'
-    : 'Cadastre ou atualize sua chave Pix pra receber seus repasses. (Ainda não existe uma tela pra isso no app — pendência sinalizada, fale com o suporte por enquanto.)';
+
+  document.getElementById('sq_pixLabel').textContent = ehFixo ? 'Sua chave Pix (a loja paga nela)' : 'Sua chave Pix';
+  document.getElementById('sq_pixMascarada').textContent = chavePixAtual
+    ? mascararChavePix(chavePixAtual)
+    : 'Nenhuma chave cadastrada ainda.';
+  document.querySelector('#sq_pixView .link-btn').textContent = chavePixAtual ? 'Alterar chave Pix' : 'Cadastrar chave Pix';
+}
+
+function abrirEdicaoPix(){
+  document.getElementById('sq_pixInput').value = chavePixAtual || '';
+  document.getElementById('sq_pixMsg').className = 'msg';
+  document.getElementById('sq_pixView').style.display = 'none';
+  document.getElementById('sq_pixEdit').style.display = 'block';
+}
+function fecharEdicaoPix(){
+  document.getElementById('sq_pixEdit').style.display = 'none';
+  document.getElementById('sq_pixView').style.display = 'block';
+}
+async function salvarChavePix(){
+  const msg = document.getElementById('sq_pixMsg');
+  msg.className = 'msg';
+  const novaChave = document.getElementById('sq_pixInput').value.trim();
+  if(!novaChave){
+    msg.textContent = 'Digite uma chave Pix válida.';
+    msg.className = 'msg error';
+    return;
+  }
+  const btn = document.getElementById('sq_pixSalvarBtn');
+  btn.disabled = true; btn.textContent = 'Salvando...';
+  // mesma policy RLS de sempre ("pessoa atualiza seu proprio cadastro") —
+  // sem RPC nova, update direto na própria linha.
+  const { error } = await supabaseClient.from('pessoas_entregadoras').update({ chave_pix: novaChave }).eq('id', pessoaId);
+  btn.disabled = false; btn.textContent = 'Salvar';
+  if(error){
+    msg.textContent = 'Não deu pra salvar: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+  chavePixAtual = novaChave;
+  atualizarTextoSaquePorPerfil();
+  fecharEdicaoPix();
 }
 
 async function abrirSaque(){
@@ -3410,6 +3864,51 @@ async function confirmarChegadaEntrega(){
 // produto (ver o que foi reportado ao usuário). Ponteiro único
 // (mouse+touch via Pointer Events) em vez de handlers separados de
 // mouse/touch — evita duplicar a mesma lógica duas vezes.
+// item 86 (03/09/2026, pedido direto do usuário): confirmação de senha
+// antes de alterar dado sensível — documentos (enviarDocumentosPendentes())
+// e chave Pix (salvarChavePix()). Supabase não tem um "verificar senha
+// sem trocar a sessão" dedicado — signInWithPassword() de novo com o
+// mesmo e-mail é o jeito real de confirmar, e continua a mesma conta
+// (só troca o access_token). Verificação por código SMS ficou de fora —
+// não existe provedor de SMS configurado no projeto (Twilio ou
+// equivalente), sinalizado ao usuário em vez de simular.
+let confirmarSenhaCallback = null;
+function pedirConfirmacaoSenha(callback){
+  confirmarSenhaCallback = callback;
+  document.getElementById('cs_senha').value = '';
+  document.getElementById('cs_msg').className = 'msg';
+  document.getElementById('modalConfirmarSenha').classList.add('show');
+}
+function fecharConfirmarSenha(){
+  document.getElementById('modalConfirmarSenha').classList.remove('show');
+  confirmarSenhaCallback = null;
+}
+async function confirmarSenhaEContinuar(){
+  const msg = document.getElementById('cs_msg');
+  msg.className = 'msg';
+  const senha = document.getElementById('cs_senha').value;
+  if(!senha){ msg.textContent = 'Digite sua senha.'; msg.className = 'msg error'; return; }
+
+  const { data: { user } } = await supabaseClient.auth.getUser();
+  if(!user || !user.email){ msg.textContent = 'Sessão inválida — faça login de novo.'; msg.className = 'msg error'; return; }
+
+  const btn = document.getElementById('cs_confirmarBtn');
+  btn.disabled = true; btn.textContent = 'Verificando...';
+  const { error } = await supabaseClient.auth.signInWithPassword({ email: user.email, password: senha });
+  btn.disabled = false; btn.textContent = 'Confirmar';
+
+  if(error){
+    msg.textContent = 'Senha incorreta.';
+    msg.className = 'msg error';
+    return;
+  }
+
+  const callback = confirmarSenhaCallback;
+  document.getElementById('modalConfirmarSenha').classList.remove('show');
+  confirmarSenhaCallback = null;
+  if(callback) callback();
+}
+
 function criarSwipeConfirm(containerId, onConfirm){
   const el = document.getElementById(containerId);
   const handle = el.querySelector('.swipe-handle');

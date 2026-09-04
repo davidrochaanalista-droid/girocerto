@@ -2221,6 +2221,13 @@ alter publication supabase_realtime add table proposta_consolidacao;
 -- saberia de um cadastro pendente novo em tempo real, nem app-entregador.html
 -- saberia que foi aprovado/reprovado sem precisar de F5.
 alter publication supabase_realtime add table entregadores;
+-- pedido_grupo (item 85, 03/09/2026): mesmo padrão de causa raiz de
+-- sempre, achado testando o cancelamento de pedido em rota — o canal de
+-- cancelamento em app-entregador.html (UPDATE em pedido_grupo.status)
+-- não dispararia nada sem isso. Confirmado com teste real (client anon
+-- + trigger real): sem essa linha, o pg_notify do trigger disparava
+-- normalmente, mas o Realtime não entregava o evento pro client.
+alter publication supabase_realtime add table pedido_grupo;
 
 -- ==============================================================
 -- STORAGE (seção 39) — buckets privados pros documentos e fotos
@@ -6561,6 +6568,10 @@ $$;
 -- fixo (tem tenant_id) quanto freelance (não tem); (2) só cria a linha em
 -- `entregadores` quando tipo_vinculo='fixo' E tenant_id presente —
 -- freelance fica só com a pessoa, sem vínculo nenhum ainda.
+-- item 86 (03/09/2026, pedido direto do usuário): telefone (coluna já
+-- existia, nunca era preenchida pelo cadastro) + contato_emergencia_nome/
+-- contato_emergencia_telefone (colunas novas, ver alter table mais
+-- abaixo) agora entram junto no insert, quando vierem no metadata.
 create or replace function provisionar_cadastro_pos_signup()
 returns trigger
 language plpgsql
@@ -6574,15 +6585,17 @@ declare
 begin
   if meta ? 'tipo_vinculo' then
     insert into pessoas_entregadoras (
-      auth_user_id, email, nome, tipo_veiculo, data_nascimento,
+      auth_user_id, email, nome, telefone, tipo_veiculo, data_nascimento,
       endereco, numero_residencia, cep, chave_pix,
       cpf, cnh_numero, cnh_validade, placa, crlv_validade,
       rg_numero, responsavel_nome, is_teste,
+      contato_emergencia_nome, contato_emergencia_telefone,
       verificacao_enviada_em, verificacao_prazo_limite, consentimento_lgpd_aceito_em
     ) values (
       new.id,
       new.email,
       meta->>'nome',
+      meta->>'telefone',
       coalesce(nullif(meta->>'tipo_veiculo', ''), 'moto'),
       nullif(meta->>'data_nascimento', '')::date,
       meta->>'endereco',
@@ -6597,6 +6610,8 @@ begin
       meta->>'rg_numero',
       meta->>'responsavel_nome',
       coalesce((meta->>'is_teste')::boolean, false),
+      meta->>'contato_emergencia_nome',
+      meta->>'contato_emergencia_telefone',
       now(),
       now() + interval '7 days',
       now()
@@ -6618,6 +6633,29 @@ begin
     -- vínculo é criado só quando ganha a 1ª corrida
     -- (get_or_criar_vinculo_freelance(), ver buscarProximoCandidato() em
     -- dispatch-engine/index.js).
+
+    update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
+
+  -- item 91 (03/09/2026, pedido direto do usuário: "faça todas as
+  -- implementações possíveis" — feira não tinha cadastro self-service
+  -- nenhum, só login, criado via SQL). Checado ANTES do 'nome' genérico
+  -- (elsif abaixo) de propósito — 'nome' sempre está presente em TODOS
+  -- os tipos de cadastro, então precisa de um discriminador específico
+  -- (tipo_negocio='feirante') pra não cair sempre no ramo de loja.
+  elsif meta ? 'tipo_negocio' and meta->>'tipo_negocio' = 'feirante' then
+    insert into estabelecimentos (
+      auth_user_id, nome, tipo_negocio, telefone, chave_pix, latitude, longitude, is_teste
+    ) values (
+      new.id,
+      meta->>'nome',
+      'feirante',
+      meta->>'telefone',
+      meta->>'chave_pix',
+      nullif(meta->>'latitude', '')::double precision,
+      nullif(meta->>'longitude', '')::double precision,
+      coalesce((meta->>'is_teste')::boolean, false)
+    )
+    on conflict (auth_user_id) do nothing;
 
     update auth.users set raw_user_meta_data = '{}'::jsonb where id = new.id;
 
@@ -6692,3 +6730,329 @@ begin
     where id = p_pessoa_id;
 end;
 $$ language plpgsql;
+
+-- item 85 (03/09/2026): tratamento de pedido cancelado enquanto já está em
+-- rota. Confirmado antes de escrever isto: não existe integração alguma
+-- com plataforma de delivery externa (iFood/99/Rappi) no projeto — nem
+-- webhook, nem polling, nem coluna nenhuma recebendo esse status (grep
+-- completo no schema/dispatch-engine/mockups, nada encontrado). Isso fica
+-- como bloqueio real pra receber cancelamento de verdade, sinalizado ao
+-- usuário. O que ESTE trigger faz é o "ponto de integração pronto": ele
+-- reage a QUALQUER coisa que marque um pedido já despachado como
+-- cancelado — hoje só testável via update manual, no futuro seria o
+-- webhook/RPC da integração externa escrevendo em pedidos.status — sem
+-- precisar mudar nada aqui quando essa integração existir. pedidos.status
+-- já tinha 'cancelado' no enum desde sempre (só o timeout de pagamento da
+-- feira usava de verdade, pedido_grupo, nada a ver com pedido já em rota).
+create or replace function notificar_pedido_cancelado()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.status = 'cancelado' and old.status is distinct from 'cancelado' and new.rota_id is not null then
+    perform pg_notify('pedido_cancelado', json_build_object(
+      'pedido_id', new.id,
+      'rota_id', new.rota_id
+    )::text);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_notificar_pedido_cancelado on pedidos;
+create trigger trg_notificar_pedido_cancelado
+after update on pedidos
+for each row execute function notificar_pedido_cancelado();
+
+-- item 85 — mesmo tratamento, lado da feira, implementação PRÓPRIA (não
+-- reaproveita a função acima — decisão arquitetural já tomada no projeto:
+-- feira e restaurante ficam deliberadamente duplicados, ver comentário em
+-- entrega_rota). Reage a pedido_grupo.status virando 'cancelado' quando
+-- JÁ existe uma entrega_rota ativa (status='em_rota', ou seja, já
+-- despachada/aceita) pra esse grupo — diferente de
+-- notificar_grupo_pronto() (já existente), que só cobre o cancelamento
+-- ANTES do despacho (timeout de pagamento, sem entregador nenhum
+-- envolvido ainda). PENDENTE: não existe hoje nenhuma ação real que
+-- cancele um pedido_grupo DEPOIS de já ter entrega_rota ativa (nenhum
+-- app de consumidor existe no projeto) — este trigger fica pronto mas
+-- inerte até essa ação existir, sinalizado no CLAUDE.md.
+create or replace function notificar_pedido_grupo_cancelado_em_rota()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_entrega_rota_id uuid;
+begin
+  if new.status = 'cancelado' and old.status is distinct from 'cancelado' then
+    select erg.entrega_rota_id into v_entrega_rota_id
+    from entrega_rota_grupo erg
+    join entrega_rota er on er.id = erg.entrega_rota_id
+    where erg.pedido_grupo_id = new.id
+      and er.status = 'em_rota'
+    limit 1;
+
+    if v_entrega_rota_id is not null then
+      perform pg_notify('pedido_grupo_cancelado_em_rota', json_build_object(
+        'pedido_grupo_id', new.id,
+        'entrega_rota_id', v_entrega_rota_id
+      )::text);
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_notificar_pedido_grupo_cancelado_em_rota on pedido_grupo;
+create trigger trg_notificar_pedido_grupo_cancelado_em_rota
+after update on pedido_grupo
+for each row execute function notificar_pedido_grupo_cancelado_em_rota();
+
+-- item 86 (03/09/2026, pedido direto do usuário): telefone pessoal
+-- (coluna pessoas_entregadoras.telefone já existia desde sempre, nunca
+-- era coletada no cadastro nem exibida em lugar nenhum) + contato de
+-- emergência (colunas novas). provisionar_cadastro_pos_signup() já foi
+-- atualizada acima (edição direta, mesma função, mesma assinatura) pra
+-- gravar os dois quando vierem no metadata do signUp().
+alter table pessoas_entregadoras add column if not exists contato_emergencia_nome text;
+alter table pessoas_entregadoras add column if not exists contato_emergencia_telefone text;
+
+-- entregadores_completo precisa reexpor os campos novos (mesma view,
+-- create or replace) — sem isso painel-loja.html não teria como ler
+-- telefone/contato de emergência do entregador em caso de necessidade.
+create or replace view entregadores_completo
+with (security_invoker = true) as
+select
+  e.id, e.tenant_id, e.pessoa_id, e.tipo_vinculo, e.valor_fixo, e.periodicidade_fixo,
+  e.aceita_feira, e.limite_rotas_simultaneas, e.criado_em as vinculo_criado_em,
+  p.auth_user_id, p.email, p.nome, p.telefone, p.status, p.status_antes_pausa,
+  p.lat, p.lng, p.localizacao_atualizada_em, p.possui_maquininha, p.chave_pix,
+  p.bloqueado_ate, p.pausar_apos_rota_atual, p.modo_disponibilidade,
+  p.device_id_atual, p.device_id_atualizado_em,
+  p.consentimento_lgpd_aceito_em, p.dados_anonimizados_em, p.app_navegacao_preferido,
+  p.tipo_veiculo, p.data_nascimento, p.cpf, p.rg_numero, p.endereco, p.numero_residencia, p.cep,
+  p.cnh_numero, p.cnh_validade, p.cnh_foto_url, p.crlv_validade, p.crlv_foto_url, p.placa,
+  p.comprovante_residencia_foto_url, p.cnh_alerta_enviado_em, p.crlv_alerta_enviado_em,
+  p.foto_rg_url, p.foto_rg_segurando_url, p.foto_bicicleta_url, p.responsavel_nome,
+  p.responsavel_documento_foto_url, p.status_verificacao, p.motivo_reprovacao,
+  p.verificacao_enviada_em, p.verificacao_prazo_limite, p.aprovado_por, p.aprovado_em,
+  p.is_teste, p.push_token, p.push_plataforma, p.criado_em as pessoa_criado_em,
+  p.contato_emergencia_nome, p.contato_emergencia_telefone
+from entregadores e
+join pessoas_entregadoras p on p.id = e.pessoa_id;
+
+-- item 87 (03/09/2026, decisão de especialista pedida pelo usuário): a
+-- peça que faltava pro fluxo de cancelamento da feira (item 85) sair do
+-- papel — não existe app de consumidor no projeto (usuário confirmou:
+-- pedido é feito por WhatsApp direto com o feirante), então quem recebe
+-- o pedido de cancelamento é o FEIRANTE, não um consumidor dentro do
+-- app. RPC (não update direto — pedido_grupo não tem policy de UPDATE
+-- pro feirante ainda) com a MESMA checagem de posse já usada na policy
+-- de SELECT (pedido_grupos_do_meu_estabelecimento()), pra não abrir
+-- brecha nova. Dispara o trigger notificar_pedido_grupo_cancelado_em_rota()
+-- já criado no item 85 automaticamente (é um AFTER UPDATE trigger comum,
+-- não importa se o UPDATE veio de um RPC ou de um update direto).
+create or replace function cancelar_pedido_grupo_pelo_feirante(p_pedido_grupo_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_status_atual text;
+begin
+  if p_pedido_grupo_id not in (select pedido_grupos_do_meu_estabelecimento()) then
+    raise exception 'Você não tem permissão pra cancelar esse pedido.';
+  end if;
+
+  select status into v_status_atual from pedido_grupo where id = p_pedido_grupo_id;
+  if v_status_atual in ('entregue', 'cancelado') then
+    raise exception 'Esse pedido já foi % — não dá pra cancelar.', v_status_atual;
+  end if;
+
+  update pedido_grupo set status = 'cancelado', updated_at = now() where id = p_pedido_grupo_id;
+end;
+$$;
+
+-- item 89 (03/09/2026, pedido direto do usuário: "busca tudo que faça
+-- para virar real feira/pedido, faça as implementações para começar o
+-- teste"). Investigação prévia confirmou: não existe HOJE nenhum jeito
+-- de um pedido_grupo/pedido de feira nascer fora de um script de teste
+-- manual — sem app de consumidor (decisão já tomada: pedido chega por
+-- WhatsApp direto com o feirante), sem tela de "novo pedido" em
+-- painel-feirante.html, e RLS de pedido_grupo/usuarios/pedido_item só
+-- permite o PRÓPRIO consumidor autenticado inserir (nunca existe pra um
+-- cliente por WhatsApp). RPC nova: feirante lança o pedido que recebeu,
+-- SECURITY DEFINER com checagem de posse (só no PRÓPRIO estabelecimento).
+-- Acha/cria o "consumidor" (usuarios, auth_user_id fica null — sem conta
+-- nenhuma, só nome+telefone) por telefone. Escolhe a feira_ocorrencia via
+-- feirante_participacao ativa (prioriza a de hoje, cai pra qualquer
+-- outra ativa se não achar exata). Pedido nasce no MESMO estado inicial
+-- que o fluxo (ainda inexistente) de consumidor teria
+-- (status='aguardando_pagamentos') — dali em diante segue o caminho já
+-- testado (confirmarPagamento()/marcarComoPronto() em painel-feirante.html),
+-- sem duplicar nenhuma lógica.
+create or replace function criar_pedido_manual_feirante(
+  p_cliente_nome text,
+  p_cliente_telefone text,
+  p_endereco_entrega text,
+  p_latitude_entrega double precision,
+  p_longitude_entrega double precision,
+  p_taxa_entrega numeric,
+  p_itens jsonb -- [{produto_id, quantidade}, ...]
+) returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_estabelecimento_id uuid;
+  v_chave_pix text;
+  v_feira_ocorrencia_id uuid;
+  v_consumidor_id uuid;
+  v_pedido_grupo_id uuid;
+  v_pedido_id uuid;
+  v_item jsonb;
+  v_qtd_itens int := 0;
+begin
+  select id, chave_pix into v_estabelecimento_id, v_chave_pix
+    from estabelecimentos
+    where auth_user_id = auth.uid() and tipo_negocio = 'feirante';
+  if v_estabelecimento_id is null then
+    raise exception 'Você não é um feirante cadastrado.';
+  end if;
+  if v_chave_pix is null or v_chave_pix = '' then
+    raise exception 'Cadastre sua chave Pix antes de lançar pedidos.';
+  end if;
+
+  select fp.feira_ocorrencia_id into v_feira_ocorrencia_id
+    from feirante_participacao fp
+    join feira_ocorrencia fo on fo.id = fp.feira_ocorrencia_id
+    where fp.estabelecimento_id = v_estabelecimento_id and fp.ativo = true
+    order by (fo.dia_semana = extract(dow from now())::int) desc
+    limit 1;
+  if v_feira_ocorrencia_id is null then
+    raise exception 'Você não está participando de nenhuma feira ativa no momento.';
+  end if;
+
+  select id into v_consumidor_id from usuarios where telefone = p_cliente_telefone limit 1;
+  if v_consumidor_id is null then
+    insert into usuarios (nome, telefone) values (p_cliente_nome, p_cliente_telefone)
+    returning id into v_consumidor_id;
+  end if;
+
+  insert into pedido_grupo (
+    consumidor_id, feira_ocorrencia_id, taxa_entrega,
+    endereco_entrega, latitude_entrega, longitude_entrega
+  ) values (
+    v_consumidor_id, v_feira_ocorrencia_id, p_taxa_entrega,
+    p_endereco_entrega, p_latitude_entrega, p_longitude_entrega
+  ) returning id into v_pedido_grupo_id;
+
+  insert into pedido (pedido_grupo_id, estabelecimento_id, chave_pix_feirante)
+  values (v_pedido_grupo_id, v_estabelecimento_id, v_chave_pix)
+  returning id into v_pedido_id;
+
+  for v_item in select * from jsonb_array_elements(p_itens) loop
+    insert into pedido_item (pedido_id, produto_id, quantidade, preco_unitario, peso_unitario)
+    select v_pedido_id, pr.id, (v_item->>'quantidade')::numeric, pr.preco, pr.peso_kg
+    from produtos pr
+    where pr.id = (v_item->>'produto_id')::uuid
+      and pr.estabelecimento_id = v_estabelecimento_id;
+    get diagnostics v_qtd_itens = row_count;
+    if v_qtd_itens = 0 then
+      raise exception 'Produto % não pertence ao seu estabelecimento.', v_item->>'produto_id';
+    end if;
+  end loop;
+
+  update pedido set valor_produtos = (
+    select coalesce(sum(subtotal), 0) from pedido_item where pedido_id = v_pedido_id
+  ) where id = v_pedido_id;
+
+  return v_pedido_grupo_id;
+end;
+$$;
+
+-- item 91 (03/09/2026, pedido direto do usuário: "faça todas as correções
+-- e implementações possíveis"). Cadastro self-service do feirante (ramo
+-- novo do trigger acima) precisa de "on conflict (auth_user_id)" pro
+-- mesmo motivo já documentado em pessoas_entregadoras — reenvio de
+-- confirmação de e-mail pode re-disparar o trigger pro mesmo usuário.
+-- NULL continua permitido em múltiplas linhas (comportamento padrão de
+-- unique constraint no Postgres — NULL nunca é igual a NULL), não afeta
+-- estabelecimentos antigos/de teste sem auth_user_id.
+alter table estabelecimentos add constraint estabelecimentos_auth_user_id_key unique (auth_user_id);
+
+-- Criar feira/feira_ocorrencia continua restrito (decisão já tomada e
+-- documentada na policy de SELECT: "escrita só via service role,
+-- nenhuma policy de insert/update/delete") — respeitada aqui: RPC nova
+-- em vez de abrir RLS de insert direto pra qualquer autenticado, porque
+-- uma feira é uma entidade curada (evento/local físico real, não algo
+-- que faz sentido qualquer usuário criar sozinho, duplicado ou fake).
+-- Gate por eh_desenvolvedor_admin(), mesma allowlist de sempre
+-- (desenvolvedores_admin) — só David/equipe.
+create or replace function criar_feira_admin(
+  p_nome text,
+  p_bairro text,
+  p_cidade text,
+  p_dia_semana int,
+  p_endereco text,
+  p_latitude double precision,
+  p_longitude double precision,
+  p_horario_inicio time,
+  p_horario_fim time
+) returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_feira_id uuid;
+begin
+  if not eh_desenvolvedor_admin() then
+    raise exception 'Acesso restrito a administradores.';
+  end if;
+
+  insert into feira (nome, bairro, cidade) values (p_nome, p_bairro, p_cidade)
+  returning id into v_feira_id;
+
+  insert into feira_ocorrencia (feira_id, dia_semana, endereco, latitude, longitude, horario_inicio, horario_fim)
+  values (v_feira_id, p_dia_semana, p_endereco, p_latitude, p_longitude, p_horario_inicio, p_horario_fim);
+
+  return v_feira_id;
+end;
+$$;
+
+-- feira com mais de 1 dia de funcionamento (ex: terça E sábado, endereços
+-- diferentes) — chamado de novo pra cada dia adicional, numa feira já
+-- criada por criar_feira_admin().
+create or replace function adicionar_ocorrencia_feira_admin(
+  p_feira_id uuid,
+  p_dia_semana int,
+  p_endereco text,
+  p_latitude double precision,
+  p_longitude double precision,
+  p_horario_inicio time,
+  p_horario_fim time
+) returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_ocorrencia_id uuid;
+begin
+  if not eh_desenvolvedor_admin() then
+    raise exception 'Acesso restrito a administradores.';
+  end if;
+
+  insert into feira_ocorrencia (feira_id, dia_semana, endereco, latitude, longitude, horario_inicio, horario_fim)
+  values (p_feira_id, p_dia_semana, p_endereco, p_latitude, p_longitude, p_horario_inicio, p_horario_fim)
+  returning id into v_ocorrencia_id;
+
+  return v_ocorrencia_id;
+end;
+$$;

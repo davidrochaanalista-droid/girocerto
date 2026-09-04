@@ -254,6 +254,39 @@ async function enviarPushBuzinaEntregador(pushToken, plataforma) {
 }
 
 /**
+ * item 85 (03/09/2026): push de "pedido cancelado" pro lado da feira —
+ * implementação PRÓPRIA, não reaproveita enviarPushBuzinaEntregador nem a
+ * versão do dispatch-engine/index.js (decisão arquitetural já tomada no
+ * projeto: duplicação deliberada entre feira e restaurante, zero risco
+ * pro que já está em produção pesa mais que evitar a duplicação — mesmo
+ * princípio já usado pra entrega_rota/rota_parada). Som padrão do
+ * Android (sem channel_id/sound customizado), pelo mesmo motivo do lado
+ * restaurante: precisa soar diferente da buzina de oferta nova, sem
+ * precisar de asset de áudio novo.
+ *
+ * PENDENTE: este código fica pronto mas inerte — não existe hoje nenhum
+ * jeito do consumidor da feira cancelar um pedido (nem app de consumidor
+ * existe no projeto, só painel-feirante.html), então o trigger que
+ * dispara este canal (notificar_pedido_grupo_cancelado_em_rota(), ver
+ * db/schema.sql) nunca vai disparar de verdade até essa ação existir. E
+ * o módulo feira inteiro ainda não está em produção real (rodava só via
+ * script manual até a sessão do item 62/63) — dependência dupla,
+ * sinalizada aqui e no CLAUDE.md.
+ */
+async function enviarPushCancelamentoEntregadorFeira(pushToken, plataforma, pedidoGrupoId) {
+  if (plataforma !== 'android' || !pushToken) return;
+  try {
+    await appFirebase().messaging().send({
+      token: pushToken,
+      notification: { title: 'GiroCerto — pedido cancelado', body: 'Um pedido da sua rota de feira foi cancelado. Toque pra ver.' },
+      android: { priority: 'high', notification: { tag: `cancelamento-feira-${pedidoGrupoId}` } },
+    });
+  } catch (err) {
+    console.error('[push-feira] falha ao notificar cancelamento (não bloqueia o ajuste de rota):', err.message);
+  }
+}
+
+/**
  * Exemplo de integração real com WhatsApp Cloud API (Meta).
  * Preencha WHATSAPP_TOKEN e WHATSAPP_PHONE_ID nas variáveis de ambiente.
  */
@@ -325,4 +358,5 @@ module.exports = {
   // entregador da feira nunca funcionou, silenciosamente, desde que essa
   // cópia do módulo foi integrada (22/08/2026).
   enviarPushBuzinaEntregador,
+  enviarPushCancelamentoEntregadorFeira,
 };

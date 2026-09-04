@@ -22,7 +22,7 @@ const { Client } = require('pg');
 const { createClient } = require('@supabase/supabase-js');
 const express = require('express');
 const { createRouteManager } = require('./src/routeManager');
-const { createNotificationWorker, enviarWhatsappCloudAPI, enviarPushVoz } = require('./src/notifications');
+const { createNotificationWorker, enviarWhatsappCloudAPI, enviarPushVoz, enviarPushCancelamentoEntregadorFeira } = require('./src/notifications');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -132,6 +132,39 @@ async function despacharGruposOrfaos() {
   }
 }
 
+// item 85 (03/09/2026): pedido cancelado enquanto já em rota de feira —
+// implementação PRÓPRIA (não reaproveita nada do dispatch-engine/index.js,
+// decisão arquitetural já tomada no projeto). PENDENTE, sinalizado no
+// CLAUDE.md: nenhuma ação real dispara isso hoje (sem app de consumidor
+// de feira), fica pronto e inerte.
+async function tratarPedidoGrupoCancelado(payloadStr) {
+  let payload;
+  try {
+    payload = JSON.parse(payloadStr);
+  } catch (e) {
+    console.error('[cancelamento-feira] payload inválido:', payloadStr);
+    return;
+  }
+  const { pedido_grupo_id: pedidoGrupoId, entrega_rota_id: entregaRotaId } = payload;
+
+  const { data: rota, error } = await supabase
+    .from('entrega_rota')
+    .select('entregador_id, entregadores(pessoas_entregadoras(push_token, push_plataforma))')
+    .eq('id', entregaRotaId)
+    .single();
+  if (error || !rota || !rota.entregador_id) {
+    console.error(`[cancelamento-feira] pedido_grupo ${pedidoGrupoId}: não achei a rota/entregador (entrega_rota ${entregaRotaId})`, error && error.message);
+    return;
+  }
+  const pessoa = rota.entregadores && rota.entregadores.pessoas_entregadoras;
+  if (!pessoa || !pessoa.push_token) {
+    console.log(`[cancelamento-feira] pedido_grupo ${pedidoGrupoId}: entregador sem push_token registrado`);
+    return;
+  }
+  console.log(`[cancelamento-feira] pedido_grupo ${pedidoGrupoId} (entrega_rota ${entregaRotaId}) cancelado — notificando entregador`);
+  enviarPushCancelamentoEntregadorFeira(pessoa.push_token, pessoa.push_plataforma, pedidoGrupoId);
+}
+
 // ------------------------------------------------------------
 // LISTEN/NOTIFY com reconexão — mesma estrutura de dispatch-engine/index.js,
 // já corrigida desde o início pro achado do item 62 (reconexão sem
@@ -162,6 +195,7 @@ async function iniciarListener() {
 
   await listener.connect();
   await listener.query('LISTEN pedido_grupo_pronto');
+  await listener.query('LISTEN pedido_grupo_cancelado_em_rota'); // item 85
 
   if (jaConectouAntes) {
     despacharGruposOrfaos().catch((e) => console.error('[reconciliação-feira] falha na varredura pós-reconexão:', e.message));
@@ -171,10 +205,12 @@ async function iniciarListener() {
   listener.on('notification', (msg) => {
     if (msg.channel === 'pedido_grupo_pronto') {
       despacharComLog(msg.payload);
+    } else if (msg.channel === 'pedido_grupo_cancelado_em_rota') {
+      tratarPedidoGrupoCancelado(msg.payload).catch((e) => console.error('[cancelamento-feira] erro ao processar:', e.message));
     }
   });
 
-  console.log('[listener-feira] conectado — escutando pedido_grupo_pronto');
+  console.log('[listener-feira] conectado — escutando pedido_grupo_pronto e pedido_grupo_cancelado_em_rota');
 }
 
 async function main() {

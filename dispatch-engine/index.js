@@ -98,6 +98,59 @@ async function enviarPushBuzinaEntregador(pushToken, plataforma, tag) {
   }
 }
 
+// item 85 (03/09/2026): push de "pedido cancelado" — som PADRÃO do
+// Android (sem "sound" custom nenhum, sem channel_id próprio) de
+// propósito: precisa soar DIFERENTE da buzina alegre de oferta nova
+// (channel girocerto_buzina_entregador_v2/buzina_bi_bi), e usar o som
+// padrão do sistema consegue isso sem precisar de um asset de áudio novo
+// nem rebuild nativo pra registrar um channel novo — só o app aberto (via
+// Web Audio, ver tocarSomCancelamento() em app-entregador.html) tem o som
+// customizado de propósito (2 beeps graves, sem melodia).
+async function enviarPushCancelamentoEntregador(pushToken, plataforma, pedidoId) {
+  if (plataforma !== 'android' || !pushToken) return;
+  try {
+    await appFirebase().messaging().send({
+      token: pushToken,
+      notification: { title: 'GiroCerto — pedido cancelado', body: 'Um pedido da sua rota foi cancelado. Toque pra ver.' },
+      android: { priority: 'high', notification: { tag: `cancelamento-${pedidoId}` } },
+    });
+    console.log('[push] alerta de cancelamento enviado ao entregador');
+  } catch (err) {
+    console.error('[push] falha ao notificar cancelamento (não bloqueia o ajuste de rota, o app detecta via Realtime/poll de qualquer forma):', err.message);
+  }
+}
+
+// Lookup do push_token a partir do rota_id — o NOTIFY só carrega
+// pedido_id/rota_id (payload pequeno, mesmo princípio dos outros canais),
+// então busca aqui o entregador dono da rota na hora de mandar o push.
+async function tratarPedidoCancelado(payloadStr) {
+  let payload;
+  try {
+    payload = JSON.parse(payloadStr);
+  } catch (e) {
+    console.error('[cancelamento] payload inválido:', payloadStr);
+    return;
+  }
+  const { pedido_id: pedidoId, rota_id: rotaId } = payload;
+
+  const { data: rota, error } = await admin
+    .from('rotas_entrega')
+    .select('entregador_id, entregadores(pessoas_entregadoras(push_token, push_plataforma))')
+    .eq('id', rotaId)
+    .single();
+  if (error || !rota || !rota.entregador_id) {
+    console.error(`[cancelamento] pedido ${pedidoId}: não achei a rota/entregador (rota ${rotaId})`, error && error.message);
+    return;
+  }
+  const pessoa = rota.entregadores && rota.entregadores.pessoas_entregadoras;
+  if (!pessoa || !pessoa.push_token) {
+    console.log(`[cancelamento] pedido ${pedidoId}: entregador sem push_token registrado — app deve pegar via Realtime/poll mesmo assim`);
+    return;
+  }
+  console.log(`[cancelamento] pedido ${pedidoId} (rota ${rotaId}) cancelado — notificando entregador`);
+  enviarPushCancelamentoEntregador(pessoa.push_token, pessoa.push_plataforma, pedidoId);
+}
+
 function haversineKm(lat1, lng1, lat2, lng2) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -715,6 +768,7 @@ async function iniciarListener() {
   await listener.connect();
   await listener.query('LISTEN pedido_pronto');
   await listener.query('LISTEN tentativa_despacho_respondida');
+  await listener.query('LISTEN pedido_cancelado'); // item 85
 
   // fecha a janela entre "conexão caiu" e "LISTEN religado" (ver comentário
   // em despacharPedidosOrfaos) — sem isso, só o poll periódico abaixo (main())
@@ -729,10 +783,12 @@ async function iniciarListener() {
       tentarDespachar(msg.payload).catch((e) => console.error('[despacho] erro em tentarDespachar:', e.message));
     } else if (msg.channel === 'tentativa_despacho_respondida') {
       tratarRespostaDespacho(msg.payload).catch((e) => console.error('[despacho] erro em tratarRespostaDespacho:', e.message));
+    } else if (msg.channel === 'pedido_cancelado') {
+      tratarPedidoCancelado(msg.payload).catch((e) => console.error('[cancelamento] erro ao processar:', e.message));
     }
   });
 
-  console.log('[listener] conectado — escutando pedido_pronto e tentativa_despacho_respondida');
+  console.log('[listener] conectado — escutando pedido_pronto, tentativa_despacho_respondida e pedido_cancelado');
 }
 
 // Expurgo de localizacoes_entregador (26/08/2026, análise de mercado

@@ -142,6 +142,7 @@
     <div class="sidebar">
       <div class="nav-item active" data-view="visao-geral" onclick="trocarView('visao-geral')">Visão Geral</div>
       <div class="nav-item" data-view="aprovacao" onclick="trocarView('aprovacao')">Aprovação</div>
+      <div class="nav-item" data-view="feiras" onclick="trocarView('feiras')">Feiras</div>
     </div>
 
     <!-- ---------- VIEW: VISÃO GERAL ---------- -->
@@ -190,6 +191,22 @@
       <h1>Aprovação de entregadores</h1>
       <p class="subtitle">Cadastros pendentes (status "em avaliação") de todas as lojas.</p>
       <div id="aprovacaoBox"><div class="empty">Carregando…</div></div>
+    </div>
+
+    <!-- ---------- VIEW: FEIRAS (item 91, 03/09/2026) ---------- -->
+    <!-- criar feira/feira_ocorrencia continua restrito a admin de
+    propósito — decisão já documentada em db/schema.sql ("escrita só via
+    service role") — uma feira é um evento/local físico real, curado,
+    não algo que qualquer feirante deveria poder criar sozinho
+    (duplicado/fake). RPCs criar_feira_admin()/adicionar_ocorrencia_feira_admin()
+    fazem esse gate. -->
+    <div class="main mainview" id="mv-feiras" style="display:none;">
+      <h1>Feiras</h1>
+      <p class="subtitle">Cadastre onde cada feira acontece — feirantes escolhem uma dessas ao se cadastrar.</p>
+
+      <button class="btn-primary" style="width:auto;padding:11px 20px;margin-bottom:20px;" onclick="abrirModalNovaFeira()">+ Nova feira</button>
+
+      <div id="listaFeirasAdmin"><div class="empty">Carregando…</div></div>
     </div>
   </div>
 </div>
@@ -247,6 +264,79 @@
     <div class="nav2">
       <button class="btn-ghost" onclick="fecharModalMudarSenha()">Cancelar</button>
       <button class="btn-primary" id="msConfirmBtn" onclick="confirmarMudarSenha()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- MODAL: NOVA FEIRA (item 91, 03/09/2026) ---------- -->
+<div class="overlay" id="modalNovaFeira">
+  <div class="modal-card">
+    <h2 style="margin-bottom:4px;">Nova feira</h2>
+    <p>Cadastra a feira e o primeiro dia de funcionamento — dá pra adicionar mais dias depois.</p>
+    <div class="msg" id="nf_msg"></div>
+    <div class="field"><label>Nome da feira</label><input type="text" id="nf_nome" placeholder="Ex: Feira da Brasilândia"></div>
+    <div class="field"><label>Bairro</label><input type="text" id="nf_bairro"></div>
+    <div class="field"><label>Cidade</label><input type="text" id="nf_cidade"></div>
+    <div class="field">
+      <label>Dia da semana</label>
+      <select id="nf_diaSemana">
+        <option value="0">Domingo</option>
+        <option value="1">Segunda</option>
+        <option value="2">Terça</option>
+        <option value="3">Quarta</option>
+        <option value="4">Quinta</option>
+        <option value="5">Sexta</option>
+        <option value="6">Sábado</option>
+      </select>
+    </div>
+    <div class="field"><label>Endereço</label><input type="text" id="nf_endereco" placeholder="Rua, número, bairro, cidade"></div>
+    <button class="btn-ghost" style="width:100%;margin-bottom:14px;" onclick="localizarEnderecoFeira()">📍 Localizar endereço</button>
+    <div id="nf_enderecoStatus" style="font-size:12.5px;color:var(--gray);margin:-10px 0 14px;"></div>
+    <div class="field">
+      <label>Horário</label>
+      <div style="display:flex;gap:10px;">
+        <input type="time" id="nf_horarioInicio" style="flex:1;">
+        <input type="time" id="nf_horarioFim" style="flex:1;">
+      </div>
+    </div>
+    <div class="nav2">
+      <button class="btn-ghost" onclick="fecharModalNovaFeira()">Cancelar</button>
+      <button class="btn-primary" id="nf_confirmBtn" onclick="confirmarNovaFeira()">Criar feira</button>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- MODAL: NOVA OCORRÊNCIA (mais um dia numa feira já existente) ---------- -->
+<div class="overlay" id="modalNovaOcorrencia">
+  <div class="modal-card">
+    <h2 style="margin-bottom:4px;">Novo dia de funcionamento</h2>
+    <p>Adiciona outro dia pra <b id="no_feiraNome">—</b> — pode ser endereço diferente.</p>
+    <div class="msg" id="no_msg"></div>
+    <div class="field">
+      <label>Dia da semana</label>
+      <select id="no_diaSemana">
+        <option value="0">Domingo</option>
+        <option value="1">Segunda</option>
+        <option value="2">Terça</option>
+        <option value="3">Quarta</option>
+        <option value="4">Quinta</option>
+        <option value="5">Sexta</option>
+        <option value="6">Sábado</option>
+      </select>
+    </div>
+    <div class="field"><label>Endereço</label><input type="text" id="no_endereco" placeholder="Rua, número, bairro, cidade"></div>
+    <button class="btn-ghost" style="width:100%;margin-bottom:14px;" onclick="localizarEnderecoOcorrencia()">📍 Localizar endereço</button>
+    <div id="no_enderecoStatus" style="font-size:12.5px;color:var(--gray);margin:-10px 0 14px;"></div>
+    <div class="field">
+      <label>Horário</label>
+      <div style="display:flex;gap:10px;">
+        <input type="time" id="no_horarioInicio" style="flex:1;">
+        <input type="time" id="no_horarioFim" style="flex:1;">
+      </div>
+    </div>
+    <div class="nav2">
+      <button class="btn-ghost" onclick="fecharModalNovaOcorrencia()">Cancelar</button>
+      <button class="btn-primary" id="no_confirmBtn" onclick="confirmarNovaOcorrencia()">Adicionar dia</button>
     </div>
   </div>
 </div>
@@ -366,6 +456,181 @@ function trocarView(view){
   document.getElementById('mv-' + view).style.display = 'block';
   if(view === 'visao-geral') carregarVisaoGeral();
   if(view === 'aprovacao') carregarAprovacao();
+  if(view === 'feiras') carregarFeirasAdmin();
+}
+
+// ------------------------------------------------------------
+// FEIRAS (item 91, 03/09/2026, pedido direto do usuário: "faça todas as
+// implementações possíveis" — feira não tinha nenhum jeito de nascer
+// fora de SQL direto). Escrita restrita a admin de propósito (decisão já
+// documentada em db/schema.sql) — RPCs criar_feira_admin()/
+// adicionar_ocorrencia_feira_admin() fazem o gate via eh_desenvolvedor_admin().
+// ------------------------------------------------------------
+const DIAS_SEMANA_ADMIN = ['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'];
+let _enderecoFeiraGeocodificado = null;
+let _enderecoOcorrenciaGeocodificado = null;
+let _feiraIdParaNovaOcorrencia = null;
+
+async function carregarFeirasAdmin(){
+  const box = document.getElementById('listaFeirasAdmin');
+  box.innerHTML = '<div class="empty">Carregando…</div>';
+
+  const { data: feiras, error } = await supabaseClient.from('feira').select('id, nome, bairro, cidade').order('nome', { ascending: true });
+  if(error){ box.innerHTML = '<div class="empty">Não deu pra carregar.</div>'; return; }
+  if(!feiras || !feiras.length){ box.innerHTML = '<div class="empty">Nenhuma feira cadastrada ainda.</div>'; return; }
+
+  const { data: ocorrencias } = await supabaseClient.from('feira_ocorrencia').select('id, feira_id, dia_semana, endereco, horario_inicio, horario_fim');
+
+  box.innerHTML = feiras.map(f => {
+    const desta = (ocorrencias || []).filter(o => o.feira_id === f.id).sort((a,b) => a.dia_semana - b.dia_semana);
+    const metaStyle = 'font-size:12.5px;color:var(--gray);margin-bottom:4px;';
+    return `
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin-bottom:14px;">
+        <div style="font-weight:700;font-size:15px;margin-bottom:2px;">${escapeHtml(f.nome)}</div>
+        <div style="${metaStyle}">${escapeHtml(f.bairro || '')}${f.bairro && f.cidade ? ' · ' : ''}${escapeHtml(f.cidade || '')}</div>
+        ${desta.map(o => `<div style="${metaStyle}">${DIAS_SEMANA_ADMIN[o.dia_semana]} · ${escapeHtml(o.endereco)} · ${o.horario_inicio?.slice(0,5)}–${o.horario_fim?.slice(0,5)}</div>`).join('') || `<div style="${metaStyle}">Nenhum dia cadastrado ainda.</div>`}
+        <button class="btn-ghost" style="margin-top:10px;padding:8px 14px;font-size:12.5px;" onclick="abrirModalNovaOcorrencia('${escapeHtml(f.id)}', '${escapeHtml(f.nome).replace(/'/g,"\\'")}')">+ Adicionar dia</button>
+      </div>
+    `;
+  }).join('');
+}
+
+function abrirModalNovaFeira(){
+  document.getElementById('nf_msg').className = 'msg';
+  document.getElementById('nf_nome').value = '';
+  document.getElementById('nf_bairro').value = '';
+  document.getElementById('nf_cidade').value = '';
+  document.getElementById('nf_endereco').value = '';
+  document.getElementById('nf_enderecoStatus').textContent = '';
+  document.getElementById('nf_horarioInicio').value = '';
+  document.getElementById('nf_horarioFim').value = '';
+  _enderecoFeiraGeocodificado = null;
+  document.getElementById('modalNovaFeira').classList.add('show');
+}
+function fecharModalNovaFeira(){
+  document.getElementById('modalNovaFeira').classList.remove('show');
+}
+
+async function geocodificarEndereco(endereco){
+  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=' + encodeURIComponent(endereco);
+  const res = await fetch(url, { headers: { 'Accept-Language': 'pt-BR' } });
+  const resultados = await res.json();
+  return resultados && resultados[0] ? { lat: Number(resultados[0].lat), lng: Number(resultados[0].lon) } : null;
+}
+
+async function localizarEnderecoFeira(){
+  const endereco = document.getElementById('nf_endereco').value.trim();
+  const status = document.getElementById('nf_enderecoStatus');
+  if(!endereco){ status.textContent = 'Digite o endereço primeiro.'; return; }
+  status.textContent = 'Procurando...';
+  const ponto = await geocodificarEndereco(endereco).catch(() => null);
+  if(!ponto){ status.textContent = 'Não achei esse endereço — confira e tente de novo.'; _enderecoFeiraGeocodificado = null; return; }
+  _enderecoFeiraGeocodificado = ponto;
+  status.textContent = '✓ Endereço localizado.';
+}
+
+async function confirmarNovaFeira(){
+  const msg = document.getElementById('nf_msg');
+  msg.className = 'msg';
+  const nome = document.getElementById('nf_nome').value.trim();
+  const bairro = document.getElementById('nf_bairro').value.trim();
+  const cidade = document.getElementById('nf_cidade').value.trim();
+  const diaSemana = Number(document.getElementById('nf_diaSemana').value);
+  const endereco = document.getElementById('nf_endereco').value.trim();
+  const horarioInicio = document.getElementById('nf_horarioInicio').value;
+  const horarioFim = document.getElementById('nf_horarioFim').value;
+
+  if(!nome || !endereco || !horarioInicio || !horarioFim){
+    msg.textContent = 'Preencha nome, endereço e horário.';
+    msg.className = 'msg error';
+    return;
+  }
+  if(!_enderecoFeiraGeocodificado){
+    msg.textContent = 'Localize o endereço antes de criar (botão "Localizar endereço").';
+    msg.className = 'msg error';
+    return;
+  }
+
+  const btn = document.getElementById('nf_confirmBtn');
+  btn.disabled = true; btn.textContent = 'Criando...';
+  const { error } = await supabaseClient.rpc('criar_feira_admin', {
+    p_nome: nome, p_bairro: bairro || null, p_cidade: cidade || null,
+    p_dia_semana: diaSemana, p_endereco: endereco,
+    p_latitude: _enderecoFeiraGeocodificado.lat, p_longitude: _enderecoFeiraGeocodificado.lng,
+    p_horario_inicio: horarioInicio, p_horario_fim: horarioFim,
+  });
+  btn.disabled = false; btn.textContent = 'Criar feira';
+
+  if(error){
+    msg.textContent = 'Não deu pra criar: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+  fecharModalNovaFeira();
+  await carregarFeirasAdmin();
+}
+
+function abrirModalNovaOcorrencia(feiraId, feiraNome){
+  _feiraIdParaNovaOcorrencia = feiraId;
+  document.getElementById('no_feiraNome').textContent = feiraNome;
+  document.getElementById('no_msg').className = 'msg';
+  document.getElementById('no_endereco').value = '';
+  document.getElementById('no_enderecoStatus').textContent = '';
+  document.getElementById('no_horarioInicio').value = '';
+  document.getElementById('no_horarioFim').value = '';
+  _enderecoOcorrenciaGeocodificado = null;
+  document.getElementById('modalNovaOcorrencia').classList.add('show');
+}
+function fecharModalNovaOcorrencia(){
+  document.getElementById('modalNovaOcorrencia').classList.remove('show');
+}
+
+async function localizarEnderecoOcorrencia(){
+  const endereco = document.getElementById('no_endereco').value.trim();
+  const status = document.getElementById('no_enderecoStatus');
+  if(!endereco){ status.textContent = 'Digite o endereço primeiro.'; return; }
+  status.textContent = 'Procurando...';
+  const ponto = await geocodificarEndereco(endereco).catch(() => null);
+  if(!ponto){ status.textContent = 'Não achei esse endereço — confira e tente de novo.'; _enderecoOcorrenciaGeocodificado = null; return; }
+  _enderecoOcorrenciaGeocodificado = ponto;
+  status.textContent = '✓ Endereço localizado.';
+}
+
+async function confirmarNovaOcorrencia(){
+  const msg = document.getElementById('no_msg');
+  msg.className = 'msg';
+  const diaSemana = Number(document.getElementById('no_diaSemana').value);
+  const endereco = document.getElementById('no_endereco').value.trim();
+  const horarioInicio = document.getElementById('no_horarioInicio').value;
+  const horarioFim = document.getElementById('no_horarioFim').value;
+
+  if(!endereco || !horarioInicio || !horarioFim){
+    msg.textContent = 'Preencha endereço e horário.';
+    msg.className = 'msg error';
+    return;
+  }
+  if(!_enderecoOcorrenciaGeocodificado){
+    msg.textContent = 'Localize o endereço antes de adicionar (botão "Localizar endereço").';
+    msg.className = 'msg error';
+    return;
+  }
+
+  const btn = document.getElementById('no_confirmBtn');
+  btn.disabled = true; btn.textContent = 'Adicionando...';
+  const { error } = await supabaseClient.rpc('adicionar_ocorrencia_feira_admin', {
+    p_feira_id: _feiraIdParaNovaOcorrencia, p_dia_semana: diaSemana, p_endereco: endereco,
+    p_latitude: _enderecoOcorrenciaGeocodificado.lat, p_longitude: _enderecoOcorrenciaGeocodificado.lng,
+    p_horario_inicio: horarioInicio, p_horario_fim: horarioFim,
+  });
+  btn.disabled = false; btn.textContent = 'Adicionar dia';
+
+  if(error){
+    msg.textContent = 'Não deu pra adicionar: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+  fecharModalNovaOcorrencia();
+  await carregarFeirasAdmin();
 }
 
 // ------------------------------------------------------------

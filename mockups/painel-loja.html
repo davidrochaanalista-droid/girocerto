@@ -1239,9 +1239,12 @@ async function carregarMotoboys(){
   // item 52 (27/08/2026): nome/status são da pessoa agora; turnos também
   // virou por pessoa (não dá pra usar embed aninhado via view — PostgREST
   // não enxerga FK em cima de view — busca turnos ativos à parte e junta em JS).
+  // item 86 (03/09/2026, pedido direto do usuário): telefone + contato de
+  // emergência agora aparecem aqui — sem isso, coletar o dado no cadastro
+  // não serviria pra nada numa emergência real (ninguém teria como ver).
   const { data: entregadores } = await supabaseClient
     .from('entregadores_completo')
-    .select('id, pessoa_id, nome, status')
+    .select('id, pessoa_id, nome, status, telefone, contato_emergencia_nome, contato_emergencia_telefone')
     .eq('tenant_id', tenantId);
 
   const pessoaIds = (entregadores || []).map(e => e.pessoa_id);
@@ -1269,6 +1272,8 @@ async function carregarMotoboys(){
       </div>
       <div class="card-meta">${turnoAtivo ? 'Turno desde ' + new Date(turnoAtivo.iniciado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : 'Sem turno ativo'}</div>
       ${posicao ? `<div class="posicao-freshness">📍 última posição às ${new Date(posicao.registrado_em).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div>` : ''}
+      ${e.telefone ? `<div class="card-meta">📞 ${escapeHtml(e.telefone)}</div>` : ''}
+      ${e.contato_emergencia_nome || e.contato_emergencia_telefone ? `<div class="card-meta">🆘 Emergência: ${escapeHtml(e.contato_emergencia_nome || '—')}${e.contato_emergencia_telefone ? ' · ' + escapeHtml(e.contato_emergencia_telefone) : ''}</div>` : ''}
     </div>`;
   }).join('');
 }

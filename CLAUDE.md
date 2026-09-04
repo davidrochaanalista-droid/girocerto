@@ -4187,6 +4187,264 @@ C:\Users\Usuário\Projetos\giro certo
     turno" já usa, sem o modal de fadiga — sair da conta não é o
     mesmo gatilho de "dirigiu demais") antes de derrubar a sessão,
     quando havia turno ativo.
+82. **"Sair" bloqueado com entrega em andamento** (03/09/2026, pedido
+    direto do usuário). Confirmado lendo o código, não suposto: "Sair" é
+    logout de conta de verdade (`auth.signOut()`), não um "fechar
+    app"/"encerrar turno" disfarçado. O usuário assumia que "Finalizar
+    turno" já bloqueava com rota ativa — checado e **não bloqueava**
+    (`clicarFinalizar()` só olhava fadiga). Checagem nova,
+    `existeEntregaEmAndamento()` (`rotasAtivasLista.length > 0 ||
+    rotaFeiraAtivaId`), compartilhada — usada em `deslogar()` (bloqueia
+    com `alert()` claro). **Não aplicada em "Finalizar turno" ainda** —
+    mesmo gap existe lá, sinalizado ao usuário, não corrigido sem pedido
+    explícito.
+83. **Chave Pix na tela de Saque — de alerta de pendência pra informação
+    editável** (03/09/2026, correção do usuário: cadastro já exige a
+    chave no onboarding, não existe estado real de "faltando"). Nova
+    variável `chavePixAtual` (já vinha no `select('*')` de sempre, só
+    nunca tinha sido capturada). Seção "Sua chave Pix" mostra mascarada
+    (`mascararChavePix()`: primeiros 3 + últimos 3 caracteres) + botão
+    "Alterar/Cadastrar chave Pix" que abre edição inline e salva com
+    update direto (`pessoas_entregadoras.chave_pix`, mesma RLS "pessoa
+    atualiza seu proprio cadastro" de sempre, sem RPC nova). Testado com
+    client anon + login real: update funciona, mascaramento correto.
+    Revisão de segurança feita a pedido do usuário antes do commit — sem
+    log/echo da chave em nenhum lugar, `.textContent` (não `.innerHTML`)
+    na exibição, sem risco de XSS.
+84. **Cards "Entregas hoje"/"Ganho no turno" ilegíveis sobre o mapa**
+    (03/09/2026, achado do usuário testando o item 80: `.stat-card`
+    nunca teve fundo próprio, só borda — funcionava enquanto a página
+    sempre tinha fundo sólido atrás; quebrou quando o mapa virou fundo
+    real). `.stats-row` (o painel que já envolve os dois cards) ganhou
+    fundo `paper` sólido + sombra — vira um painel único legível. Como
+    `--bg` e `--paper` são o mesmo hex (#EDE7D9), não muda nada
+    visualmente na tela de Saque (mesmo componente, sem mapa atrás). Sem
+    disputa com controles do Leaflet — zoom já vem desabilitado
+    (`zoomControl:false`), atribuição fica no canto oposto.
+85. **Cancelamento de pedido em rota** (03/09/2026, pedido direto do
+    usuário, várias rodadas de especificação). Investigação prévia (e
+    sinalizada ao usuário antes de codar) confirmou: não existe hoje
+    NENHUMA integração com plataforma de delivery externa (iFood/99/
+    Rappi) no projeto — nem webhook, nem polling, nem coluna nenhuma
+    recebendo status de fora. Isso é um bloqueio real pra receber
+    cancelamento de verdade, que só o usuário resolve (cadastro
+    comercial + credenciais de API em cada plataforma — pesquisado:
+    iFood tem uma API específica pra operadora logística terceirizada,
+    "Entrega Fácil"; Rappi exige contato direto pra aprovação; 99Food
+    geralmente via PDV homologado). O que foi construído é o **ponto de
+    integração pronto**: tudo reage a `pedidos.status` virando
+    'cancelado' num pedido já em rota, testável hoje via update manual,
+    plugável na integração real depois sem mudar nada daqui.
+    - **Banco**: trigger novo `notificar_pedido_cancelado()` em
+      `pedidos` (`pg_notify('pedido_cancelado', ...)`), só quando
+      `rota_id` não é nulo (já despachado). `pedidos.status` já tinha
+      'cancelado' no enum desde sempre — só o timeout de pagamento da
+      feira (`pedido_grupo`) usava de verdade antes disso.
+    - **dispatch-engine**: novo `LISTEN pedido_cancelado` +
+      `enviarPushCancelamentoEntregador()` — push com som PADRÃO do
+      Android (sem `channel_id`/`sound` customizado), de propósito: soa
+      diferente da buzina de oferta sem precisar de asset de áudio novo
+      nem rebuild nativo pra registrar channel novo.
+    - **app-entregador.html**: detecção via Realtime (`postgres_changes`
+      em `pedidos`, sem filtro de servidor — RLS já escopa por rota
+      própria, mesmo princípio já confirmado nesta sessão) + poll de
+      fallback a cada 30s (`POLL_INTERVAL_CANCELAMENTO_MS`, valor
+      explícito pedido pelo usuário, diferente do
+      `POLL_INTERVAL_OFERTA_MS` de 15s já existente pras ofertas). Som
+      distinto via Web Audio (2 beeps graves, sem asset novo) + vibração
+      longa/repetida. Fila única de alerta (`filaAlertaCancelamento`) +
+      modal — card só some da lista DEPOIS que o entregador confirma
+      "Entendi" (`montarRota()` agora filtra `status='cancelado'`).
+      Multi-pedido: remove só a parada, sem "recalcular trajeto" de
+      verdade (o app não faz otimização de rota multi-parada hoje — cada
+      parada tem mapa/navegação próprios sob demanda, então não existe
+      traçado nenhum pra recalcular). Pedido único: marca
+      `rotas_entrega.status='cancelada'` (RLS já permite, testado) e
+      volta pro estado "aguardando" — sem fluxo de devolução física
+      (fora do escopo do GiroCerto, decisão explícita do usuário). Log
+      local em `localStorage` (cap de 100 entradas), sem lógica de
+      pagamento nenhuma associada (responsabilidade da plataforma de
+      origem, não do GiroCerto).
+    - **Feira**: implementação PRÓPRIA e separada (decisão arquitetural
+      já tomada no projeto — duplicação deliberada entre feira e
+      restaurante), não reaproveita nada da parte restaurante. Trigger
+      próprio (`notificar_pedido_grupo_cancelado_em_rota()`, reage a
+      `pedido_grupo.status='cancelado'` só quando já existe
+      `entrega_rota` com `status='em_rota'` — diferente do trigger já
+      existente de timeout de pagamento pré-despacho). Push próprio em
+      `feira-dispatch/src/notifications.js`
+      (`enviarPushCancelamentoEntregadorFeira`). **Achado no caminho**:
+      `pedido_grupo` não estava na publication `supabase_realtime` —
+      sem isso o Realtime nunca entregaria o evento, mesmo com o
+      trigger disparando certo (confirmado testando antes de descobrir
+      isso — o pg_notify chegava, o postgres_changes não). Corrigido,
+      mesma "REGRA GERAL" já documentada no schema. **PENDENTE DUPLO,
+      sinalizado ao usuário**: (1) não existe hoje nenhuma ação real que
+      cancele um `pedido_grupo` depois de já ter `entrega_rota` ativa
+      (nenhum app de consumidor existe no projeto) — o trigger fica
+      pronto mas inerte até essa ação existir; (2) o módulo feira inteiro
+      ainda não está em produção real (rodava só via script manual até
+      o item 62/63) — este tratamento também depende disso.
+    - **Testado** (client anon + login real, RLS de verdade, não a
+      chave admin): trigger dispara `pg_notify` correto; Realtime
+      entrega o UPDATE só pro entregador dono da rota (RLS); entregador
+      consegue marcar a PRÓPRIA rota como cancelada; entregador NÃO
+      consegue tocar na rota de outro entregador (RLS bloqueando, 0
+      linhas afetadas). 171/171 na suíte completa (sem regressão nas
+      mudanças de schema).
+    - `capacitor-www/index.html` ressincronizado.
+86. **Telefone + contato de emergência no cadastro do entregador**
+    (03/09/2026, pedido direto do usuário). `pessoas_entregadoras.telefone`
+    já existia desde sempre — nunca era coletado no formulário nem exibido
+    em lugar nenhum. `contato_emergencia_nome`/`contato_emergencia_telefone`
+    são colunas novas. `provisionar_cadastro_pos_signup()` editada em
+    lugar (mesma função, mesma assinatura, sem criar overload) pra gravar
+    os dois quando vierem no metadata. `entregadores_completo` reexpõe os
+    campos novos. Exibidos em `painel-loja.html` (`carregarMotoboys()`,
+    aba de entregadores) — sem isso, coletar contato de emergência não
+    serviria pra nada numa emergência real, ninguém teria como ver.
+    Testado: telefone/contato gravados corretamente via `admin.createUser()`
+    + trigger real.
+87. **"Cancelar pedido" no painel do feirante** (03/09/2026, decisão de
+    especialista pedida pelo usuário — "aja como especialista e faça o
+    melhor"). Contexto: o usuário esclareceu que a feira NÃO terá app de
+    consumidor — pedido é feito por WhatsApp direto com o feirante.
+    Avaliado e recomendado contra construir um app de consumidor agora
+    (módulo feira nem está em produção ainda, WhatsApp já funciona como
+    canal, app de consumidor é um projeto multi-sessão à parte —
+    desproporcional). A peça que realmente faltava era menor: dar ao
+    FEIRANTE (que já tem painel) o botão de cancelar, já que é ele quem
+    recebe o pedido de cancelamento pelo WhatsApp. RPC nova
+    `cancelar_pedido_grupo_pelo_feirante()` (SECURITY DEFINER, mesma
+    checagem de posse já usada na policy de SELECT existente,
+    `pedido_grupos_do_meu_estabelecimento()` — não abre brecha nova;
+    `pedido_grupo` não tinha nenhuma policy de UPDATE pro feirante ainda,
+    por isso RPC em vez de update direto). Botão "Cancelar pedido" nos
+    dois estados de card em `painel-feirante.html` (aguardando Pix e já
+    pago), com `confirm()` antes. Dispara o trigger de cancelamento do
+    item 85 automaticamente (AFTER UPDATE comum, não importa se o UPDATE
+    veio de RPC ou direto) — **é essa a peça que faz o fluxo de
+    cancelamento da feira sair de "pronto mas inerte" pra realmente
+    testável**, ainda que o módulo feira em si continue fora de produção.
+    Testado estruturalmente (função existe, SECURITY DEFINER, assinatura
+    certa, subquery de posse funciona) — não foi feito um teste E2E
+    completo com fixture de feira real (feira_ocorrencia/estabelecimento/
+    pedido_grupo/pedido do zero), esforço desproporcional pra código que
+    já é sinalizado como inerte por outros motivos (item 85). 171/171 na
+    suíte completa, sem regressão.
+88. **Confirmação de senha antes de dado sensível** (03/09/2026, pedido
+    direto do usuário: "pedir uma senha ou o sistema envia um código pro
+    telefone"). Verificação por SMS sinalizada como bloqueada — não existe
+    nenhum provedor de SMS configurado no projeto (Twilio ou equivalente).
+    Senha é construível sem depender de nada externo: modal
+    `pedirConfirmacaoSenha(callback)`, reautentica com
+    `auth.signInWithPassword()` usando o e-mail da sessão atual (Supabase
+    não tem um "verificar senha sem trocar sessão" dedicado — isso troca
+    o access_token, mas continua a mesma conta). Aplicado em 2 lugares:
+    `enviarDocumentosPendentes()` (pedido explícito do usuário) e
+    `salvarChavePix()` (item 83 — mesma categoria de dado sensível,
+    extensão de bom senso).
+89. **Feira/pedido sai do "só via script de teste" — feirante lança
+    pedido de verdade** (03/09/2026, pedido direto do usuário: "busca
+    tudo que faça para virar real feira/pedido, faça as implementações
+    para começar o teste"). Auditoria prévia confirmou o tamanho real do
+    buraco: nenhum `pedido_grupo`/`pedido` de feira JAMAIS nasceu fora de
+    um script SQL manual — sem app de consumidor (decisão já tomada:
+    pedido chega por WhatsApp), sem catálogo de produtos em
+    `painel-feirante.html` (só lia `produtos`, nunca escrevia), sem tela
+    de "novo pedido", e a RLS de `pedido_grupo`/`usuarios`/`pedido_item`
+    só permite o PRÓPRIO consumidor autenticado inserir — nunca existiria
+    pra um cliente por WhatsApp, que não tem sessão nenhuma.
+    - **"Meus produtos"** (`painel-feirante.html`): CRUD direto — RLS
+      "feirante gerencia produtos do seu estabelecimento" (FOR ALL) já
+      cobria select/insert/update/delete, sem RPC nova necessária.
+      Desativar em vez de remover quando o produto já foi usado em algum
+      pedido (FK sem cascade, erro tratado).
+    - **"Novo pedido"** (`painel-feirante.html`): formulário — nome/
+      telefone do cliente, endereço (geocodificado via Nominatim, mesmo
+      serviço/política já usada em app-entregador.html/painel-loja.html),
+      taxa de entrega, itens do catálogo ativo. RPC nova
+      `criar_pedido_manual_feirante()` (SECURITY DEFINER, checagem de
+      posse pelo próprio `auth.uid()`) acha/cria o "consumidor"
+      (`usuarios`, `auth_user_id` fica `null` — sem conta nenhuma, só
+      nome+telefone, achado pelo telefone se já existir) + escolhe a
+      `feira_ocorrencia` via `feirante_participacao` ativa (prioriza a de
+      hoje) + cria `pedido_grupo`/`pedido`/`pedido_item(s)`. Nasce no
+      MESMO estado inicial que o fluxo de consumidor (inexistente) teria
+      (`status='aguardando_pagamentos')` — dali em diante segue o caminho
+      já existente e testado (`confirmarPagamento()`/`marcarComoPronto()`),
+      sem duplicar nada.
+    - **Testado de ponta a ponta de verdade** (client anon + login real,
+      RLS real): setup de feira/ocorrência/estabelecimento/produto via
+      SQL (não existe UI pra isso ainda, ver pendência abaixo) → RPC
+      lança o pedido → `pedido_grupo`/consumidor/`pedido`/`pedido_item`
+      todos criados corretos (valor calculado certo, 3×R$4,50=R$13,50) →
+      um SEGUNDO feirante (sem estabelecimento próprio) tenta usar a
+      mesma RPC e é recusado → RPC de cancelamento do item 87 fecha o
+      ciclo com sucesso no MESMO pedido recém-criado. Fluxo completo
+      confirmado funcionando de ponta a ponta pela primeira vez. 171/171
+      na suíte geral, sem regressão.
+    - ~~Ainda falta pra virar 100% self-service: criar feira nova e
+      feirante se cadastrar sozinho~~ — **resolvido no item 91** (mesmo
+      dia).
+    - **Teste real de ponta a ponta com endereços de verdade** (mesmo
+      dia, pedido direto do usuário): feira geocodificada de verdade
+      (Rua Rodolfo Marcos Teófilo, 164, 02862-100, Brasilândia/SP, via
+      Nominatim) + 3 bancas + 2 entregadores (freelance-feira,
+      `tenant_id=null`/`aceita_feira=true`, mesmo modelo do item 76) + 3
+      pedidos pro MESMO cliente (Rua Ipameri, 92, 02864-030 — ~200m da
+      feira), cada um lançado por uma banca diferente via
+      `criar_pedido_manual_feirante()`. Rodei o motor de despacho de
+      verdade (`routeManager.despacharPedido()`, mesma função que o
+      worker chamaria em produção, sem simular nada) — resultado real: os
+      pedidos 1 e 2 (mesmo endereço de entrega) foram CONSOLIDADOS
+      automaticamente na mesma rota de 1 entregador
+      (`inserido_em_rota_existente`), o pedido 3 foi pra uma rota nova
+      com o outro entregador (`rota_nova`) — **3 pedidos, 2 rotas, os 2
+      entregadores usados, decisão de consolidação correta**. Primeira
+      vez que o motor de despacho real da feira processa um pedido que
+      nasceu de uma tela de verdade (não um script de teste inteiro do
+      zero), fechando o ciclo do item 89. Limpeza descobriu uma tabela
+      faltando no script de teste (`rota_parada` bloqueava `delete` em
+      `pedido` por FK) — corrigido no próprio script de teste, não no
+      produto (não é um bug do sistema, só do meu script de limpeza).
+      Nenhuma mudança de código nesta rodada — só validação com o que já
+      existia. despacho_motor.test.js isolado continua 29/29 depois.
+90. **"Finalizar turno" ganhou o mesmo guard do "Sair"** (03/09/2026,
+    pedido direto do usuário: "faça todas as correções possíveis").
+    `existeEntregaEmAndamento()` (item 82) reaproveitada — mesma lacuna
+    que eu tinha sinalizado sem corrigir antes.
+91. **Feira ganhou cadastro self-service — feirante + criar feira**
+    (03/09/2026, pedido direto do usuário). Investigação prévia: `feira`/
+    `feira_ocorrencia` já tinham uma decisão EXPLÍCITA e documentada no
+    schema pra escrita ficar restrita a service role ("uma feira é uma
+    entidade curada, não algo que qualquer usuário deveria criar
+    sozinho, duplicado/fake") — respeitada, não revertida.
+    - **Feirante se cadastra sozinho** (`painel-feirante.html`): novo
+      ramo no trigger `provisionar_cadastro_pos_signup()` (edição em
+      lugar, mesma função, discriminado por
+      `meta.tipo_negocio='feirante'`, checado ANTES do ramo genérico de
+      loja que só olha `meta?'nome'` — sem isso cairia sempre no ramo
+      errado). Cria `estabelecimentos` (RLS já permitia insert do
+      próprio, só faltava o cadastro em si). Constraint unique nova em
+      `estabelecimentos.auth_user_id` (mesmo motivo de
+      `pessoas_entregadoras` — reenvio de confirmação de e-mail pode
+      re-disparar o trigger).
+    - **Escolher feira** (pós-login, se `feirante_participacao` estiver
+      vazia): lista todas as `feira_ocorrencia` (policy "autenticado le
+      ocorrencias" já cobria isso) e vincula com um insert direto (RLS
+      "feirante gerencia sua participacao" já cobria).
+    - **Admin cria feira** (`painel-admin.html`, aba nova "Feiras"): 2
+      RPCs (`criar_feira_admin()`/`adicionar_ocorrencia_feira_admin()`),
+      gate por `eh_desenvolvedor_admin()` — mesma allowlist de sempre.
+      Endereço geocodificado via Nominatim (mesmo padrão já usado em
+      vários outros lugares do projeto).
+    - **Testado de ponta a ponta**: usuário comum tentando a RPC de
+      criar feira é recusado; uma conta admin de TESTE (não a real —
+      criada e removida da allowlist só pro teste, sem tocar em
+      credencial de verdade) cria feira + adiciona um 2º dia de
+      funcionamento; feirante se cadastra self-service; consegue ler as
+      ocorrências e se vincular a uma. 171/171 na suíte completa depois.
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já

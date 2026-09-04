@@ -85,12 +85,35 @@
 
   .vazio{text-align:center;color:var(--sage);font-size:13.5px;padding:30px 0;}
   .msg-erro{background:var(--error-soft);color:var(--error);border-radius:10px;padding:11px 13px;font-size:13px;margin-bottom:14px;}
+
+  /* item 89: "Novo pedido" + "Meus produtos" — primeiro uso de modal
+  neste arquivo, mesmo padrão visual (overlay/modal-card) já usado nos
+  outros 4 mockups do projeto, adaptado à paleta que já existia aqui. */
+  .btn-topo-acao{background:rgba(237,231,217,.14);border:1px solid rgba(237,231,217,.3);color:var(--paper);font-size:12px;font-weight:700;padding:8px 14px;border-radius:100px;cursor:pointer;margin-right:8px;font-family:'Inter',sans-serif;}
+  .overlay{position:fixed;inset:0;background:rgba(34,53,38,.55);display:none;align-items:flex-end;justify-content:center;z-index:50;}
+  .overlay.show{display:flex;}
+  .modal-card{background:var(--paper);border-radius:22px 22px 0 0;padding:22px 20px 30px;width:100%;max-width:440px;max-height:88vh;overflow-y:auto;}
+  .modal-card h2{font-size:19px;margin-bottom:4px;}
+  .modal-card .field{margin-bottom:12px;}
+  .modal-card label{display:block;font-size:12px;font-weight:600;color:var(--sage);margin-bottom:5px;}
+  .modal-card input,.modal-card select{width:100%;padding:11px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14px;font-family:'Inter',sans-serif;background:#fff;}
+  .modal-card input:focus,.modal-card select:focus{outline:none;border-color:var(--marigold);}
+  .modal-nav{display:flex;gap:10px;margin-top:16px;}
+  .btn-ghost-modal{flex:1;background:none;border:1.5px solid var(--border);color:var(--ink);border-radius:100px;padding:12px;font-weight:700;font-size:13.5px;cursor:pointer;font-family:'Inter',sans-serif;}
+  .btn-primary-modal{flex:1;background:var(--marigold);color:var(--ink);border:none;border-radius:100px;padding:12px;font-weight:700;font-size:13.5px;cursor:pointer;font-family:'Inter',sans-serif;box-shadow:0 8px 20px -6px rgba(217,166,46,.5);}
+  .item-produto-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px dashed rgba(34,53,38,.1);}
+  .item-produto-row:last-child{border-bottom:none;}
+  .item-qtd-input{width:56px;text-align:center;padding:6px;border:1.5px solid var(--border);border-radius:8px;font-family:'Space Mono',monospace;}
+  .produto-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);}
+  .produto-row:last-child{border-bottom:none;}
+  .produto-row .del{background:none;border:none;color:var(--error);font-size:18px;cursor:pointer;padding:4px 8px;}
+  .msg-ok{background:rgba(59,91,63,.1);color:var(--leaf);border-radius:10px;padding:11px 13px;font-size:13px;margin-bottom:14px;}
 </style>
 </head>
 <body>
 
 <div id="loginGate">
-  <div class="login-card">
+  <div class="login-card" id="loginCard">
     <div class="marca">
       <svg class="marca-icone" viewBox="0 0 24 24" fill="none">
         <path d="M4 8 C4 5, 6 4, 9 4 L15 4 C18 4, 20 6, 20 9 C20 12, 18 13.5, 15 13.5 L8 13.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" fill="none"/>
@@ -105,6 +128,54 @@
     <input type="email" id="loginEmail" placeholder="E-mail">
     <input type="password" id="loginSenha" placeholder="Senha">
     <button onclick="login()">Entrar</button>
+    <button style="background:none;color:var(--ink);box-shadow:none;margin-top:10px;font-weight:600;font-size:13px;padding:8px;" onclick="mostrarCadastroBanca()">Ainda não tem conta? Cadastre sua banca</button>
+  </div>
+
+  <!-- item 91 (03/09/2026, pedido direto do usuário): cadastro
+  self-service — antes só existia login, toda banca de teste nascia via
+  SQL direto. -->
+  <div class="login-card" id="cadastroCard" style="display:none;">
+    <div class="marca">
+      <svg class="marca-icone" viewBox="0 0 24 24" fill="none">
+        <path d="M4 8 C4 5, 6 4, 9 4 L15 4 C18 4, 20 6, 20 9 C20 12, 18 13.5, 15 13.5 L8 13.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+        <path d="M11 10.5 L8 13.5 L11 16.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M9 19 L11.5 21.5 L16.5 15.5" stroke="#223526" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </svg>
+      <div class="marca-texto">Giro<span>Certo</span></div>
+    </div>
+    <h2>Cadastre sua banca</h2>
+    <p>Comece a receber pedidos de feira pelo GiroCerto.</p>
+    <div class="login-msg" id="cadastroMsg"></div>
+    <input type="text" id="cad_nome" placeholder="Nome da banca">
+    <input type="email" id="cad_email" placeholder="E-mail">
+    <input type="password" id="cad_senha" placeholder="Senha">
+    <input type="tel" id="cad_telefone" placeholder="Telefone (WhatsApp)">
+    <input type="text" id="cad_chavePix" placeholder="Chave Pix">
+    <input type="text" id="cad_endereco" placeholder="Endereço da banca (rua, número, bairro, cidade)">
+    <button style="background:var(--ink);color:var(--paper);box-shadow:none;font-size:12.5px;padding:11px;margin-bottom:12px;" onclick="localizarEnderecoCadastro()">📍 Localizar endereço</button>
+    <div id="cad_enderecoStatus" style="font-size:12px;color:var(--sage);margin:-8px 0 12px;"></div>
+    <button onclick="cadastrarBanca()">Criar minha conta</button>
+    <button style="background:none;color:var(--ink);box-shadow:none;margin-top:10px;font-weight:600;font-size:13px;padding:8px;" onclick="mostrarLoginBanca()">Já tenho conta — entrar</button>
+  </div>
+
+  <!-- item 91: primeiro acesso sem feira nenhuma escolhida ainda — a
+  banca existe (estabelecimentos), mas feirante_participacao ainda está
+  vazia. Sem isso, criar_pedido_manual_feirante() nunca acharia uma
+  feira_ocorrencia ativa (raise exception já tratada, mas o feirante
+  ficaria sem saber o que fazer). -->
+  <div class="login-card" id="escolherFeiraCard" style="display:none;">
+    <div class="marca">
+      <svg class="marca-icone" viewBox="0 0 24 24" fill="none">
+        <path d="M4 8 C4 5, 6 4, 9 4 L15 4 C18 4, 20 6, 20 9 C20 12, 18 13.5, 15 13.5 L8 13.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+        <path d="M11 10.5 L8 13.5 L11 16.5" stroke="#D9A62E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M9 19 L11.5 21.5 L16.5 15.5" stroke="#223526" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </svg>
+      <div class="marca-texto">Giro<span>Certo</span></div>
+    </div>
+    <h2>Qual feira é a sua?</h2>
+    <p>Escolha onde sua banca funciona pra começar a receber pedidos.</p>
+    <div class="login-msg" id="escolherFeiraMsg"></div>
+    <div id="listaFeirasEscolha"><p style="color:var(--sage);font-size:13px;">Carregando…</p></div>
   </div>
 </div>
 
@@ -126,6 +197,17 @@
       </div>
       <div class="avatar-banca" id="t_avatar">—</div>
     </div>
+    <!-- item 89 (03/09/2026, pedido direto do usuário: "faça as
+    implementações para começar o teste" — busca do que faltava pra
+    feira/pedido virar real). Sem essas duas telas, não existia jeito
+    NENHUM de um pedido de feira nascer fora de um script de teste
+    manual: nem app de consumidor (decisão já tomada — pedido chega por
+    WhatsApp), nem catálogo de produtos, nem lançamento manual de pedido
+    pelo feirante. -->
+    <div style="position:relative;z-index:2;margin-top:12px;">
+      <button class="btn-topo-acao" onclick="abrirNovoPedido()">+ Novo pedido</button>
+      <button class="btn-topo-acao" onclick="abrirMeusProdutos()">🏷 Meus produtos</button>
+    </div>
     <button class="btn-sair" onclick="sair()">Sair</button>
   </div>
 
@@ -137,6 +219,65 @@
 
     <div class="rotulo-secao" style="margin-top:22px;">Na fila (pagamento pendente)</div>
     <div id="boxFila"></div>
+  </div>
+</div>
+
+<!-- ===================== MODAL: MEUS PRODUTOS (item 89) ===================== -->
+<div class="overlay" id="modalProdutos">
+  <div class="modal-card">
+    <h2>Meus produtos</h2>
+    <p style="color:var(--sage);font-size:12.5px;margin:0 0 16px;">O catálogo que você usa pra lançar um pedido manual (item que chegou por WhatsApp).</p>
+    <div class="msg-erro" id="prod_msg" style="display:none;"></div>
+    <div id="listaProdutos"><div class="vazio">Carregando…</div></div>
+
+    <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border);">
+      <div class="field"><label>Nome do produto</label><input type="text" id="np_nome" placeholder="Ex: Alface crespa"></div>
+      <div style="display:flex;gap:10px;">
+        <div class="field" style="flex:1;"><label>Preço (R$)</label><input type="number" id="np_preco" step="0.01" min="0"></div>
+        <div class="field" style="flex:1;"><label>Peso (kg)</label><input type="number" id="np_peso" step="0.01" min="0"></div>
+      </div>
+      <button class="btn-primary-modal" style="width:100%;" onclick="adicionarProduto()">Adicionar produto</button>
+    </div>
+    <div class="modal-nav">
+      <button class="btn-ghost-modal" style="flex:none;width:100%;" onclick="fecharModalProdutos()">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== MODAL: NOVO PEDIDO (item 89) ===================== -->
+<!-- item 89 (03/09/2026, pedido direto do usuário): "o consumidor não
+terá app, ele fará o pedido pelo WhatsApp direto com o feirante" — essa
+tela é o feirante REGISTRANDO esse pedido no sistema, não um checkout de
+consumidor. Usa criar_pedido_manual_feirante() (db/schema.sql, item 89)
+— sem essa RPC não teria como inserir em pedido_grupo/usuarios em nome
+de alguém sem sessão própria (RLS de pedido_grupo/usuarios só permite o
+próprio consumidor autenticado criar, e um cliente por WhatsApp nunca
+tem sessão nenhuma). -->
+<div class="overlay" id="modalNovoPedido">
+  <div class="modal-card">
+    <h2>Novo pedido</h2>
+    <p style="color:var(--sage);font-size:12.5px;margin:0 0 16px;">Lance aqui o pedido que o cliente te mandou pelo WhatsApp.</p>
+    <div class="msg-erro" id="np_msg" style="display:none;"></div>
+
+    <div class="field"><label>Nome do cliente</label><input type="text" id="np_cliente_nome"></div>
+    <div class="field"><label>Telefone do cliente (WhatsApp)</label><input type="tel" id="np_cliente_telefone" placeholder="(11) 91234-5678"></div>
+    <div class="field">
+      <label>Endereço de entrega</label>
+      <input type="text" id="np_endereco" placeholder="Rua, número, bairro, cidade">
+      <button class="btn-ghost-modal" style="width:100%;margin-top:6px;padding:9px;font-size:12.5px;" onclick="localizarEnderecoPedido()">📍 Localizar endereço</button>
+      <div id="np_enderecoStatus" style="font-size:12px;color:var(--sage);margin-top:6px;"></div>
+    </div>
+    <div class="field"><label>Taxa de entrega (R$)</label><input type="number" id="np_taxa" step="0.01" min="0" value="0"></div>
+
+    <div class="field">
+      <label>Itens do pedido</label>
+      <div id="np_itens"><div class="vazio">Carregando produtos…</div></div>
+    </div>
+
+    <div class="modal-nav">
+      <button class="btn-ghost-modal" onclick="fecharModalNovoPedido()">Cancelar</button>
+      <button class="btn-primary-modal" id="np_lancarBtn" onclick="lancarPedidoManual()">Lançar pedido</button>
+    </div>
   </div>
 </div>
 
@@ -162,6 +303,150 @@ async function sair(){
   location.reload();
 }
 
+// ------------------------------------------------------------
+// CADASTRO SELF-SERVICE (item 91, 03/09/2026, pedido direto do usuário)
+// — antes só existia login; toda banca de teste nascia via SQL direto.
+// Mesmo padrão de cadastro-loja.html: signUp() sem inserir direto (RLS
+// bloqueia sem sessão confirmada), provisionar_cadastro_pos_signup()
+// (db/schema.sql) cria o estabelecimento a partir do metadata quando o
+// e-mail é confirmado — discriminado por meta.tipo_negoco='feirante',
+// checado ANTES do ramo genérico de loja (que só olha meta?'nome').
+// ------------------------------------------------------------
+function mostrarCadastroBanca(){
+  document.getElementById('loginCard').style.display = 'none';
+  document.getElementById('cadastroCard').style.display = 'block';
+}
+function mostrarLoginBanca(){
+  document.getElementById('cadastroCard').style.display = 'none';
+  document.getElementById('loginCard').style.display = 'block';
+}
+
+let _enderecoCadastroGeocodificado = null;
+async function localizarEnderecoCadastro(){
+  const endereco = document.getElementById('cad_endereco').value.trim();
+  const status = document.getElementById('cad_enderecoStatus');
+  if(!endereco){ status.textContent = 'Digite o endereço primeiro.'; return; }
+  status.textContent = 'Procurando...';
+  try{
+    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=' + encodeURIComponent(endereco);
+    const res = await fetch(url, { headers: { 'Accept-Language': 'pt-BR' } });
+    const resultados = await res.json();
+    if(!resultados || !resultados[0]){
+      status.textContent = 'Não achei esse endereço — confira e tente de novo.';
+      _enderecoCadastroGeocodificado = null;
+      return;
+    }
+    _enderecoCadastroGeocodificado = { lat: Number(resultados[0].lat), lng: Number(resultados[0].lon) };
+    status.textContent = '✓ Endereço localizado.';
+  } catch(err){
+    status.textContent = 'Não deu pra localizar (sem internet?) — tente de novo.';
+    _enderecoCadastroGeocodificado = null;
+  }
+}
+
+async function cadastrarBanca(){
+  const msg = document.getElementById('cadastroMsg');
+  msg.textContent = '';
+
+  const nome = document.getElementById('cad_nome').value.trim();
+  const email = document.getElementById('cad_email').value.trim();
+  const senha = document.getElementById('cad_senha').value;
+  const telefone = document.getElementById('cad_telefone').value.trim();
+  const chavePix = document.getElementById('cad_chavePix').value.trim();
+
+  if(!nome || !email || !senha){
+    msg.textContent = 'Preencha nome, e-mail e senha.';
+    return;
+  }
+
+  const metadata = {
+    tipo_negocio: 'feirante',
+    nome, telefone,
+    chave_pix: chavePix,
+  };
+  if(_enderecoCadastroGeocodificado){
+    metadata.latitude = String(_enderecoCadastroGeocodificado.lat);
+    metadata.longitude = String(_enderecoCadastroGeocodificado.lng);
+  }
+
+  const { error } = await supabaseClient.auth.signUp({
+    email, password: senha,
+    options: {
+      emailRedirectTo: window.location.origin + '/painel-feirante.html',
+      data: metadata,
+    },
+  });
+
+  if(error){
+    msg.textContent = 'Não deu pra cadastrar: ' + error.message;
+    return;
+  }
+
+  msg.style.color = 'var(--leaf)';
+  msg.textContent = 'Cadastro enviado! Confirme seu e-mail e depois faça login.';
+}
+
+// ------------------------------------------------------------
+// ESCOLHER FEIRA (item 91) — feirante recém-cadastrado, sem
+// feirante_participacao nenhuma ainda. Sem uma feira escolhida,
+// criar_pedido_manual_feirante() nunca acharia uma feira_ocorrencia
+// ativa. Lista TODAS as feiras (policy "autenticado le feiras"/"...
+// ocorrencias..." já permite qualquer logado ler — não filtra por
+// proximidade nesta 1ª versão, número de feiras cadastradas ainda é
+// pequeno).
+// ------------------------------------------------------------
+async function mostrarEscolherFeira(){
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('loginGate').style.display = 'flex';
+  document.getElementById('loginCard').style.display = 'none';
+  document.getElementById('cadastroCard').style.display = 'none';
+  document.getElementById('escolherFeiraCard').style.display = 'block';
+  await carregarFeirasParaEscolha();
+}
+
+const DIAS_SEMANA = ['domingo','segunda','terça','quarta','quinta','sexta','sábado'];
+
+async function carregarFeirasParaEscolha(){
+  const box = document.getElementById('listaFeirasEscolha');
+  const { data, error } = await supabaseClient
+    .from('feira_ocorrencia')
+    .select('id, dia_semana, endereco, horario_inicio, horario_fim, feira:feira_id(nome, bairro, cidade)')
+    .order('dia_semana', { ascending: true });
+
+  if(error || !data || !data.length){
+    box.innerHTML = '<p style="color:var(--sage);font-size:13px;">Nenhuma feira cadastrada ainda — fale com o suporte GiroCerto pra cadastrar a sua.</p>';
+    return;
+  }
+
+  box.innerHTML = data.map(f => `
+    <div class="produto-row" style="cursor:pointer;" onclick="escolherFeira('${escapeHtml(f.id)}')">
+      <div>
+        <div style="font-weight:600;">${escapeHtml(f.feira?.nome || 'Feira')}</div>
+        <div style="font-size:12px;color:var(--sage);">${DIAS_SEMANA[f.dia_semana]} · ${escapeHtml(f.endereco)}</div>
+      </div>
+      <div style="font-size:20px;">›</div>
+    </div>
+  `).join('');
+}
+
+async function escolherFeira(feiraOcorrenciaId){
+  const msg = document.getElementById('escolherFeiraMsg');
+  msg.textContent = '';
+  const { error } = await supabaseClient.from('feirante_participacao').insert({
+    estabelecimento_id: estabelecimentoId,
+    feira_ocorrencia_id: feiraOcorrenciaId,
+    ativo: true,
+  });
+  if(error){
+    msg.textContent = 'Não deu pra vincular: ' + error.message;
+    return;
+  }
+  document.getElementById('escolherFeiraCard').style.display = 'none';
+  document.getElementById('loginGate').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  await iniciarApp();
+}
+
 function escapeHtml(str){
   return String(str ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 }
@@ -184,10 +469,6 @@ async function iniciarApp(){
   }
 
   estabelecimentoId = estabelecimento.id;
-  document.getElementById('loginGate').style.display = 'none';
-  document.getElementById('app').style.display = 'block';
-  document.getElementById('t_bancaNome').textContent = estabelecimento.nome;
-  document.getElementById('t_avatar').textContent = estabelecimento.nome.split(' ').map(w => w[0]).slice(0,2).join('').toUpperCase();
 
   // achado ao vivo (25/08/2026): "feira" mostrada no cabeçalho vem da
   // participação mais recente do feirante (feirante_participacao ->
@@ -201,6 +482,19 @@ async function iniciarApp(){
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
+
+  // item 91: feirante recém-cadastrado, sem NENHUMA feira escolhida
+  // ainda — sem isso criar_pedido_manual_feirante() nunca acharia uma
+  // feira_ocorrencia ativa pra lançar pedido nenhum.
+  if(!participacao){
+    await mostrarEscolherFeira();
+    return;
+  }
+
+  document.getElementById('loginGate').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('t_bancaNome').textContent = estabelecimento.nome;
+  document.getElementById('t_avatar').textContent = estabelecimento.nome.split(' ').map(w => w[0]).slice(0,2).join('').toUpperCase();
   document.getElementById('t_feiraNome').textContent = participacao?.feira_ocorrencia?.feira?.nome || 'Sem feira vinculada';
 
   await carregarPedidos();
@@ -297,6 +591,7 @@ function renderCardPago(p){
       ` : `
         <button class="btn-confirmar" data-pedido-id="${escapeHtml(p.id)}">Marcar como pronto ✓</button>
       `}
+      ${!jaFinalizado ? `<button class="btn-cancelar-pedido" data-pedido-grupo-id="${escapeHtml(p.pedido_grupo_id)}" onclick="cancelarPedido(this)" style="width:100%;margin-top:8px;background:none;border:1px solid var(--error);color:var(--error);border-radius:10px;padding:9px;font-size:12.5px;cursor:pointer;">Cancelar pedido</button>` : ''}
     </div>
   `;
 }
@@ -320,6 +615,7 @@ function renderCardPendente(p){
       </div>
       <ul class="lista-itens">${itens}</ul>
       <button class="btn-confirmar-pix" data-pedido-id="${escapeHtml(p.id)}">Confirmei o Pix na minha conta</button>
+      <button class="btn-cancelar-pedido" data-pedido-grupo-id="${escapeHtml(p.pedido_grupo_id)}" onclick="cancelarPedido(this)" style="width:100%;margin-top:8px;background:none;border:1px solid var(--error);color:var(--error);border-radius:10px;padding:9px;font-size:12.5px;cursor:pointer;">Cancelar pedido</button>
     </div>
   `;
 }
@@ -343,6 +639,29 @@ async function marcarComoPronto(pedidoId){
   await carregarPedidos();
 }
 
+// item 87 (03/09/2026, decisão de especialista pedida pelo usuário): o
+// pedido de cancelamento chega pro feirante por WhatsApp (não existe app
+// de consumidor no projeto — confirmado com o usuário) — ele é quem
+// repassa isso pro sistema. RPC cancelar_pedido_grupo_pelo_feirante()
+// (db/schema.sql, item 87) já confere posse e dispara o trigger de
+// cancelamento (item 85) automaticamente.
+async function cancelarPedido(btn){
+  const pedidoGrupoId = btn.dataset.pedidoGrupoId;
+  if(!pedidoGrupoId) return;
+  if(!confirm('Cancelar esse pedido? O entregador (se já estiver a caminho) vai ser avisado.')) return;
+
+  btn.disabled = true; btn.textContent = 'Cancelando...';
+  const { error } = await supabaseClient.rpc('cancelar_pedido_grupo_pelo_feirante', { p_pedido_grupo_id: pedidoGrupoId });
+  if(error){
+    const msgErro = document.getElementById('msgErro');
+    msgErro.textContent = 'Não deu pra cancelar: ' + error.message;
+    msgErro.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Cancelar pedido';
+    return;
+  }
+  await carregarPedidos();
+}
+
 async function confirmarPagamento(pedidoId){
   const { error } = await supabaseClient
     .from('pedido')
@@ -354,6 +673,207 @@ async function confirmarPagamento(pedidoId){
     msgErro.style.display = 'block';
     return;
   }
+  await carregarPedidos();
+}
+
+// ------------------------------------------------------------
+// MEUS PRODUTOS (item 89, 03/09/2026) — catálogo do feirante. RLS "feirante
+// gerencia produtos do seu estabelecimento" (for all) já cobre select/
+// insert/update/delete direto na tabela, sem RPC nenhuma necessária aqui.
+// ------------------------------------------------------------
+function abrirMeusProdutos(){
+  document.getElementById('prod_msg').style.display = 'none';
+  document.getElementById('modalProdutos').classList.add('show');
+  carregarProdutos();
+}
+function fecharModalProdutos(){
+  document.getElementById('modalProdutos').classList.remove('show');
+}
+
+async function carregarProdutos(){
+  const box = document.getElementById('listaProdutos');
+  box.innerHTML = '<div class="vazio">Carregando…</div>';
+  const { data, error } = await supabaseClient
+    .from('produtos')
+    .select('*')
+    .eq('estabelecimento_id', estabelecimentoId)
+    .order('nome', { ascending: true });
+  if(error){ box.innerHTML = '<div class="vazio">Não deu pra carregar.</div>'; return; }
+
+  box.innerHTML = (data && data.length)
+    ? data.map(p => `
+      <div class="produto-row">
+        <div>
+          <div style="font-weight:600;${p.ativo ? '' : 'opacity:.45;text-decoration:line-through;'}">${escapeHtml(p.nome)}</div>
+          <div style="font-size:12px;color:var(--sage);">${formatarReal(p.preco)} · ${Number(p.peso_kg).toFixed(2)}kg</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button class="btn-ghost-modal" style="width:auto;padding:6px 12px;font-size:11.5px;" onclick="toggleProdutoAtivo('${escapeHtml(p.id)}', ${!p.ativo})">${p.ativo ? 'Desativar' : 'Ativar'}</button>
+          <button class="del" onclick="removerProduto('${escapeHtml(p.id)}')" title="Remover">✕</button>
+        </div>
+      </div>
+    `).join('')
+    : '<div class="vazio">Nenhum produto cadastrado ainda.</div>';
+}
+
+async function adicionarProduto(){
+  const msg = document.getElementById('prod_msg');
+  msg.style.display = 'none';
+  const nome = document.getElementById('np_nome').value.trim();
+  const preco = Number(document.getElementById('np_preco').value);
+  const peso = Number(document.getElementById('np_peso').value) || 0;
+  if(!nome || !preco){
+    msg.textContent = 'Preencha nome e preço.';
+    msg.style.display = 'block';
+    return;
+  }
+  const { error } = await supabaseClient.from('produtos').insert({
+    estabelecimento_id: estabelecimentoId, nome, preco, peso_kg: peso,
+  });
+  if(error){
+    msg.textContent = 'Não deu pra adicionar: ' + error.message;
+    msg.style.display = 'block';
+    return;
+  }
+  document.getElementById('np_nome').value = '';
+  document.getElementById('np_preco').value = '';
+  document.getElementById('np_peso').value = '';
+  await carregarProdutos();
+}
+
+async function toggleProdutoAtivo(produtoId, novoAtivo){
+  await supabaseClient.from('produtos').update({ ativo: novoAtivo }).eq('id', produtoId);
+  await carregarProdutos();
+}
+
+async function removerProduto(produtoId){
+  if(!confirm('Remover esse produto do catálogo?')) return;
+  const { error } = await supabaseClient.from('produtos').delete().eq('id', produtoId);
+  if(error){
+    // achado esperado: um produto já usado em algum pedido_item não pode
+    // ser removido (FK sem cascade) — desativar em vez de excluir é o
+    // caminho normal pra esse caso, o botão "Desativar" já cobre.
+    const msg = document.getElementById('prod_msg');
+    msg.textContent = 'Não deu pra remover (provavelmente já usado em algum pedido) — tente desativar em vez de remover.';
+    msg.style.display = 'block';
+    return;
+  }
+  await carregarProdutos();
+}
+
+// ------------------------------------------------------------
+// NOVO PEDIDO MANUAL (item 89, 03/09/2026) — o cliente pede pelo
+// WhatsApp, o feirante lança aqui. criar_pedido_manual_feirante() (RPC,
+// db/schema.sql) cuida de achar/criar o consumidor (usuarios, sem conta
+// nenhuma — auth_user_id fica null), criar pedido_grupo + pedido +
+// pedido_item(s), tudo com o mesmo status inicial que o fluxo (ainda
+// inexistente) de consumidor teria — dali em diante é o MESMO caminho já
+// testado (confirmarPagamento() -> marcarComoPronto()), sem duplicar
+// nada.
+let produtosDisponiveisPedido = [];
+
+function abrirNovoPedido(){
+  document.getElementById('np_msg').style.display = 'none';
+  document.getElementById('np_cliente_nome').value = '';
+  document.getElementById('np_cliente_telefone').value = '';
+  document.getElementById('np_endereco').value = '';
+  document.getElementById('np_enderecoStatus').textContent = '';
+  document.getElementById('np_taxa').value = '0';
+  window._enderecoPedidoGeocodificado = null;
+  document.getElementById('modalNovoPedido').classList.add('show');
+  carregarProdutosParaPedido();
+}
+function fecharModalNovoPedido(){
+  document.getElementById('modalNovoPedido').classList.remove('show');
+}
+
+async function carregarProdutosParaPedido(){
+  const box = document.getElementById('np_itens');
+  box.innerHTML = '<div class="vazio">Carregando produtos…</div>';
+  const { data, error } = await supabaseClient
+    .from('produtos')
+    .select('id, nome, preco')
+    .eq('estabelecimento_id', estabelecimentoId)
+    .eq('ativo', true)
+    .order('nome', { ascending: true });
+  if(error || !data || !data.length){
+    box.innerHTML = '<div class="vazio">Nenhum produto ativo — cadastre em "Meus produtos" antes de lançar um pedido.</div>';
+    produtosDisponiveisPedido = [];
+    return;
+  }
+  produtosDisponiveisPedido = data;
+  box.innerHTML = data.map(p => `
+    <div class="item-produto-row">
+      <div>${escapeHtml(p.nome)}<br><span style="font-size:11.5px;color:var(--sage);">${formatarReal(p.preco)}</span></div>
+      <input type="number" class="item-qtd-input" id="qtd_${escapeHtml(p.id)}" min="0" value="0">
+    </div>
+  `).join('');
+}
+
+// Nominatim/OpenStreetMap — mesmo serviço e mesma política de uso já
+// usada em app-entregador.html/painel-loja.html (só dispara quando
+// chamado, nunca em loop/polling).
+async function localizarEnderecoPedido(){
+  const endereco = document.getElementById('np_endereco').value.trim();
+  const status = document.getElementById('np_enderecoStatus');
+  if(!endereco){ status.textContent = 'Digite o endereço primeiro.'; return; }
+  status.textContent = 'Procurando...';
+  try{
+    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=' + encodeURIComponent(endereco);
+    const res = await fetch(url, { headers: { 'Accept-Language': 'pt-BR' } });
+    const resultados = await res.json();
+    if(!resultados || !resultados[0]){
+      status.textContent = 'Não achei esse endereço — confira e tente de novo.';
+      window._enderecoPedidoGeocodificado = null;
+      return;
+    }
+    window._enderecoPedidoGeocodificado = { lat: Number(resultados[0].lat), lng: Number(resultados[0].lon) };
+    status.textContent = '✓ Endereço localizado.';
+  } catch(err){
+    status.textContent = 'Não deu pra localizar (sem internet?) — tente de novo.';
+    window._enderecoPedidoGeocodificado = null;
+  }
+}
+
+async function lancarPedidoManual(){
+  const msg = document.getElementById('np_msg');
+  msg.style.display = 'none';
+
+  const nome = document.getElementById('np_cliente_nome').value.trim();
+  const telefone = document.getElementById('np_cliente_telefone').value.trim();
+  const endereco = document.getElementById('np_endereco').value.trim();
+  const taxa = Number(document.getElementById('np_taxa').value) || 0;
+
+  if(!nome || !telefone){ msg.textContent = 'Preencha nome e telefone do cliente.'; msg.style.display = 'block'; return; }
+  if(!endereco || !window._enderecoPedidoGeocodificado){ msg.textContent = 'Localize o endereço antes de lançar (botão "Localizar endereço").'; msg.style.display = 'block'; return; }
+
+  const itens = produtosDisponiveisPedido
+    .map(p => ({ produto_id: p.id, quantidade: Number(document.getElementById('qtd_' + p.id).value) || 0 }))
+    .filter(i => i.quantidade > 0);
+  if(!itens.length){ msg.textContent = 'Escolha pelo menos 1 item.'; msg.style.display = 'block'; return; }
+
+  const btn = document.getElementById('np_lancarBtn');
+  btn.disabled = true; btn.textContent = 'Lançando...';
+
+  const { error } = await supabaseClient.rpc('criar_pedido_manual_feirante', {
+    p_cliente_nome: nome,
+    p_cliente_telefone: telefone,
+    p_endereco_entrega: endereco,
+    p_latitude_entrega: window._enderecoPedidoGeocodificado.lat,
+    p_longitude_entrega: window._enderecoPedidoGeocodificado.lng,
+    p_taxa_entrega: taxa,
+    p_itens: itens,
+  });
+
+  btn.disabled = false; btn.textContent = 'Lançar pedido';
+
+  if(error){
+    msg.textContent = 'Não deu pra lançar o pedido: ' + error.message;
+    msg.style.display = 'block';
+    return;
+  }
+
+  fecharModalNovoPedido();
   await carregarPedidos();
 }
 
