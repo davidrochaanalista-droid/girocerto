@@ -4534,11 +4534,15 @@ C:\Users\Usuário\Projetos\giro certo
       produto pendente (o que fazer no timeout: reverter a proposta e
       redespachar, ou outra coisa) antes de escrever a função — fora do
       escopo do item 63 de propósito, pra não expandir demais.
-- [ ] **`PainelFeirante`/`DashboardFeirante` e `CheckoutConsumidor`** (as 2
-      de 4 personas de `FeiraApp.jsx` fora de escopo) — sem tela existente
-      pra integrar (GiroCerto nunca teve painel de feirante nem checkout de
-      consumidor), são produtos novos do zero, não integração. Fica pra
-      depois, sem data. (Consolidado — era 2 bullets duplicados.)
+- [x] ~~`PainelFeirante`/`DashboardFeirante` e `CheckoutConsumidor`~~ —
+      **`PainelFeirante` deixou de ser pendência**: `painel-feirante.html`
+      existe desde o item 41 e ganhou bastante corpo nesta sessão
+      (itens 87/89/91 — cancelar pedido, catálogo de produtos, novo
+      pedido manual, cadastro self-service). **`CheckoutConsumidor`
+      virou decisão consciente de NÃO construir** (item 91, "aja como
+      especialista"): usuário confirmou que o pedido chega por WhatsApp
+      direto com o feirante, não por um app — um checkout de consumidor
+      seria um produto novo desproporcional, sem necessidade real hoje.
 - [~] **Wrapper Capacitor (push nativo FCM, som customizado, entregador)** —
       ver itens 29 e 31. `dispatch-engine/android/`, `capacitor-www/` e
       `capacitor.config.json` já commitados (item 31), estrutura toda
@@ -4636,13 +4640,17 @@ C:\Users\Usuário\Projetos\giro certo
       `entregadores(nome)` em `carregarPedidosDev()`). Validado com script de
       teste dedicado (sessão dev-admin real, RLS de verdade) — não commitado, o
       arquivo continua fora do repo por decisão do usuário (`mockups/.gitignore`).
-- [ ] Módulo feira: as 3 funções de matching (`buscar_entregador_mais_proximo()`,
-      dentro de `aceitar_proposta_consolidacao()`/`recusar_proposta_consolidacao()`, e
-      `redespachar_apos_recusa_feira()`) ganharam o join pra `pessoas_entregadoras` no
-      item 52, mas a lógica de matching da feira em si NÃO foi re-testada de ponta a
-      ponta depois disso — consistente com a decisão já registrada de não investir mais
-      no módulo enquanto ele não roda em produção (pendência antiga, ver "motor de
-      despacho da feira não roda em lugar nenhum em produção").
+- [x] ~~Módulo feira: matching não foi re-testado de ponta a ponta depois
+      do item 52~~ — **testado de verdade no item 89 (03/09/2026)**:
+      feira geocodificada real (endereço de verdade), 3 bancas, 2
+      entregadores freelance (`tenant_id=null`/`aceita_feira=true`,
+      mesmo modelo do item 76), 3 pedidos pro mesmo cliente lançados via
+      `criar_pedido_manual_feirante()`. Rodei `routeManager.despacharPedido()`
+      de verdade (não simulado) — resultado: 2 pedidos com o mesmo
+      destino foram CONSOLIDADOS automaticamente na mesma rota, o 3º
+      abriu rota nova com o outro entregador. `buscar_entregador_mais_proximo()`
+      e a lógica de consolidação (`encontrarMelhorInsercao`) confirmadas
+      funcionando corretamente pós-item-52.
 - [x] ~~Staleness de `lat/lng` no despacho de restaurante~~ — **investigado e
       corrigido no item 73 (02/09/2026)**. Achado bem mais sério do que a
       pendência original supunha: **não era só a feira** que fazia a
@@ -4731,6 +4739,68 @@ C:\Users\Usuário\Projetos\giro certo
       o caso relacionado de o processo cair bem no meio de um failover (rota
       `planejada` sem nenhuma tentativa aberta nem timer sobrevivente). Commit
       `ce97527`, 160/160 testes.
+
+**Pendências novas reveladas na sessão de 02-04/09/2026 (itens 74-91):**
+- [ ] **Integração com plataforma de delivery externa (iFood/99/Rappi)** —
+      bloqueio real pro cancelamento de pedido em rota (item 85) chegar
+      de verdade. Depende do usuário: cadastro comercial + credenciais
+      de API em cada plataforma, não é trabalho de código. Pesquisado
+      (item 85): iFood tem uma API específica pra operador logístico
+      terceirizado, "Entrega Fácil" — parece o encaixe mais direto pro
+      papel do GiroCerto (não precisa virar PDV/cardápio completo).
+      Rappi exige contato comercial direto pra aprovação. O código já
+      está pronto do lado de dentro (reage a `pedidos.status='cancelado'`),
+      só falta a integração de verdade escrever nesse campo.
+- [ ] **Provedor de SMS não configurado** — bloqueia envio de código de
+      verificação por SMS (item 88 pediu como alternativa à senha).
+      Precisa contratar um provedor (Twilio ou equivalente) e configurar
+      no Supabase Auth. Senha já implementada como alternativa que não
+      depende disso.
+- [ ] **Redesenho estilo 99 (itens 79-80 cobriram só telas 2 e o mapa)** —
+      telas 1/3/5/6/8 do pedido original continuam sem construir:
+      - Tela 1 ("aceitar N pedidos de uma vez"): motor de despacho do
+        restaurante nunca agrupa pedidos numa oferta só (sempre 1
+        pedido = 1 rota nova) — bundling exigiria mudar lógica de
+        negócio do motor, fora do escopo que o usuário definiu pra
+        telas. Decisão de produto pendente antes de tocar nisso.
+      - Tela 3 (foto do estabelecimento): sem coluna nem bucket pra
+        armazenar.
+      - Tela 5 (expresso, "entregar em N minutos"): sem campo de SLA/
+        prazo em `pedidos` — não tem de onde tirar o "N minutos".
+      - Tela 6 (chat): sem tabela de mensagens nenhuma no schema.
+      - Tela 8 (navegação turn-by-turn própria): reverte decisão de
+        produto já tomada no item 37 (deep link Waze/Maps, sem mapa
+        próprio).
+- [ ] **`repasses` de freelance multi-loja só mostra a loja "mais
+      recente" na tela de Saque** (achado no item 80/83) — um freelance
+      que já trabalhou pra mais de 1 loja tem repasses espalhados em
+      vínculos diferentes; a tela de Saque escolhe só o vínculo mais
+      recente em `carregarEntregador()` (item 76), escondendo
+      silenciosamente ganhos de lojas anteriores. Precisa de decisão de
+      produto (agregar entre lojas? lista separada por loja?) antes de
+      corrigir — guard pra não quebrar com `entregadorId` null já foi
+      aplicado (item 80), só a agregação em si falta.
+- [ ] **Cancelamento de pedido de feira continua sem gatilho real** (item
+      85/87) — mesmo com o botão "Cancelar pedido" no painel do
+      feirante (item 87) fechando o ciclo tecnicamente, o módulo feira
+      inteiro ainda não está em produção real (só os 2 serviços Railway
+      rodando 24/7, mas sem volume de pedido real ainda) — dependência
+      dupla, não é só "falta código".
+
+**Incidente de processo (03-04/09/2026, deploy do item 82-91):** `railway
+up -c -s girocerto-feira-dispatch` retornou status "killed" no processo
+local (CLI parou de streamar logs), o que pareceu indicar falha — mas o
+deploy do lado do Railway continuou e terminou com sucesso. Confirmado
+via 3 sinais independentes antes de seguir em frente: `railway status
+--json` mostrando o `activeDeployments[0].id` batendo com o ID do build
+log mais recente + timestamp mais novo que o deploy anterior;
+`instances[0].status: "RUNNING"`; e `railway logs` mostrando a linha de
+boot nova (`"...escutando pedido_grupo_pronto e pedido_grupo_cancelado_em_rota"`,
+texto que só existe no código pós-item-85). **Lição pra próximas
+sessões**: o status do processo local do `railway up` (completed/killed)
+não é confiável sozinho pra confirmar deploy — sempre confirmar via
+`railway logs`/`status --json` + healthcheck antes de declarar sucesso,
+não só o exit code do CLI.
 
 ## Convenções de trabalho estabelecidas
 - Nunca commitar nem dar push sem instrução explícita "commit e push", mesmo depois de
