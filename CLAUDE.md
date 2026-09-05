@@ -4633,6 +4633,48 @@ C:\Users\Usuário\Projetos\giro certo
       mapa aparece com bem mais espaço livre (inclusive uma faixa boa
       abaixo de "Finalizar turno").
     - `capacitor-www/index.html` ressincronizado.
+99. **"O mapa trava"/"não apareceu o traçado" na tela de rota ativa**
+    (04/09/2026, achado ao vivo montando um cenário de teste de rota real
+    a pedido do usuário — "quando estiver em rota esses cards não ficam
+    no meio da tela?"). Antes de mais nada: confirmado por código e teste
+    ao vivo que a tela de rota ativa (`view-rota`/`view-entrega`, botão de
+    voltar + clima + 1 cartão inferior) **nunca teve o problema de
+    empilhamento** dos itens 92-98 — isso é só da tela de espera
+    (`view-turno`). Cenário de teste (turno ativo + rota real "a caminho
+    da loja" → "em entrega", geocodificado de verdade via Nominatim)
+    revelou um bug separado, de verdade:
+    - **Causa raiz**: `geocodificar()` (usa Nominatim, mesma política de
+      uso "respeitosa" já documentada) começou a devolver 503 (limite de
+      uso — bem provável pelo volume alto de geocodificação desta sessão
+      inteira de testes, não um problema do serviço em si). Confirmado
+      via inspeção de rede (`503`, não erro de CORS/rede) e comparando
+      chamada manual (funcionava isolada) com o comportamento do app.
+    - **Bug de verdade, achado no caminho**: `geocodificar()` só cacheava
+      SUCESSO — uma falha nunca ficava registrada. Como
+      `iniciarAtualizacaoPeriodicaMapa()` tenta de novo a cada 8s pra
+      sempre enquanto a tela de rota fica aberta, isso martelava o MESMO
+      endereço repetidamente bem no momento em que o serviço já estava
+      sobrecarregado — piorando o próprio problema que deveria esperar
+      passar. Também achado ao vivo (rede): chamadas concorrentes pro
+      MESMO endereço disparavam fetches duplicados simultâneos, sem lock
+      nenhum (mesma categoria de race condition já resolvida em
+      `atualizarMapa()`/`tracarRota()` no item 38, só que
+      `geocodificar()` ficou de fora daquela proteção na época).
+    - **Correção**: falha agora também vira cache, com um intervalo
+      mínimo de 30s antes de tentar de novo pro mesmo endereço (backoff
+      simples — dá tempo do serviço se recuperar em vez de insistir a
+      cada tick); chamadas concorrentes pro mesmo endereço passam a
+      compartilhar a mesma promise em fetch (`promessaGeocodeEmAndamento`),
+      eliminando os fetches duplicados simultâneos.
+    - **Testado ao vivo**: antes da correção, múltiplas tentativas
+      idênticas em menos de 1 segundo (visto na aba de rede); depois, 1
+      tentativa a cada 30s, exatamente como projetado. O Nominatim
+      continuou devolvendo 503 durante todo o teste (efeito colateral do
+      volume desta sessão, não algo que o código resolve sozinho) — o
+      traçado em si só volta a aparecer quando o serviço normalizar, o
+      que é esperado e não deve acontecer em uso real (1 usuário abrindo
+      o app ocasionalmente fica bem dentro do limite de uso justo).
+    - `capacitor-www/index.html` ressincronizado.
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
@@ -4655,6 +4697,18 @@ C:\Users\Usuário\Projetos\giro certo
       de confirmado no ar, trocar a URL do OSRM em `app-entregador.html`
       (`tracarRota()`) e `rastreio-pedido.html` de
       `router.project-osrm.org` pra `girocerto-osrm-production.up.railway.app`.
+- [ ] **`geocodificar()` regeocodifica o MESMO endereço via Nominatim a
+      cada 8s** (achado no item 99, 04/09/2026) enquanto a tela de
+      rota/entrega fica aberta, mesmo quando `pedidos.lat`/`pedidos.lng`
+      já são conhecidos (gravados na criação do pedido). O backoff de
+      falha do item 99 já reduz o dano de um 503 (30s em vez de martelar
+      a cada tick), mas o ideal seria nem depender do Nominatim pra isso:
+      passar lat/lng já resolvidos quando existirem (`abrirEntrega()`/
+      `montarRota()` já têm essa informação no objeto do pedido) e só
+      cair pra geocodificação quando faltar. Não implementado agora —
+      mudança maior (assinatura de `atualizarMapa()`/
+      `atualizarMapaInterno()`, vários call sites), fora do escopo do bug
+      pontual que motivou o item 99.
 - [x] ~~MFA (TOTP) — decisão de produto pendente antes de implementar~~ —
       implementado (item 44), opcional, "dispositivo confiável" via
       sessão persistida do Supabase. 2 achados reais corrigidos no

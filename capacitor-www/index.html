@@ -2203,9 +2203,38 @@ function abrirNavegacao(endereco){
 // Cache por endereço: montarRota()/abrirEntrega() rodam de novo a cada
 // verificarRotaAtiva(), não faz sentido regeocodificar o mesmo texto.
 const cacheGeocode = {};
+// item 99 (04/09/2026, achado ao vivo analisando a tela de rota ativa com
+// o usuário: "o mapa trava"/"não apareceu o traçado"). Investigação via
+// rede: Nominatim devolvendo 503 (limite de uso — bem provável pelo
+// volume de geocodificação desta sessão de testes). O bug de verdade não
+// é o 503 em si (fora do nosso controle, serviço "fair use, sem SLA",
+// já documentado) — é que SÓ sucesso era cacheado; uma falha nunca
+// ficava registrada, então iniciarAtualizacaoPeriodicaMapa() (a cada 8s,
+// pra sempre enquanto a tela ficar aberta) martelava o MESMO endereço
+// repetidas vezes sem parar, piorando exatamente o cenário de rate
+// limit. Dois ajustes: (1) falha também vira cache, com um intervalo
+// mínimo antes de tentar de novo (backoff simples) — se o serviço
+// estiver fora do ar/limitado, para de bater nele por um tempo em vez de
+// insistir a cada tick; (2) chamadas concorrentes pro MESMO endereço
+// (visto ao vivo: 2 requisições idênticas na mesma janela de tempo)
+// compartilham a MESMA promise em vez de disparar fetches duplicados —
+// mesmo princípio de lock já usado em atualizarMapa()/tracarRota(),
+// só que endereçando o geocodificar() em si, que não tinha essa proteção.
+const falhaGeocodeEm = {};
+const promessaGeocodeEmAndamento = {};
+const INTERVALO_MIN_RETRY_FALHA_GEOCODE_MS = 30000;
 async function geocodificar(endereco){
   if(!endereco) return null;
   if(cacheGeocode[endereco] !== undefined) return cacheGeocode[endereco];
+  const ultimaFalha = falhaGeocodeEm[endereco];
+  if(ultimaFalha && Date.now() - ultimaFalha < INTERVALO_MIN_RETRY_FALHA_GEOCODE_MS) return null;
+  if(promessaGeocodeEmAndamento[endereco]) return promessaGeocodeEmAndamento[endereco];
+  promessaGeocodeEmAndamento[endereco] = geocodificarInterno(endereco).finally(() => {
+    delete promessaGeocodeEmAndamento[endereco];
+  });
+  return promessaGeocodeEmAndamento[endereco];
+}
+async function geocodificarInterno(endereco){
   try{
     const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=' + encodeURIComponent(endereco);
     const res = await fetch(url, { headers: { 'Accept-Language': 'pt-BR' } });
@@ -2215,6 +2244,7 @@ async function geocodificar(endereco){
     return ponto;
   } catch(err){
     console.warn('Não deu pra geocodificar o endereço pro mapa:', err.message);
+    falhaGeocodeEm[endereco] = Date.now();
     return null;
   }
 }
