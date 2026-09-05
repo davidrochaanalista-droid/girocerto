@@ -4675,6 +4675,60 @@ C:\Users\Usuário\Projetos\giro certo
       que é esperado e não deve acontecer em uso real (1 usuário abrindo
       o app ocasionalmente fica bem dentro do limite de uso justo).
     - `capacitor-www/index.html` ressincronizado.
+100. **"Problema com o veículo" só faz sentido com loja de verdade
+     associada** (04/09/2026, pedido direto do usuário, depois de "não faz
+     sentido manter o card na tela onde não tem rota"). Antes, o link "🔧
+     Problema com o veículo" e o botão "Avisar a loja agora" ficavam
+     sempre visíveis na tela inicial, mesmo sem nenhum pedido/loja
+     associado (freelance sem vínculo, ou aguardando próxima rota) — o
+     `entregador_id`/`rota_id` gravados no alerta nesse caso não
+     identificam loja nenhuma de verdade.
+     - **Critério**: reaproveita `existeEntregaEmAndamento()` (item 82/90)
+       — mesma checagem já usada pra bloquear Sair/Finalizar turno, sem
+       lógica nova. O perfil (fixo/freelancer) não entra nessa decisão —
+       só depois, dentro de `enviarProblemaVeiculo()`, que já resolve a
+       loja certa via `rotaAtivaId` (a rota/pedido em foco no momento,
+       fixo ou freelance) sem precisar de mudança nenhuma ali.
+     - **Sem rota**: o link "🔧 Problema com o veículo" some da tela
+       inicial (`#chipProblemaVeiculo`, `display:none` por padrão,
+       alternado por `atualizarUiConformeRotaAtiva()` — renomeada de
+       `atualizarEstadoBotaoFinalizar()` do item 95, que ganhou essa
+       responsabilidade extra). Se aberta por outro caminho (defensivo,
+       não deveria acontecer na prática), a tela mostra só tipo de
+       problema + contatos de emergência, com "Registrar problema" (só
+       `localStorage`, mesmo padrão de `logCancelamentoLocal()` do item
+       85) em vez de "Avisar a loja agora".
+     - **Testado ao vivo** nos dois estados (com rota real e sem rota,
+       cenário criado via SQL): card some/aparece corretamente, texto e
+       botão mudam conforme o estado.
+     - `capacitor-www/index.html` ressincronizado.
+101. **"Avisar a loja agora" não diferenciava fase de retirada vs.
+     entrega** (04/09/2026, pedido direto do usuário — "botão avisar a
+     loja [na fase de retirada]... botão único avisar loja/cliente [na
+     fase de entrega]... o sistema envia uma mensagem pra loja e pro
+     cliente simultaneamente"). Investigação prévia revelou que o
+     back-end **já fazia isso** — `rastrear_pedido_publico()` (RPC usada
+     por `rastreio-pedido.html`) já calcula `incidente_ativo` a partir de
+     QUALQUER `alertas_seguranca` tipo `problema_veiculo`/`problema_entrega`
+     ligado à rota, mostrando um aviso genérico pro cliente
+     automaticamente — só o texto/rótulo do botão nunca refletiu isso, e
+     nunca distinguia a fase.
+     - Nova variável `rotaAtivaStatus` (capturada em `montarRota(rota)`,
+       sempre chamada com o objeto fresco da rota em foco) — `abrirProblemaVeiculo()`
+       usa `rotaAtivaStatus === 'em_entrega'` pra decidir o texto/rótulo:
+       **"Avisar a loja"** (fase `a_caminho_da_loja` — cliente nem sabe do
+       pedido de verdade ainda) vs **"Avisar loja/cliente"** (fase
+       `em_entrega` — 1 ação só, back-end já notifica os dois). Nenhuma
+       mudança em `enviarProblemaVeiculo()` — só rótulo/texto mais
+       precisos sobre um comportamento que já existia.
+     - Antes de implementar, apresentei 3 opções ao usuário (botões
+       separados / mensagem customizada pro cliente / só deixar mais claro
+       o que já existe) — escolheu uma variante da 3ª: 1 botão só, texto
+       deixando explícito que avisa os dois.
+     - **Testado ao vivo** nas duas fases (cenário SQL avançado de
+       `a_caminho_da_loja` pra `em_entrega` no meio do teste): rótulo e
+       texto mudam corretamente em cada uma.
+     - `capacitor-www/index.html` ressincronizado.
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já

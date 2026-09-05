@@ -138,7 +138,7 @@ complementar). -->
   /* item 95: contraste real pro "Finalizar turno" bloqueado — antes o
   botão tinha SEMPRE a mesma aparência pálida (.btn-ghost), sem
   diferenciar quando existeEntregaEmAndamento() bloqueia o clique (só um
-  alert() na hora, nada visual). atualizarEstadoBotaoFinalizar() alterna
+  alert() na hora, nada visual). atualizarUiConformeRotaAtiva() alterna
   esta classe — não muda a checagem/bloqueio em si. */
   .btn-ghost.bloqueado{opacity:.4;color:var(--gray-soft);cursor:not-allowed;}
   .eye{cursor:pointer;opacity:.5;}
@@ -571,12 +571,17 @@ complementar). -->
       <button class="link-btn" id="btnExtratoFeira" onclick="abrirExtratoFeira()" style="display:none;text-align:center;width:100%;margin-bottom:14px;">Ver extrato da feira</button>
 
       <!-- item 95: chip próprio (fundo paper), mesmo bug de legibilidade
-      já corrigido nos outros elementos sobre o mapa. -->
-      <button class="link-btn chip-problema-veiculo" onclick="abrirProblemaVeiculo()">🔧 Problema com o veículo</button>
+      já corrigido nos outros elementos sobre o mapa. item 100 (04/09/2026,
+      correção do usuário — "não faz sentido manter o card na tela onde
+      não tem rota"): só aparece com entrega em andamento agora
+      (existeEntregaEmAndamento(), ver atualizarUiConformeRotaAtiva()) —
+      sem rota nenhuma pra reportar problema, o link não faz sentido na
+      tela. display:none por padrão, alternado via JS. -->
+      <button class="link-btn chip-problema-veiculo" id="chipProblemaVeiculo" onclick="abrirProblemaVeiculo()" style="display:none;">🔧 Problema com o veículo</button>
 
       <button class="btn-primary" id="btnContinuar" onclick="clicarContinuar()" style="margin-bottom:10px;display:none;">Continuar</button>
       <button class="btn-outline" id="btnPausar" onclick="clicarPausar()" style="margin-bottom:10px;">Pausar</button>
-      <!-- item 95: id novo pra atualizarEstadoBotaoFinalizar() poder dar
+      <!-- item 95: id novo pra atualizarUiConformeRotaAtiva() poder dar
       contraste real ao estado bloqueado (com entrega em andamento) — só
       camada visual, existeEntregaEmAndamento()/clicarFinalizar() não
       mudaram nada da checagem/bloqueio em si. -->
@@ -651,7 +656,12 @@ complementar). -->
   <div class="view" id="view-problema-veiculo">
     <button class="link-btn" id="pv_btnVoltar" onclick="mostrar('view-turno')" style="margin-bottom:14px;">← Voltar</button>
     <h2 style="margin-bottom:4px;">Problema com o veículo</h2>
-    <p style="color:var(--gray);font-size:13px;margin:0 0 18px;">Isso avisa a loja na hora — e, se você estiver numa entrega, avisa o cliente também que houve um imprevisto. A loja decide o que fazer com o pedido.</p>
+    <!-- item 100 (04/09/2026, pedido direto do usuário): texto/botão
+    trocam conforme existeEntregaEmAndamento() (ver abrirProblemaVeiculo())
+    — "Avisar a loja agora" só faz sentido com uma loja de verdade
+    associada (rota ativa). Sem rota, vira "Registrar problema" (só
+    localStorage, ver registrarProblemaLocal()). -->
+    <p id="pv_intro" style="color:var(--gray);font-size:13px;margin:0 0 18px;">Isso avisa a loja na hora — e, se você estiver numa entrega, avisa o cliente também que houve um imprevisto. A loja decide o que fazer com o pedido.</p>
 
     <div class="toggle-tipo" style="flex-wrap:wrap;">
       <div class="tipo-opt" style="flex:1 1 45%;" id="pv-opt-pneu" onclick="selecionarProblemaVeiculo('pneu_furado')">🛞 Pneu furado</div>
@@ -672,7 +682,7 @@ complementar). -->
       <a class="emerg-btn" href="tel:192">🚑 192 — SAMU/Resgate</a>
     </div>
 
-    <button class="btn-danger" onclick="enviarProblemaVeiculo()">Avisar a loja agora</button>
+    <button class="btn-danger" id="pv_btnAcao" onclick="enviarProblemaVeiculo()">Avisar a loja agora</button>
   </div>
 
   <!-- ===================== VIEW: PROBLEMA COM A ENTREGA ===================== -->
@@ -1098,6 +1108,13 @@ const propostasConsolidacaoRespondidas = new Set();
 // ------------------------------------------------------------
 let watchId = null;
 let rotaAtivaId = null; // atualizado por verificarRotaAtiva(); null = turno ativo mas sem rota no momento
+// item 101 (04/09/2026, pedido direto do usuário): fase da rota em foco
+// ('a_caminho_da_loja' = indo buscar, 'em_entrega' = indo entregar) —
+// capturada em montarRota() (sempre chamada com o objeto fresco da rota
+// em foco, inclusive depois de confirmarRetirada()/verificarRotaAtiva()
+// rodarem de novo) pra abrirProblemaVeiculo() saber qual texto/botão
+// mostrar, sem precisar de outra consulta ao banco.
+let rotaAtivaStatus = null;
 let ultimoEnvioPosicaoEm = 0;
 // Throttle client-side: watchPosition pode disparar bem mais rápido que
 // isso. Não existe backend Node aqui pra bufferizar em lote (padrão do
@@ -1600,17 +1617,22 @@ function existeEntregaEmAndamento(){
 }
 // item 95 (04/09/2026, correção do usuário): "Finalizar turno" sempre
 // teve a MESMA aparência pálida (.btn-ghost), bloqueado ou não — só um
-// alert() na hora do clique avisava. Camada visual nova, chamada sempre
-// que rotasAtivasLista/rotaFeiraAtivaId podem ter mudado (fim de
-// verificarRotaAtiva()/verificarRotaFeiraAtiva(), os dois únicos lugares
-// que escrevem nessas variáveis — todo caminho que as muda já rechama
-// uma das duas na sequência, ver comentários nelas). Não mexe em
-// existeEntregaEmAndamento()/clicarFinalizar() — o bloqueio de verdade
-// continua sendo o mesmo de sempre.
-function atualizarEstadoBotaoFinalizar(){
-  const btn = document.getElementById('btnFinalizarTurno');
-  if(!btn) return;
-  btn.classList.toggle('bloqueado', existeEntregaEmAndamento());
+// alert() na hora do clique avisava. item 100 (04/09/2026, correção
+// seguinte do usuário): o link "🔧 Problema com o veículo" também só faz
+// sentido com rota ativa (sem rota, não há loja pra reportar problema
+// nenhum — "não faz sentido manter o card na tela onde não tem rota").
+// Uma função só, chamada sempre que rotasAtivasLista/rotaFeiraAtivaId
+// podem ter mudado (fim de verificarRotaAtiva()/verificarRotaFeiraAtiva(),
+// os dois únicos lugares que escrevem nessas variáveis — todo caminho que
+// as muda já rechama uma das duas na sequência, ver comentários nelas).
+// Não mexe em existeEntregaEmAndamento()/clicarFinalizar() — o bloqueio
+// de verdade continua sendo o mesmo de sempre.
+function atualizarUiConformeRotaAtiva(){
+  const emRota = existeEntregaEmAndamento();
+  const btnFinalizar = document.getElementById('btnFinalizarTurno');
+  if(btnFinalizar) btnFinalizar.classList.toggle('bloqueado', emRota);
+  const chipProblema = document.getElementById('chipProblemaVeiculo');
+  if(chipProblema) chipProblema.style.display = emRota ? 'block' : 'none';
 }
 async function deslogar(){
   if(existeEntregaEmAndamento()){
@@ -2061,7 +2083,7 @@ async function checarTurnoAtivo(){
     document.getElementById('turnoAtivo').style.display = 'none';
     document.getElementById('linhaStatsTurno').classList.remove('show');
     document.getElementById('slotAcoesTopo').appendChild(document.getElementById('blocoAcoesSecundarias')); // item 98 — sem mapa atrás nesse estado, volta pro topo
-    atualizarEstadoBotaoFinalizar();
+    atualizarUiConformeRotaAtiva();
     pararRastreioPosicao();
   }
 }
@@ -2565,7 +2587,7 @@ async function verificarRotaAtiva(){
         </button>
       `).join('');
   }
-  atualizarEstadoBotaoFinalizar(); // item 95 — todo caminho que muda rotasAtivasLista passa por aqui de novo depois
+  atualizarUiConformeRotaAtiva(); // item 95/100 — todo caminho que muda rotasAtivasLista passa por aqui de novo depois
 }
 
 async function abrirRotaEspecifica(indice){
@@ -2770,6 +2792,7 @@ async function ajustarRotaAposCancelamentoRestaurante(pedidoCancelado, rota){
 }
 
 function montarRota(rota){
+  rotaAtivaStatus = rota.status; // item 101 — ver abrirProblemaVeiculo()
   // item 85: pedido cancelado não aparece mais na lista de paradas — só
   // depois da confirmação do alerta (ver ajustarRotaAposCancelamentoRestaurante(),
   // que é quem chama verificarRotaAtiva()/montarRota() de novo; antes
@@ -3373,7 +3396,7 @@ async function verificarRotaFeiraAtiva(){
     rotaFeiraAtivaId = null;
     document.getElementById('comRotaFeira').style.display = 'none';
   }
-  atualizarEstadoBotaoFinalizar(); // item 95 — todo caminho que muda rotaFeiraAtivaId passa por aqui de novo depois
+  atualizarUiConformeRotaAtiva(); // item 95/100 — todo caminho que muda rotaFeiraAtivaId passa por aqui de novo depois
 }
 
 function abrirRotaFeira(){
@@ -3872,7 +3895,19 @@ async function solicitarSaque(){
 // ------------------------------------------------------------
 let viewAntesDoProblemaVeiculo = 'view-turno';
 let problemaVeiculoTipo = null;
+const ROTULOS_PROBLEMA_VEICULO = { pneu_furado: 'Pneu furado', pane_mecanica: 'Pane mecânica', acidente_leve: 'Acidente leve', outro: 'Outro' };
 
+// item 100 (04/09/2026, pedido direto do usuário): "Avisar a loja agora"
+// só faz sentido com uma loja de verdade associada — ou seja, com rota
+// ativa. O critério é SÓ "tem rota ativa ou não" (mesma checagem de
+// existeEntregaEmAndamento(), item 82/90 — reaproveitada, não duplicada);
+// o perfil (fixo/freelancer) não entra aqui, só depois, dentro de
+// enviarProblemaVeiculo() — que já resolve a loja certa via rotaAtivaId
+// (a rota/pedido em foco no momento, seja de vínculo fixo ou de um
+// freelancer sem vínculo nenhum com aquela loja) sem precisar de nenhuma
+// lógica nova. Sem rota, vira "Registrar problema" — só localStorage
+// (mesmo padrão de logCancelamentoLocal(), item 85), sem loja nenhuma
+// como destinatária.
 function abrirProblemaVeiculo(){
   const ativa = document.querySelector('.view.active');
   if(ativa) viewAntesDoProblemaVeiculo = ativa.id;
@@ -3881,6 +3916,26 @@ function abrirProblemaVeiculo(){
   document.querySelectorAll('#view-problema-veiculo .tipo-opt').forEach(el => el.classList.remove('sel'));
   document.getElementById('pv_descricao').value = '';
   document.getElementById('pv_msg').className = 'msg';
+
+  const emRota = existeEntregaEmAndamento();
+  // item 101 (04/09/2026, pedido direto do usuário): fase "indo buscar o
+  // pedido" (a_caminho_da_loja) só tem loja envolvida — cliente nem sabe
+  // do pedido de verdade ainda. Fase "indo pra entrega" (em_entrega) tem
+  // os dois — 1 botão só, back-end já notifica loja (alerta detalhado no
+  // painel) e cliente (banner genérico em rastreio-pedido.html, via
+  // incidente_ativo de rastrear_pedido_publico()) na mesma ação, sem
+  // mudar nada de enviarProblemaVeiculo() — só o texto/rótulo refletindo
+  // isso com precisão em vez do "avisar a loja" genérico de antes.
+  const emEntrega = rotaAtivaStatus === 'em_entrega';
+  document.getElementById('pv_intro').textContent = !emRota
+    ? 'Sem rota ativa agora — não há loja pra avisar. Registrar aqui só fica salvo neste aparelho, pra sua referência. Em caso de emergência de verdade, use os contatos abaixo.'
+    : emEntrega
+      ? 'Isso avisa a loja e o cliente na hora — a loja vê o detalhe completo no painel dela, o cliente vê um aviso genérico na página de rastreio.'
+      : 'Isso avisa a loja na hora — o cliente ainda não entra aqui porque o pedido nem foi retirado.';
+  const btn = document.getElementById('pv_btnAcao');
+  btn.textContent = !emRota ? 'Registrar problema' : (emEntrega ? 'Avisar loja/cliente' : 'Avisar a loja');
+  btn.onclick = emRota ? enviarProblemaVeiculo : registrarProblemaLocal;
+
   mostrar('view-problema-veiculo');
 }
 
@@ -3900,9 +3955,8 @@ async function enviarProblemaVeiculo(){
     return;
   }
 
-  const rotulos = { pneu_furado: 'Pneu furado', pane_mecanica: 'Pane mecânica', acidente_leve: 'Acidente leve', outro: 'Outro' };
   const detalhe = document.getElementById('pv_descricao').value.trim();
-  const descricao = rotulos[problemaVeiculoTipo] + (detalhe ? ' — ' + detalhe : '');
+  const descricao = ROTULOS_PROBLEMA_VEICULO[problemaVeiculoTipo] + (detalhe ? ' — ' + detalhe : '');
 
   const { error } = await supabaseClient.from('alertas_seguranca').insert({
     entregador_id: entregadorId,
@@ -3917,7 +3971,40 @@ async function enviarProblemaVeiculo(){
     return;
   }
 
-  alert('Loja avisada. Se você estiver numa entrega, o cliente também vai ver o aviso na página de rastreio.');
+  alert(rotaAtivaStatus === 'em_entrega'
+    ? 'Loja e cliente avisados — o cliente vê o aviso na página de rastreio.'
+    : 'Loja avisada.');
+  mostrar(viewAntesDoProblemaVeiculo);
+}
+
+// item 100: mesmo padrão de logCancelamentoLocal() (item 85) — log
+// simples em localStorage, cap de 100 entradas, sem lógica de
+// negócio/pagamento nenhuma associada. Só existe pro estado "sem rota"
+// (ver abrirProblemaVeiculo()), onde não há loja nenhuma pra notificar.
+function registrarProblemaLocal(){
+  const msg = document.getElementById('pv_msg');
+  msg.className = 'msg';
+
+  if(!problemaVeiculoTipo){
+    msg.textContent = 'Escolhe o que aconteceu antes de registrar.';
+    msg.className = 'msg error';
+    return;
+  }
+
+  const detalhe = document.getElementById('pv_descricao').value.trim();
+  const descricao = ROTULOS_PROBLEMA_VEICULO[problemaVeiculoTipo] + (detalhe ? ' — ' + detalhe : '');
+
+  try{
+    const chave = 'giro_log_problema_veiculo_sem_rota';
+    const log = JSON.parse(localStorage.getItem(chave) || '[]');
+    log.push({ descricao, em: new Date().toISOString() });
+    while(log.length > 100) log.shift();
+    localStorage.setItem(chave, JSON.stringify(log));
+  } catch(err){
+    console.warn('Não deu pra gravar o log local de problema do veículo:', err.message);
+  }
+
+  alert('Problema registrado neste aparelho — sem rota ativa, não há loja pra avisar agora.');
   mostrar(viewAntesDoProblemaVeiculo);
 }
 
