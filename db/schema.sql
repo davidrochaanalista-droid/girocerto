@@ -6226,14 +6226,19 @@ alter table alertas_seguranca add constraint alertas_seguranca_tipo_check
 -- endereco_loja_do_meu_tenant() ganha telefone_loja junto (mesma RPC,
 -- mesmo motivo de existir: policy de select em tenants não cobre
 -- entregador, precisa de SECURITY DEFINER pra ler o telefone da loja).
+-- item 102 (04/09/2026): ganha lat/lng também — a tenant já tem esses
+-- dois campos gravados desde sempre (cadastro/painel-loja.html), mas o
+-- app do entregador nunca lia, só geocodificava o TEXTO do endereço via
+-- Nominatim de novo a cada 8s (achado no item 99, pendência registrada
+-- lá). Ver resolverPonto()/atualizarMapaInterno() em app-entregador.html.
 create or replace function endereco_loja_do_meu_tenant()
-returns table(endereco_loja text, telefone_loja text)
+returns table(endereco_loja text, telefone_loja text, lat double precision, lng double precision)
 language sql
 security definer
 stable
 set search_path = public, pg_temp
 as $$
-  select t.endereco_loja, t.telefone
+  select t.endereco_loja, t.telefone, t.lat, t.lng
   from tenants t
   join entregadores e on e.tenant_id = t.id
   join pessoas_entregadoras p on p.id = e.pessoa_id

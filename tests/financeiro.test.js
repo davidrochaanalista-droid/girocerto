@@ -110,6 +110,63 @@ async function run() {
       );
     }
 
+    console.log('\n=== item 104 (04/09/2026): freelance multi-loja vê repasses de TODAS as lojas ===');
+    {
+      const tenant2Id = crypto.randomUUID();
+      await pg.query(`insert into tenants (id, nome) values ($1,'Loja Financeiro 2')`, [tenant2Id]);
+      tenantIds.push(tenant2Id);
+
+      const u = await createAuthUser('freelance.multiloja');
+      authUserIds.push(u.id);
+      // vínculo 1: criarEntregador() já cria a pessoa + o 1º vínculo.
+      const { pessoaId, entregadorId: vinculo1Id } = await criarEntregador(
+        pg, tenantId, u.id, { nome: 'Freelance Multi-loja', status: 'disponivel' }, { tipo_vinculo: 'freelance' }
+      );
+      // vínculo 2: MESMA pessoa, loja diferente — insert direto (criarEntregador()
+      // sempre cria uma pessoa nova, não serve pra "adicionar 2º vínculo").
+      const { rows: [vinculo2] } = await pg.query(
+        `insert into entregadores (tenant_id, pessoa_id, tipo_vinculo) values ($1,$2,'freelance') returning id`,
+        [tenant2Id, pessoaId]
+      );
+      const vinculo2Id = vinculo2.id;
+
+      const { rows: [pedido1] } = await pg.query(
+        `insert into pedidos (tenant_id, endereco, valor_pedido, status) values ($1,'Rua Loja 1',25,'entregue') returning id`, [tenantId]
+      );
+      const { rows: [pedido2] } = await pg.query(
+        `insert into pedidos (tenant_id, endereco, valor_pedido, status) values ($1,'Rua Loja 2',25,'entregue') returning id`, [tenant2Id]
+      );
+
+      const { error: e1 } = await admin.from('repasses').insert({
+        entregador_id: vinculo1Id, pedido_id: pedido1.id, valor: 12.00, status: 'pendente',
+      });
+      const { error: e2 } = await admin.from('repasses').insert({
+        entregador_id: vinculo2Id, pedido_id: pedido2.id, valor: 9.00, status: 'pendente',
+      });
+      r.check('repasses criados nas duas lojas (service role)', !e1 && !e2, { e1, e2 });
+
+      // item 104: a query real do app (carregarSaque(), app-entregador.html)
+      // não filtra mais por um entregador_id só — RLS (meus_entregador_ids())
+      // já escopa pra TODOS os vínculos da mesma pessoa. Mesma query aqui.
+      const sess = await signInAs(u.email);
+      const { data: repassesAgregados, error: eAgregado } = await sess
+        .from('repasses').select('valor, entregador_id').order('criado_em', { ascending: false });
+      const totalAgregado = (repassesAgregados || []).reduce((s, x) => s + Number(x.valor), 0);
+      r.check(
+        'freelance vê repasses das 2 lojas na MESMA consulta (sem .eq(entregador_id) — antes só via a loja mais recente)',
+        !eAgregado && repassesAgregados && repassesAgregados.length === 2 && totalAgregado === 21,
+        { eAgregado, repassesAgregados, totalAgregado }
+      );
+
+      // isolamento: outro entregador não vê nada disso.
+      const outro = await createAuthUser('outro.multiloja');
+      authUserIds.push(outro.id);
+      await criarEntregador(pg, tenantId, outro.id, { nome: 'Outro Entregador', status: 'disponivel' });
+      const sessOutro = await signInAs(outro.email);
+      const { data: repassesOutro } = await sessOutro.from('repasses').select('id');
+      r.check('outro entregador (sem relação com os 2 vínculos) não vê nenhum desses repasses', (repassesOutro || []).length === 0, repassesOutro);
+    }
+
     return r.summary();
   } finally {
     await cleanup(pg, tenantIds, authUserIds);

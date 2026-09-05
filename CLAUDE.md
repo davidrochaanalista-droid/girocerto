@@ -4729,6 +4729,193 @@ C:\Users\Usuário\Projetos\giro certo
        `a_caminho_da_loja` pra `em_entrega` no meio do teste): rótulo e
        texto mudam corretamente em cada uma.
      - `capacitor-www/index.html` ressincronizado.
+102. **`geocodificar()` parou de regeocodificar endereço já conhecido**
+     (04/09/2026, pedido direto do usuário — "volte para as pendências,
+     faça as que você consegue fazer"; pendência registrada no item 99).
+     `pedidos.lat`/`pedidos.lng` já são gravados na criação — só nunca
+     eram usados pelo mapa do entregador, que regeocodificava o TEXTO do
+     endereço via Nominatim a cada 8s (custo real: rate limit do item 99
+     era em parte auto-infligido por isso). `tenants.lat`/`lng` também já
+     existiam, mas `endereco_loja_do_meu_tenant()` nunca devolvia.
+     - RPC `endereco_loja_do_meu_tenant()` editada em lugar (precisou de
+       `drop function` antes — Postgres não deixa `create or replace`
+       mudar o tipo de retorno) pra devolver `lat`/`lng` também. Migration
+       aplicada direto no banco hospedado.
+     - Nova `resolverPonto(endereco, latConhecido, lngConhecido)`: usa
+       lat/lng direto quando os dois vêm preenchidos, só cai pra
+       `geocodificar()` quando faltar (dado antigo sem lat/lng, ou
+       endereço avulso). `atualizarMapa()`/`atualizarMapaInterno()`/
+       `iniciarAtualizacaoPeriodicaMapa()` ganharam 2 parâmetros novos
+       (lat/lng conhecidos), threaded desde `montarRota()` (mapaLoja,
+       via `latLojaAtual`/`lngLojaAtual` novos) e `abrirEntrega()`
+       (mapaEntrega, via `data-lat`/`data-lng` no botão "Ir pra essa
+       parada", lidos de `pedidos.lat`/`lng`).
+     - **Testado ao vivo**: cenário com lat/lng conhecidos nos dois lados
+       (loja e cliente) — traçado apareceu IMEDIATAMENTE (sem esperar
+       geolocalização nem Nominatim), confirmado por rede que zero
+       requisição a `nominatim.openstreetmap.org` aconteceu, nem no load
+       nem no ciclo de 8s seguinte.
+     - `capacitor-www/index.html` ressincronizado.
+103. **Cor do traçado da rota, de marigold pra verde** (04/09/2026, pedido
+     direto do usuário: "mudar a cor do traçado da rota para azul ou
+     verde" — perguntado qual das duas, escolheu verde). Trocado
+     `#D9A62E` (`--marigold`, mesma cor do ícone da moto — baixo
+     contraste entre os dois) por `#3B5B3F` (`--leaf`, mesmo verde do
+     header/painéis, sem introduzir cor nova na paleta). Confirmado via
+     `linhasRotaLeaflet[containerId].options.color` no navegador.
+104. **Saldo de saque de freelance multi-loja não agregava entre lojas**
+     (04/09/2026, pendência registrada no item 80/83 — "faça as que você
+     consegue fazer"). `carregarSaque()` filtrava por UM `entregador_id`
+     só (o vínculo mais recente, resolvido em `carregarEntregador()`) —
+     repasses de lojas ANTERIORES ficavam escondidos em silêncio pra
+     quem já trabalhou pra mais de uma. A decisão "de produto" que a
+     pendência original pedia **já tinha sido tomada** — `solicitar_saque()`
+     (item 52) já agrega repasses de todos os vínculos da mesma pessoa;
+     só a TELA nunca foi atualizada pra combinar com isso.
+     - Fix: removido o `.eq('entregador_id', entregadorId)` da query —
+       a RLS ("entregador ve seus proprios repasses",
+       `meus_entregador_ids()`) já escopa corretamente pra TODOS os
+       vínculos da pessoa, sem precisar de lógica nova no client.
+     - **Teste novo em `tests/financeiro.test.js`** (não existia
+       cobertura nenhuma pra esse cenário): freelance com vínculo em 2
+       tenants diferentes, repasse em cada um, confirma que a MESMA
+       consulta devolve os 2 (antes só devolveria 1) — e que outro
+       entregador sem relação nenhuma continua sem ver nada (isolamento
+       intacto). 174/174 na suíte completa (era 171, +3 do teste novo).
+     - `capacitor-www/index.html` ressincronizado.
+105. **Link de rastreio sem jeito de enviar pro cliente** (04/09/2026,
+     pendência registrada no item 42 — "ninguém envia isso pro cliente
+     sozinho ainda"). Sem integração paga (WhatsApp Business API, fora
+     de escopo — decisão de produto/custo do usuário): botão "📱 Enviar
+     rastreio" em `painel-loja.html`, aparece quando `pedidos.status =
+     'a_caminho'` e o pedido tem `cliente_telefone` cadastrado. Abre
+     `wa.me/<telefone>?text=<mensagem>` — o WhatsApp do PRÓPRIO celular
+     da loja abre com a mensagem e o link já prontos, só falta apertar
+     enviar (nenhuma credencial/API nova, nenhum custo). Testado via
+     `javascript_tool` (helpers `numeroWhatsapp()`/`botaoAcaoPedido()`
+     isolados) — sem sessão de loja real disponível pra testar o clique
+     de ponta a ponta nesta rodada.
+106. **`abrirExtratoFeira()` tinha o MESMO bug do item 104, gêmeo no lado
+     feira** (04/09/2026, achado direto de uma pergunta do usuário — "todas
+     essas pendências feitas, foram em ambas as funções (restaurante e
+     feira)?" — resposta honesta na hora: não, faltava essa). Mesmo padrão
+     exato: `.eq('entregador_id', entregadorId)` só pega o vínculo em foco
+     na sessão — uma pessoa com vínculo de restaurante E de feira ao mesmo
+     tempo via o extrato de feira zerado sempre que `entregadorId`
+     estivesse apontando pro vínculo de restaurante. Mesma correção
+     (remover o `.eq()`, RLS de `entrega_metrica`/`meu_entregador_id_feira()`
+     → `meus_entregador_ids()` já agrega certo). **Investigação prévia
+     confirmou os itens 102/103 (mapa/traçado) NÃO se aplicam à feira** —
+     `montarRotaFeira()` é só lista de paradas, sem mapa/geocodificação/
+     traçado nenhum (confirmado lendo o código, não suposto) — e item 105
+     (WhatsApp) também não tem equivalente na feira (sem página de
+     rastreio pública pra pedido de feira, consumidor já é 100% WhatsApp
+     direto com o feirante, decisão do item 91).
+     - **Teste novo** (script isolado, RLS real): pessoa com vínculo de
+       restaurante + vínculo de feira ao mesmo tempo, extrato de feira
+       aparece certo mesmo com `entregadorId` "preso" no vínculo de
+       restaurante. PASS confirmado.
+     - `capacitor-www/index.html` ressincronizado.
+107. **Entregador só-de-feira travava no login SEMPRE — bug real, achado
+     investigando o item 106** (04/09/2026). Vínculo de feira tem
+     `tenant_id` NULO (`tenant_id=null`, `aceita_feira=true`, modelo item
+     76). Se o vínculo MAIS RECENTE de uma pessoa for o de feira (comum
+     pra quem só faz feira, sem vínculo de restaurante nenhum),
+     `carregarEntregador()` resolvia `TENANT_ID = null` (JS) e rodava
+     `.eq('tenant_id', null)` — **confirmado testando direto**: isso NÃO
+     vira `IS NULL` no PostgREST/Postgres, vira **erro de sintaxe**
+     (`invalid input syntax for type uuid: "null"`), não um "não
+     encontrado" tratável — cai no branch de erro genérico e manda pro
+     login sem explicação. Pior: `localStorage.setItem('girocerto_tenant_id', TENANT_ID)`
+     salvava a STRING `"null"` (JS `null` vira string ao gravar) —
+     esse valor persistia e quebrava TODO login seguinte da mesma
+     pessoa/aparelho, indefinidamente, até alguém limpar o
+     `localStorage` manualmente (agravante do mesmo padrão já visto no
+     item 96, mas sem a autocorreção que o item 96 tinha pra tenant
+     morto — aqui não existia tratamento nenhum).
+     - **Fix**: só persiste no `localStorage` quando `TENANT_ID` é um
+       tenant de verdade (truthy). A query de `entregador` virou
+       condicional — `.eq('tenant_id', TENANT_ID)` quando existe,
+       `.is('tenant_id', null)` quando não, em vez de sempre `.eq()`.
+     - **Testado ao vivo** (RLS real, reproduzindo a sequência exata de
+       `carregarEntregador()`): antes do fix, a query com `.eq(null)`
+       retornava erro de sintaxe UUID; depois, resolve o vínculo de
+       feira corretamente. PASS confirmado.
+     - **Pendência nova, maior, NÃO resolvida agora** (achada nessa
+       mesma investigação, fora do escopo do fix pontual): uma pessoa
+       com vínculo de restaurante E de feira ao MESMO TEMPO só tem UMA
+       variável de sessão (`entregadorId`) representando qual dos dois
+       está "em foco" — os pollings/checagens específicos de feira
+       (`verificarRotaFeiraAtiva()`, oferta de feira, proposta de
+       consolidação, `verificarHistoricoFeira()`) filtram por esse MESMO
+       `entregadorId`, que só aponta pro vínculo de feira quando ele
+       (por acaso) foi o "mais recente" resolvido. Se `entregadorId`
+       estiver no vínculo de restaurante no momento, essas checagens de
+       feira ficam cegas (não é erro, é silêncio — nunca encontram nada,
+       porque olham pro `entregador_id` errado). **Confirmado e resolvido
+       no item 108, mesma sessão** — ver abaixo.
+     - `capacitor-www/index.html` ressincronizado.
+108. **Arquitetura de sessão híbrida restaurante+feira — `entregadorIdFeira`
+     independente** (05/09/2026, pedido direto do usuário depois do item
+     107: "faça a melhor arquitetura possível"). Duas opções foram
+     avaliadas: (a) forçar o entregador a escolher um modo só (restaurante
+     OU feira), ou (b) dar à feira uma identidade de sessão própria,
+     mantendo os dois funcionando ao mesmo tempo. **Escolhida a opção
+     (b)** — a opção (a) reverteria uma funcionalidade JÁ CONSTRUÍDA e
+     testada (`modo_disponibilidade='ambos'`, item 52, com
+     `iniciarEscutaDeOfertas()`/`iniciarEscutaDeOfertasFeira()` já
+     rodando em paralelo pra quem escolhe "ambos") — a arquitetura já
+     pretendia suportar os dois ao mesmo tempo, só faltava completar essa
+     intenção corretamente.
+     - **`entregadorIdFeira`** (nova variável global): resolvida de forma
+       TOTALMENTE independente de `TENANT_ID`/`entregadorId`, incondicional,
+       sempre no início de `carregarEntregador()` — `tenant_id IS NULL` é
+       o identificador de vínculo de feira desde o item 76, não depende de
+       qual loja de restaurante está "em foco".
+     - **Espelho do bug corrigido**: a auto-descoberta de "qualquer
+       vínculo" (usada quando `TENANT_ID` está vazio) ganhou
+       `.not('tenant_id', 'is', null)` — exclui vínculo de feira dessa
+       escolha. Sem isso, se o vínculo de FEIRA fosse o mais recente, TODAS
+       as checagens de RESTAURANTE (`verificarRotaAtiva`, ofertas, etc,
+       todas via `entregadorId`) ficariam cegas — o mesmo bug do item 107,
+       espelhado pro outro lado. Feira não perde nada com a exclusão
+       porque já tem resolução própria.
+     - **7 pontos corrigidos** pra usar `entregadorIdFeira` em vez de
+       `entregadorId`: `iniciarEscutaDeOfertasFeira()` (canal + polling),
+       `iniciarEscutaDePropostasConsolidacao()` (canal + polling),
+       `verificarHistoricoFeira()`, `verificarRotaFeiraAtiva()`,
+       `iniciarEscutaDeCancelamentoFeira()`, `recusarOfertaFeira()`
+       (insert em `oferta_recusada` — sem o fix, o redespacho excluiria o
+       vínculo ERRADO de quem recusou), e o insert de avaliação do
+       feirante. Todo o resto de `entregadorId` no arquivo foi conferido
+       um por um e confirmado corretamente restaurante-específico
+       (nenhuma mudança nesses).
+     - **Testado ao vivo, 3 cenários, 17/17** (script isolado, RLS real,
+       mimetizando as MESMAS queries do app linha por linha — não
+       simulado por fora):
+       - Feira criada → restaurante criado depois (restaurante fica "em
+         foco"): rota de restaurante E de feira detectadas juntas;
+         finalizar a de restaurante não afeta a de feira.
+       - Restaurante criado → feira criada depois (feira fica "em foco",
+         o cenário do "espelho"): rota de restaurante E de feira
+         detectadas juntas; finalizar a de feira não afeta a de
+         restaurante.
+       - Só feira (zero vínculo de restaurante): confirma que o item 107
+         continua funcionando sem regressão depois da mudança na query de
+         auto-descoberta.
+     - `capacitor-www/index.html` ressincronizado.
+
+**Pendências novas / correções registradas nesta rodada (04-05/09/2026):**
+- [ ] **Traçado da rota no mapa embutido não é navegação turn-by-turn**
+      (achado ao vivo, pergunta direta do usuário) — confirmado como
+      **decisão de produto já tomada** (item 37), não é gap: navegação
+      de verdade (próxima curva, voz, recálculo automático, limite de
+      velocidade) fica a cargo do deep link Waze/Google Maps, o mapa
+      embutido é só visão geral (linha que encolhe a cada 8s + distância,
+      igual a tela de resumo do Uber/99 antes de navegar).
+- Pendência antiga "zero permissão/plugin de geolocalização" (wrapper
+  Capacitor) **corrigida por estar desatualizada** — ver texto revisado
+  logo acima, na seção original da pendência.
 
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
@@ -4751,18 +4938,11 @@ C:\Users\Usuário\Projetos\giro certo
       de confirmado no ar, trocar a URL do OSRM em `app-entregador.html`
       (`tracarRota()`) e `rastreio-pedido.html` de
       `router.project-osrm.org` pra `girocerto-osrm-production.up.railway.app`.
-- [ ] **`geocodificar()` regeocodifica o MESMO endereço via Nominatim a
-      cada 8s** (achado no item 99, 04/09/2026) enquanto a tela de
-      rota/entrega fica aberta, mesmo quando `pedidos.lat`/`pedidos.lng`
-      já são conhecidos (gravados na criação do pedido). O backoff de
-      falha do item 99 já reduz o dano de um 503 (30s em vez de martelar
-      a cada tick), mas o ideal seria nem depender do Nominatim pra isso:
-      passar lat/lng já resolvidos quando existirem (`abrirEntrega()`/
-      `montarRota()` já têm essa informação no objeto do pedido) e só
-      cair pra geocodificação quando faltar. Não implementado agora —
-      mudança maior (assinatura de `atualizarMapa()`/
-      `atualizarMapaInterno()`, vários call sites), fora do escopo do bug
-      pontual que motivou o item 99.
+- [x] ~~`geocodificar()` regeocodifica o MESMO endereço via Nominatim a
+      cada 8s~~ — **resolvido no item 102 (04/09/2026)**: `resolverPonto()`
+      usa `pedidos.lat`/`lng`/`tenants.lat`/`lng` (já conhecidos) direto,
+      só cai pra Nominatim quando faltar. Testado: zero chamada ao
+      Nominatim com lat/lng conhecidos, nem no load nem no ciclo de 8s.
 - [x] ~~MFA (TOTP) — decisão de produto pendente antes de implementar~~ —
       implementado (item 44), opcional, "dispositivo confiável" via
       sessão persistida do Supabase. 2 achados reais corrigidos no
@@ -4863,9 +5043,21 @@ C:\Users\Usuário\Projetos\giro certo
         segurança, que só recupera oferta perdida — o som via JS fica só
         pro caminho de Realtime, oferta genuinamente nova). Testado ao
         vivo replicando o cenário exato, sem sobreposição depois do fix.
-      - [ ] **Tracking em background** (a outra metade original da
-        pendência, junto com o push) — nunca começado. Zero permissão de
-        localização, zero plugin de geolocalização instalado, zero código.
+      - [ ] **Tracking em BACKGROUND de verdade (app minimizado/tela
+        bloqueada)** — texto corrigido (04/09/2026): a afirmação antiga
+        de "zero permissão/zero plugin/zero código" estava desatualizada
+        — `@capacitor/geolocation` (`^8.2.2`) está instalado,
+        `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` estão no
+        `AndroidManifest.xml`, e `iniciarRastreioPosicao()`
+        (`app-entregador.html`) já pede permissão e rastreia via
+        `watchPosition()` real, testado em dispositivo (`RMX3941`). O que
+        genuinamente falta é só tracking com o app EM SEGUNDO PLANO/tela
+        bloqueada — o rastreio atual só funciona com o app aberto em
+        primeiro plano (sem `ACCESS_BACKGROUND_LOCATION`, sem plugin de
+        background geolocation tipo `@capacitor-community/background-geolocation`,
+        sem foreground service). Não avaliado se isso é necessário pro
+        piloto (entregador normalmente mantém o app aberto pra navegação
+        mesmo) — decisão de produto, não implementado agora.
       - [x] ~~Keystore de release + `signingConfig`~~ — feito (item 47),
         `gradlew assembleRelease` testado de ponta a ponta, APK assinado
         confirmado com `apksigner verify`. **Falta o usuário fazer backup
@@ -5067,15 +5259,12 @@ C:\Users\Usuário\Projetos\giro certo
       - Tela 8 (navegação turn-by-turn própria): reverte decisão de
         produto já tomada no item 37 (deep link Waze/Maps, sem mapa
         próprio).
-- [ ] **`repasses` de freelance multi-loja só mostra a loja "mais
-      recente" na tela de Saque** (achado no item 80/83) — um freelance
-      que já trabalhou pra mais de 1 loja tem repasses espalhados em
-      vínculos diferentes; a tela de Saque escolhe só o vínculo mais
-      recente em `carregarEntregador()` (item 76), escondendo
-      silenciosamente ganhos de lojas anteriores. Precisa de decisão de
-      produto (agregar entre lojas? lista separada por loja?) antes de
-      corrigir — guard pra não quebrar com `entregadorId` null já foi
-      aplicado (item 80), só a agregação em si falta.
+- [x] ~~`repasses` de freelance multi-loja só mostra a loja "mais
+      recente" na tela de Saque~~ — **resolvido no item 104 (04/09/2026)**:
+      a decisão de produto "agregar entre lojas" já tinha sido tomada
+      (mesmo critério de `solicitar_saque()`, item 52) — só a tela nunca
+      foi atualizada. `.eq('entregador_id', entregadorId)` removido da
+      query, RLS já agrega certo. Teste novo em `financeiro.test.js`.
 - [ ] **Cancelamento de pedido de feira continua sem gatilho real** (item
       85/87) — mesmo com o botão "Cancelar pedido" no painel do
       feirante (item 87) fechando o ciclo tecnicamente, o módulo feira

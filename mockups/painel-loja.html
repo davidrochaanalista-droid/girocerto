@@ -1128,7 +1128,26 @@ function legendaPagamentoPedido(p){
 function botaoAcaoPedido(p){
   if(p.status === 'recebido') return `<button class="action-btn" onclick="aceitarPedido('${p.id}')">Aceitar pedido</button>`;
   if(p.status === 'em_preparo') return `<button class="action-btn pronto" onclick="marcarPronto('${p.id}')">Marcar pronto</button>`;
+  // item 105 (04/09/2026, pendência registrada no item 42): a página de
+  // rastreio pública já existe e funciona, mas ninguém tinha como
+  // ENVIAR o link pro cliente — dependia de copiar/colar manualmente.
+  // Sem integração paga (WhatsApp Business API): deep link wa.me abre o
+  // WhatsApp do PRÓPRIO celular da loja com a mensagem pronta, só falta
+  // a loja apertar "enviar". Só aparece com telefone cadastrado.
+  if(p.status === 'a_caminho' && p.cliente_telefone) {
+    return `<button class="action-btn" onclick="enviarLinkRastreioWhatsapp('${p.id}', '${escapeHtml(p.cliente_telefone)}', '${escapeHtml(p.cliente_nome || '')}')">📱 Enviar rastreio</button>`;
+  }
   return '';
+}
+function numeroWhatsapp(telefone){
+  const digitos = (telefone || '').replace(/\D/g, '');
+  return digitos.startsWith('55') ? digitos : '55' + digitos;
+}
+function enviarLinkRastreioWhatsapp(pedidoId, telefone, nomeCliente){
+  const link = window.location.origin + '/rastreio-pedido.html?id=' + encodeURIComponent(pedidoId);
+  const saudacao = nomeCliente ? `Oi, ${nomeCliente}!` : 'Oi!';
+  const mensagem = `${saudacao} Seu pedido saiu pra entrega 🛵 Acompanhe aqui: ${link}`;
+  window.open(`https://wa.me/${numeroWhatsapp(telefone)}?text=${encodeURIComponent(mensagem)}`, '_blank');
 }
 
 // ------------------------------------------------------------

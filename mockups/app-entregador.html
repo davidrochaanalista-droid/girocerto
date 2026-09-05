@@ -1040,10 +1040,27 @@ function escapeHtml(str){
 }
 
 let entregadorId = null;
+// item 108 (05/09/2026, arquitetura pedida pelo usuário depois do achado
+// do item 107): `entregadorId` só representa UM vínculo por vez —
+// resolvido via TENANT_ID, sempre o de RESTAURANTE quando existe um.
+// Uma pessoa com vínculo de restaurante E de feira ao mesmo tempo
+// (modo_disponibilidade='ambos', item 52 — já pensado pra isso, com
+// iniciarEscutaDeOfertas()/iniciarEscutaDeOfertasFeira() rodando em
+// paralelo) tinha as checagens de feira "cegas" sempre que
+// `entregadorId` estivesse no vínculo de restaurante, porque elas
+// reaproveitavam a MESMA variável em vez de terem a própria. Em vez de
+// forçar escolher um modo só (o que reverteria o "ambos" já construído
+// e testado), a feira ganha sua PRÓPRIA identidade de sessão —
+// resolvida de forma totalmente independente de TENANT_ID/entregadorId
+// (ver carregarEntregador()), porque vínculo de feira é sempre
+// tenant_id IS NULL (modelo item 76), não depende de qual loja está
+// "em foco" no momento.
+let entregadorIdFeira = null;
 let pessoaId = null; // item 52 (27/08/2026): identidade da pessoa, separada do vínculo (entregadorId) com a loja atual
 let appNavegacaoPreferido = 'waze';
 let enderecoLojaAtual = null;
 let telefoneLojaAtual = null; // item 58 (27/08/2026): "Falar com a loja"
+let latLojaAtual = null, lngLojaAtual = null; // item 102 (04/09/2026): evita regeocodificar o endereço da loja via Nominatim toda vez — ver garantirEnderecoLoja()/resolverPonto()
 let clienteTelefoneAtual = null; // item 58: "Falar com o cliente" (por parada, muda a cada abrirEntrega())
 let tipoVinculoAtual = null; // item 80 (03/09/2026): 'fixo' (vínculo com uma loja específica) | 'freelance' | null (sem vínculo nenhum ainda, ver carregarPessoaSemVinculo() do item 76) — usado pra texto da tela de Saque não prometer "fale com a loja" pra quem não tem uma loja específica
 let chavePixAtual = null; // item 83 (03/09/2026): já vem no select('*') de pessoas_entregadoras/entregadores_completo, só nunca tinha sido capturada numa variável própria — usado pra mostrar a chave mascarada na tela de Saque
@@ -1255,7 +1272,7 @@ function mostrar(id){
   // view existir — dispara de novo aqui, agora que ela É a ativa, usando
   // o último endereço pedido pra cada container conhecido.
   Object.keys(ultimoEnderecoPedido).forEach(containerId => {
-    if(containerEstaVisivel(containerId)) atualizarMapa(containerId, ultimoEnderecoPedido[containerId]);
+    if(containerEstaVisivel(containerId)) atualizarMapa(containerId, ultimoEnderecoPedido[containerId], ultimoLatPedido[containerId], ultimoLngPedido[containerId]);
   });
   // item 78: diferente de mapaLoja/mapaEntrega (abertos por uma ação
   // explícita que já reinicia o intervalo), dá pra voltar pra view-turno
@@ -1645,6 +1662,7 @@ async function deslogar(){
   pararRastreioPosicao();
   await supabaseClient.auth.signOut();
   entregadorId = null;
+  entregadorIdFeira = null; // item 108
   pessoaId = null;
   turnoAtualId = null;
   rotaAtivaId = null;
@@ -1808,6 +1826,21 @@ async function carregarEntregador(p_forcarRedescoberta){
   const { data: { user } } = await supabaseClient.auth.getUser();
   if(!user) return;
 
+  // item 108 (05/09/2026): resolve o vínculo de FEIRA de forma totalmente
+  // independente do TENANT_ID/entregadorId (que representam só o
+  // vínculo de RESTAURANTE em foco). Roda sempre, incondicional — cobre
+  // quem só tem feira, quem tem os dois (restaurante + feira), e quem
+  // não tem feira nenhuma (fica null, correto). tenant_id IS NULL é o
+  // identificador de vínculo de feira desde o item 76 — não muda
+  // conforme qual loja de restaurante está "em foco" no momento.
+  const { data: vinculoFeira } = await supabaseClient
+    .from('entregadores_completo')
+    .select('id')
+    .eq('auth_user_id', user.id)
+    .is('tenant_id', null)
+    .maybeSingle();
+  entregadorIdFeira = vinculoFeira ? vinculoFeira.id : null;
+
   if(p_forcarRedescoberta){ TENANT_ID = null; }
 
   if(!TENANT_ID){
@@ -1815,15 +1848,28 @@ async function carregarEntregador(p_forcarRedescoberta){
     // cria o cadastro de propósito sem loja — pool aberto — mas antes
     // disso o app só sabia mostrar view-login em silêncio, sem
     // explicação nenhuma; achado ao vivo testando com usuário real, ver
-    // CLAUDE.md). Primeiro tenta achar QUALQUER vínculo que a pessoa já
-    // tenha (pode ter ganhado uma corrida em pool aberto nesse
-    // meio-tempo — get_or_criar_vinculo_freelance() cria na hora, ver
-    // dispatch-engine/index.js) antes de cair no modo "pessoa pura"
+    // CLAUDE.md). Primeiro tenta achar QUALQUER vínculo de RESTAURANTE
+    // que a pessoa já tenha (pode ter ganhado uma corrida em pool aberto
+    // nesse meio-tempo — get_or_criar_vinculo_freelance() cria na hora,
+    // ver dispatch-engine/index.js) antes de cair no modo "pessoa pura"
     // (turno sem loja nenhuma, ver carregarPessoaSemVinculo()).
+    // item 108 (05/09/2026): `.not('tenant_id', 'is', null)` — vínculo de
+    // feira (tenant_id NULO) fica de fora de propósito. TENANT_ID/
+    // entregadorId representam especificamente "qual loja de RESTAURANTE
+    // está em foco" (por isso precisam de um valor pra escolher — uma
+    // pessoa pode ter vínculo com VÁRIAS lojas, diferente da feira, que
+    // só tem 1 identidade possível — ver entregadorIdFeira acima).
+    // Antes desse filtro, se o vínculo de feira fosse o mais recente,
+    // TENANT_ID virava null e QUALQUER checagem de restaurante
+    // (verificarRotaAtiva, ofertas, etc, todas via entregadorId) ficava
+    // cega — o espelho exato do bug do item 107, agora do lado
+    // restaurante. Feira não perde nada com essa exclusão porque já tem
+    // resolução própria, independente, logo acima.
     const { data: vinculos } = await supabaseClient
       .from('entregadores_completo')
       .select('*')
       .eq('auth_user_id', user.id)
+      .not('tenant_id', 'is', null)
       .order('vinculo_criado_em', { ascending: false })
       .limit(1);
     if(vinculos && vinculos[0]){
@@ -1843,12 +1889,18 @@ async function carregarEntregador(p_forcarRedescoberta){
 
   // item 52 (27/08/2026): entregadores_completo junta vínculo (por loja) +
   // pessoa (identidade/documentos/status, compartilhados entre lojas).
-  let { data: entregador, error } = await supabaseClient
+  // item 107 (04/09/2026): TENANT_ID pode ser null de verdade aqui (vínculo
+  // de feira, ver comentário acima) — .eq('tenant_id', null) não vira "IS
+  // NULL" no Postgres/PostgREST, vira ERRO de sintaxe
+  // ("invalid input syntax for type uuid: \"null\"", confirmado testando
+  // direto), não um "não encontrado" tratável. .is() é obrigatório pra
+  // esse caso.
+  let queryEntregador = supabaseClient
     .from('entregadores_completo')
     .select('*')
-    .eq('auth_user_id', user.id)
-    .eq('tenant_id', TENANT_ID)
-    .maybeSingle();
+    .eq('auth_user_id', user.id);
+  queryEntregador = TENANT_ID ? queryEntregador.eq('tenant_id', TENANT_ID) : queryEntregador.is('tenant_id', null);
+  let { data: entregador, error } = await queryEntregador.maybeSingle();
 
   if(error){ mostrarErroLogin('Não conseguimos carregar seu cadastro. Tente novamente.'); return; }
 
@@ -2271,6 +2323,17 @@ async function geocodificarInterno(endereco){
   }
 }
 
+// item 102 (04/09/2026, pendência registrada no item 99): quando lat/lng
+// já são conhecidos (pedido tem lat/lng gravados na criação; loja tem
+// tenants.lat/lng, ver endereco_loja_do_meu_tenant()), usa direto — sem
+// bater no Nominatim pra descobrir de novo algo que o banco já sabe. Só
+// cai pra geocodificar() quando faltar (dado antigo sem lat/lng
+// gravado, ou endereço avulso sem ponto nenhum associado).
+async function resolverPonto(endereco, latConhecido, lngConhecido){
+  if(latConhecido != null && lngConhecido != null) return { lat: Number(latConhecido), lng: Number(lngConhecido) };
+  return geocodificar(endereco);
+}
+
 // 1 instância de Leaflet por container (mapaLoja/mapaEntrega) — telas
 // diferentes, mapas diferentes. Leaflet não gosta de re-inicializar em
 // cima do mesmo elemento, por isso guarda a instância em vez de recriar
@@ -2324,7 +2387,12 @@ async function tracarRota(containerId, mapa, origem, destino){
 
     const coords = rota.geometry.coordinates.map(([lng,lat]) => [lat,lng]); // OSRM devolve [lng,lat], Leaflet quer [lat,lng]
     if(linhasRotaLeaflet[containerId]) mapa.removeLayer(linhasRotaLeaflet[containerId]);
-    linhasRotaLeaflet[containerId] = L.polyline(coords, { color: '#D9A62E', weight: 5, opacity: 0.85 }).addTo(mapa);
+    // item 103 (04/09/2026, pedido direto do usuário): traçado era
+    // --marigold (#D9A62E) — mesma cor do ícone da moto/badge da marca,
+    // baixo contraste entre os dois sobre o mapa. Trocado pra --leaf
+    // (#3B5B3F, mesmo verde do header/painéis), mantém a paleta oficial
+    // sem introduzir cor nova.
+    linhasRotaLeaflet[containerId] = L.polyline(coords, { color: '#3B5B3F', weight: 5, opacity: 0.85 }).addTo(mapa);
     mapa.fitBounds(linhasRotaLeaflet[containerId].getBounds(), { padding: [30,30] });
     ultimaChaveRota[containerId] = chave;
 
@@ -2360,12 +2428,12 @@ function containerEstaVisivel(containerId){
 // avançou de fase), o próprio callback se autodesliga; não precisa
 // desligar manualmente em cada ponto de saída possível.
 let intervalTracadoMapa = null;
-function iniciarAtualizacaoPeriodicaMapa(containerId, endereco){
+function iniciarAtualizacaoPeriodicaMapa(containerId, endereco, latConhecido, lngConhecido){
   pararAtualizacaoPeriodicaMapa();
   atualizarClima(containerId); // 1ª leitura na hora, sem esperar o 1º tick
   intervalTracadoMapa = setInterval(() => {
     if(containerEstaVisivel(containerId)){
-      atualizarMapa(containerId, endereco);
+      atualizarMapa(containerId, endereco, latConhecido, lngConhecido);
       atualizarClima(containerId);
     } else {
       pararAtualizacaoPeriodicaMapa();
@@ -2447,10 +2515,15 @@ async function atualizarClima(containerId){
 // último endereço pedido por container, pra mostrar() poder mandar
 // atualizarMapa() rodar de novo quando a view finalmente fica visível
 // (a chamada original pode ter sido descartada pelo guard acima).
+// item 102: latConhecido/lngConhecido guardados junto — ver resolverPonto().
 const ultimoEnderecoPedido = {};
+const ultimoLatPedido = {};
+const ultimoLngPedido = {};
 const atualizandoMapa = {};
-async function atualizarMapa(containerId, endereco){
+async function atualizarMapa(containerId, endereco, latConhecido, lngConhecido){
   ultimoEnderecoPedido[containerId] = endereco;
+  ultimoLatPedido[containerId] = latConhecido;
+  ultimoLngPedido[containerId] = lngConhecido;
   const box = document.getElementById(containerId);
   if(!box || typeof L === 'undefined') return; // sem Leaflet (CDN não carregou, ex: sem internet) — não quebra o resto da tela
   if(!containerEstaVisivel(containerId)) return;
@@ -2465,12 +2538,12 @@ async function atualizarMapa(containerId, endereco){
   if(atualizandoMapa[containerId]) return;
   atualizandoMapa[containerId] = true;
   try{
-    await atualizarMapaInterno(containerId, ultimoEnderecoPedido[containerId]);
+    await atualizarMapaInterno(containerId, ultimoEnderecoPedido[containerId], ultimoLatPedido[containerId], ultimoLngPedido[containerId]);
   } finally {
     atualizandoMapa[containerId] = false;
   }
 }
-async function atualizarMapaInterno(containerId, endereco){
+async function atualizarMapaInterno(containerId, endereco, latConhecido, lngConhecido){
   if(!mapasLeaflet[containerId]){
     mapasLeaflet[containerId] = L.map(containerId, { zoomControl: false, attributionControl: true });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -2485,7 +2558,7 @@ async function atualizarMapaInterno(containerId, endereco){
   // de a tela ficar visível corrige o tamanho.
   setTimeout(() => mapa.invalidateSize(), 50);
 
-  const destino = await geocodificar(endereco);
+  const destino = await resolverPonto(endereco, latConhecido, lngConhecido);
   const pontos = [];
 
   if(destino){
@@ -2541,6 +2614,9 @@ async function garantirEnderecoLoja(){
   const { data } = await supabaseClient.rpc('endereco_loja_do_meu_tenant');
   enderecoLojaAtual = (data && data[0] && data[0].endereco_loja) || '';
   telefoneLojaAtual = (data && data[0] && data[0].telefone_loja) || '';
+  // item 102 (04/09/2026) — lat/lng novos na RPC, ver resolverPonto()
+  latLojaAtual = (data && data[0] && data[0].lat != null) ? Number(data[0].lat) : null;
+  lngLojaAtual = (data && data[0] && data[0].lng != null) ? Number(data[0].lng) : null;
 }
 
 // item 54 (27/08/2026, Fase 2 — limite de rotas simultâneas): freelance
@@ -2824,8 +2900,8 @@ function montarRota(rota){
   if(rota.status === 'a_caminho_da_loja' && !rota.chegou_loja_em){
     mapaLojaBox.style.display = 'block';
     rotaHeaderNormal.style.display = 'none';
-    atualizarMapa('mapaLoja', enderecoLojaAtual);
-    iniciarAtualizacaoPeriodicaMapa('mapaLoja', enderecoLojaAtual);
+    atualizarMapa('mapaLoja', enderecoLojaAtual, latLojaAtual, lngLojaAtual);
+    iniciarAtualizacaoPeriodicaMapa('mapaLoja', enderecoLojaAtual, latLojaAtual, lngLojaAtual);
   } else if(rota.status === 'a_caminho_da_loja' && rota.chegou_loja_em){
     mapaLojaBox.style.display = 'none';
     rotaHeaderNormal.style.display = 'block';
@@ -2857,7 +2933,7 @@ function montarRota(rota){
       <div class="pay-pill ${p.pago_antecipado ? 'pix' : 'qrcode'}">
         ${p.pago_antecipado ? 'Pix · já pago' : 'Pix QR Code · a cobrar'}
       </div>
-      <button class="btn-primary" style="margin-top:12px;" data-pedido-id="${escapeHtml(p.id)}" data-endereco="${escapeHtml(p.endereco)}" data-valor="${p.valor_pedido}" data-indice="${i+1}" data-chegou="${p.chegou_entrega_em ? '1' : ''}" data-cliente-telefone="${escapeHtml(p.cliente_telefone || '')}" data-cliente-nome="${escapeHtml(p.cliente_nome || '')}">
+      <button class="btn-primary" style="margin-top:12px;" data-pedido-id="${escapeHtml(p.id)}" data-endereco="${escapeHtml(p.endereco)}" data-lat="${p.lat != null ? p.lat : ''}" data-lng="${p.lng != null ? p.lng : ''}" data-valor="${p.valor_pedido}" data-indice="${i+1}" data-chegou="${p.chegou_entrega_em ? '1' : ''}" data-cliente-telefone="${escapeHtml(p.cliente_telefone || '')}" data-cliente-nome="${escapeHtml(p.cliente_nome || '')}">
         ${p.status === 'entregue' ? 'Entregue ✓' : 'Ir pra essa parada'}
       </button>
     </div>
@@ -2865,7 +2941,11 @@ function montarRota(rota){
 
   paradasBox.querySelectorAll('button[data-pedido-id]').forEach(btn => {
     btn.addEventListener('click', () => {
-      abrirEntrega(btn.dataset.pedidoId, btn.dataset.endereco, Number(btn.dataset.valor), Number(btn.dataset.indice), !!btn.dataset.chegou, btn.dataset.clienteTelefone, btn.dataset.clienteNome);
+      // item 102: lat/lng do pedido (já gravados na criação) evitam
+      // regeocodificar o mesmo endereço via Nominatim a cada 8s.
+      const lat = btn.dataset.lat !== '' ? Number(btn.dataset.lat) : null;
+      const lng = btn.dataset.lng !== '' ? Number(btn.dataset.lng) : null;
+      abrirEntrega(btn.dataset.pedidoId, btn.dataset.endereco, Number(btn.dataset.valor), Number(btn.dataset.indice), !!btn.dataset.chegou, btn.dataset.clienteTelefone, btn.dataset.clienteNome, lat, lng);
     });
   });
 }
@@ -3100,7 +3180,12 @@ const POLL_INTERVAL_FEIRA_MS = 15000; // mesmo intervalo já usado em painel-loj
 let ofertaFeiraPollingAtivo = false;
 
 function iniciarEscutaDeOfertasFeira(){
-  if(!entregadorId) return; // item 76: sem vínculo nenhum ainda, entrega_rota.entregador_id não existe pra escutar (vínculo é criado só ao ganhar a 1ª corrida, get_or_criar_vinculo_freelance())
+  // item 108 (05/09/2026): entregadorIdFeira (independente de
+  // entregadorId/TENANT_ID) — ver declaração da variável e resolução em
+  // carregarEntregador(). Sem isso, quem tem os dois vínculos ao mesmo
+  // tempo e está com o de RESTAURANTE em foco nunca via oferta de feira
+  // nenhuma (filtrava pelo entregador_id errado).
+  if(!entregadorIdFeira) return; // item 76: sem vínculo de feira ainda, entrega_rota.entregador_id não existe pra escutar (vínculo é criado só ao ganhar a 1ª corrida, get_or_criar_vinculo_freelance())
   if(ofertaFeiraCanalAtivo) return; // já escutando, não duplica o channel
   ofertaFeiraCanalAtivo = true;
 
@@ -3114,11 +3199,11 @@ function iniciarEscutaDeOfertasFeira(){
     .channel('ofertas-feira')
     .on('postgres_changes', {
       event: 'INSERT', schema: 'public', table: 'entrega_rota',
-      filter: `entregador_id=eq.${entregadorId}`,
+      filter: `entregador_id=eq.${entregadorIdFeira}`,
     }, (payload) => mostrarOfertaFeira(payload.new))
     .on('postgres_changes', {
       event: 'UPDATE', schema: 'public', table: 'entrega_rota',
-      filter: `entregador_id=eq.${entregadorId}`,
+      filter: `entregador_id=eq.${entregadorIdFeira}`,
     }, (payload) => mostrarOfertaFeira(payload.new))
     .subscribe();
 
@@ -3139,7 +3224,7 @@ function iniciarEscutaDeOfertasFeira(){
       const { data: pendentes } = await supabaseClient
         .from('entrega_rota')
         .select('*')
-        .eq('entregador_id', entregadorId)
+        .eq('entregador_id', entregadorIdFeira)
         .eq('status', 'em_montagem')
         .is('aceita_em', null)
         .order('aberta_em', { ascending: false })
@@ -3246,8 +3331,12 @@ async function recusarOfertaFeira(){
   const id = ofertaFeiraRotaId;
   fecharModalOfertaFeira();
 
+  // item 108: entregadorIdFeira, não entregadorId — recusa precisa ficar
+  // gravada no vínculo de feira certo, senão redespachar_apos_recusa_feira()
+  // (que exclui "quem já recusou" do próximo candidato) exclui o vínculo
+  // ERRADO quando a pessoa também tem vínculo de restaurante.
   const { error } = await supabaseClient.from('oferta_recusada').insert({
-    entregador_id: entregadorId,
+    entregador_id: entregadorIdFeira,
     entrega_rota_id: id,
   });
   if(error){ alert('Não deu pra registrar a recusa: ' + error.message); return; }
@@ -3280,7 +3369,8 @@ async function recusarOfertaFeira(){
 // RPC) — enquanto pendente, não reserva capacidade nenhuma.
 // ------------------------------------------------------------
 function iniciarEscutaDePropostasConsolidacao(){
-  if(!entregadorId) return; // item 76: sem vínculo nenhum ainda não tem rota de feira nenhuma pra receber parada nova
+  // item 108: entregadorIdFeira, não entregadorId — ver declaração/resolução.
+  if(!entregadorIdFeira) return; // item 76: sem vínculo de feira ainda não tem rota de feira nenhuma pra receber parada nova
   if(propostaConsolidacaoCanalAtivo) return;
   propostaConsolidacaoCanalAtivo = true;
 
@@ -3288,7 +3378,7 @@ function iniciarEscutaDePropostasConsolidacao(){
     .channel('propostas-consolidacao')
     .on('postgres_changes', {
       event: 'INSERT', schema: 'public', table: 'proposta_consolidacao',
-      filter: `entregador_id=eq.${entregadorId}`,
+      filter: `entregador_id=eq.${entregadorIdFeira}`,
     }, (payload) => mostrarPropostaConsolidacao(payload.new))
     .subscribe();
 
@@ -3301,7 +3391,7 @@ function iniciarEscutaDePropostasConsolidacao(){
       const { data: pendentes } = await supabaseClient
         .from('proposta_consolidacao')
         .select('*')
-        .eq('entregador_id', entregadorId)
+        .eq('entregador_id', entregadorIdFeira)
         .eq('status', 'pendente')
         .order('criada_em', { ascending: false })
         .limit(1);
@@ -3370,21 +3460,25 @@ async function recusarPropostaConsolidacao(){
 // botão se já existir pelo menos 1 linha no extrato — mesmo princípio já
 // usado em comRotaFeira (esconder até ter algo pra mostrar).
 async function verificarHistoricoFeira(){
-  if(!entregadorId) return; // item 76: sem vínculo nenhum ainda não tem como ter extrato registrado
+  // item 108: entregadorIdFeira, não entregadorId — item 106 já corrigiu
+  // abrirExtratoFeira() em si, essa checagem (se MOSTRA o botão) tinha o
+  // mesmo bug e ficou de fora daquele fix por engano.
+  if(!entregadorIdFeira) return; // item 76: sem vínculo de feira ainda não tem como ter extrato registrado
   const { data } = await supabaseClient
     .from('extrato_entregador')
     .select('entregador_id')
-    .eq('entregador_id', entregadorId)
+    .eq('entregador_id', entregadorIdFeira)
     .limit(1);
   document.getElementById('btnExtratoFeira').style.display = (data && data.length) ? 'block' : 'none';
 }
 
 async function verificarRotaFeiraAtiva(){
-  if(!entregadorId) return; // item 76: sem vínculo nenhum ainda não tem rota de feira possível
+  // item 108: entregadorIdFeira, não entregadorId.
+  if(!entregadorIdFeira) return; // item 76: sem vínculo de feira ainda não tem rota de feira possível
   const { data: rotas } = await supabaseClient
     .from('entrega_rota')
     .select('id')
-    .eq('entregador_id', entregadorId)
+    .eq('entregador_id', entregadorIdFeira)
     .eq('status', 'em_rota')
     .order('aberta_em', { ascending: false })
     .limit(1);
@@ -3413,7 +3507,11 @@ function abrirRotaFeira(){
 // consumidor no projeto) — fica pronto e inerte até essa ação existir,
 // e depende também do módulo feira sair da fase de teste.
 function iniciarEscutaDeCancelamentoFeira(){
-  if(!entregadorId) return; // entrega_rota também exige vínculo (entregador_id not null), mesmo motivo do lado restaurante
+  // item 108: entregadorIdFeira, não entregadorId (o guard aqui não filtra
+  // o canal diretamente — RLS já escopa o postgres_changes de pedido_grupo
+  // — mas continuava travando essa checagem no vínculo errado pra quem
+  // tem os dois, mesma categoria dos outros pontos deste item).
+  if(!entregadorIdFeira) return; // entrega_rota também exige vínculo (entregador_id not null), mesmo motivo do lado restaurante
   if(cancelamentoFeiraCanalAtivo) return;
   cancelamentoFeiraCanalAtivo = true;
 
@@ -3682,10 +3780,12 @@ async function enviarAvaliacaoFeira(){
   const estabelecimentoId = paradas?.[0]?.pedido?.estabelecimento_id;
 
   if(pedidoGrupoId && estabelecimentoId){
+    // item 108: entregadorIdFeira, não entregadorId — avaliação é de um
+    // feirante, precisa do vínculo de feira certo.
     const { error } = await supabaseClient.from('avaliacao').insert({
       pedido_grupo_id: pedidoGrupoId,
       avaliador_tipo: 'entregador',
-      avaliador_id: entregadorId,
+      avaliador_id: entregadorIdFeira,
       avaliado_tipo: 'feirante',
       avaliado_id: estabelecimentoId,
       nota: notaAvaliacaoFeira,
@@ -3704,10 +3804,20 @@ async function abrirExtratoFeira(){
   const box = document.getElementById('extratoFeiraBox');
   box.innerHTML = '<p style="color:var(--gray);font-size:13px;">Carregando…</p>';
 
+  // item 106 (04/09/2026, achado pelo usuário perguntando se o item 104
+  // valia pros dois lados — restaurante E feira): MESMO bug do Saque de
+  // restaurante, gêmeo aqui. `entregadorId` é só o vínculo em foco na
+  // sessão (pode ser o de restaurante OU o de feira, ver carregarEntregador());
+  // quem tem os dois ao mesmo tempo (item 52, "modo de disponibilidade")
+  // via essa filtragem via viu o extrato de feira zerado sempre que
+  // `entregadorId` estivesse apontando pro vínculo de restaurante no
+  // momento. RLS ("entregador ve suas proprias metricas",
+  // meu_entregador_id_feira() -> meus_entregador_ids(), TODOS os
+  // vínculos da pessoa) já agrega certo sem o .eq() — mesmo fix do
+  // item 104, mesmo princípio.
   const { data, error } = await supabaseClient
     .from('extrato_entregador')
     .select('*')
-    .eq('entregador_id', entregadorId)
     .order('concluida_em', { ascending: false })
     .limit(50);
 
@@ -3823,10 +3933,17 @@ async function carregarSaque(){
     return;
   }
 
+  // item 104 (04/09/2026, pendência registrada no item 80/83): filtrar
+  // por UM entregador_id só (o vínculo mais recente, ver carregarEntregador())
+  // escondia repasses de lojas ANTERIORES pra um freelance que já
+  // trabalhou pra mais de uma — RLS ("entregador ve seus proprios
+  // repasses") já escopa por meus_entregador_ids() (TODOS os vínculos da
+  // mesma pessoa, mesmo princípio de solicitar_saque(), que já agregava
+  // corretamente desde o item 52) — sem o .eq() aqui, a query já vem
+  // agregada de verdade, sem precisar de lógica nova no client.
   const { data, error } = await supabaseClient
     .from('repasses')
     .select('valor, status, saque_solicitado_em, criado_em')
-    .eq('entregador_id', entregadorId)
     .order('criado_em', { ascending: false })
     .limit(30);
 
@@ -4067,7 +4184,7 @@ async function enviarProblemaEntrega(){
 // ------------------------------------------------------------
 // ENTREGA / PAGAMENTO
 // ------------------------------------------------------------
-function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou, clienteTelefone, clienteNome){
+function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou, clienteTelefone, clienteNome, lat, lng){
   paradaAtualPedidoId = pedidoId;
   clienteTelefoneAtual = clienteTelefone || '';
   const ligarClienteBox = document.getElementById('e_ligarClienteBox');
@@ -4098,10 +4215,13 @@ function abrirEntrega(pedidoId, endereco, valor, indice, jaChegou, clienteTelefo
   // simultâneas pro mesmo container, uma podia processar o endereço
   // ANTIGO (perdendo o novo, protegido pelo lock em atualizarMapa()).
   // Só grava o endereço aqui; mostrar() dispara a atualização de verdade
-  // uma única vez, já com o valor certo.
+  // uma única vez, já com o valor certo. item 102: lat/lng do pedido
+  // (se conhecidos) evitam regeocodificar via Nominatim.
   ultimoEnderecoPedido['mapaEntrega'] = jaChegou ? null : endereco;
+  ultimoLatPedido['mapaEntrega'] = jaChegou ? null : lat;
+  ultimoLngPedido['mapaEntrega'] = jaChegou ? null : lng;
   mostrar('view-entrega');
-  if(!jaChegou) iniciarAtualizacaoPeriodicaMapa('mapaEntrega', endereco);
+  if(!jaChegou) iniciarAtualizacaoPeriodicaMapa('mapaEntrega', endereco, lat, lng);
   // item 79: depois de mostrar() (não antes) — resetar() mede clientWidth/
   // offsetWidth de verdade, que só faz sentido com a view já visível.
   if(swipeValidarEntrega) swipeValidarEntrega.resetar();
