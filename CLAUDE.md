@@ -5027,6 +5027,62 @@ existia). Construído:
   verdade, navegação entre as 3 views funcionando. Sem mudança de banco
   nesta rodada — só `painel-feirante.html`.
 
+**Itens 116-117 (06/09/2026, pedido direto do usuário: "resolve a
+pendência da transferência automática de Pix, atua como especialista")
+— transferência Pix REAL via Asaas:**
+- **Pesquisa feita ANTES de escrever qualquer chamada HTTP** (fork
+  dedicado, fontes oficiais): confirmado que o **Mercado Pago não tem
+  endpoint público de envio de Pix pra chave de terceiro** — o único
+  mecanismo de saída de dinheiro documentado
+  (`/v1/advanced_payments/{id}/disburses`) divide um pagamento já
+  recebido entre outras CONTAS Mercado Pago, não aceita chave Pix solta.
+  Continua stub, e deve continuar até confirmação comercial direta com
+  o Mercado Pago. **Asaas TEM**, documentado oficialmente
+  (`docs.asaas.com/reference/transferir-para-conta-de-outra-instituicao-ou-chave-pix`):
+  `POST https://api.asaas.com/v3/transfers`, header `access_token` (NÃO
+  `Authorization: Bearer` — cuidado, cada API brasileira de pagamento
+  tem seu próprio esquema), payload
+  `{value, pixAddressKey, pixAddressKeyType, externalReference}`.
+  Implementado em `dispatch-engine/pagamentos.js`. Stone não foi
+  pesquisada ainda — continua stub.
+- **Achado ao desenhar a integração**: `pixAddressKeyType` é
+  OBRIGATÓRIO pro Asaas (CPF/CNPJ/e-mail/telefone/aleatória), e o
+  projeto só guardava o VALOR da chave Pix, nunca o tipo. Adivinhar por
+  formato é arriscado (CPF e telefone com DDD são os dois 11 dígitos
+  numéricos) — dinheiro pra chave errada não tem desfazer. Correção:
+  nova coluna `pessoas_entregadoras.chave_pix_tipo`, informada
+  EXPLICITAMENTE pelo entregador — nunca inferida. Encaixado nos 2
+  lugares onde a chave já era editada: o modal de confirmação automática
+  (item 111) e a tela de Saque (`abrirEdicaoPix()`/`salvarChavePix()`,
+  que passou a usar a RPC `confirmar_chave_pix()` em vez de update
+  direto na tabela). `confirmar_chave_pix()` ganhou parâmetro `p_tipo`;
+  as 2 funções de seleção (`repasses_freelance_prontos_para_pagar()`/
+  `pagamentos_fixos_prontos_para_pagar()`) só incluem quem tem chave E
+  TIPO confirmados — chave sem tipo fica de fora do lote, mesmo já
+  confirmada antes do item 116 existir.
+- **Achado da pesquisa — nenhum provedor documenta idempotency key**:
+  mitigado com uma trava nova (`tentativa_transferencia_em`, coluna que
+  já existia): antes de tentar a transferência, o motor marca "tentando
+  agora"; a seleção exclui quem tentou há menos de 10min. Se o processo
+  cair entre a chamada HTTP e marcar o resultado, o item só volta a ficar
+  elegível depois da janela — dá tempo da 1ª tentativa resolver do lado
+  do Asaas antes de qualquer reenvio automático.
+- `entregadores_completo` (view) precisou de mais um ajuste (item 117) —
+  tinha ficado sem `chave_pix_tipo` quando a coluna foi criada.
+- Testado: `tests/pagamentos.test.js` (21/21, novo) — verifica o
+  payload/resposta de `transferirPixAsaas()` contra o contrato oficial
+  via `fetch` mockado (nunca chama a API de verdade, sem credencial
+  real), incluindo os 5 mapeamentos de tipo, erro HTTP, e que tipo
+  desconhecido nunca dispara uma chamada de rede.
+  `tests/repasses_automaticos.test.js` (20/20, novo — não existia
+  cobertura permanente nenhuma pros itens 109-112 antes disso) cobre a
+  exigência de chave+tipo, a trava de 10min, idempotência real, e
+  isolamento das 6 RPCs de motor. Suite completa: 227/227.
+- **Segue como pendência real**: a chamada ao Asaas nunca foi testada
+  com credencial de verdade (nenhuma conta existe no projeto) — o
+  código bate com a doc oficial, mas só um teste em sandbox real
+  confirma de ponta a ponta. Mercado Pago e Stone continuam inativos.
+
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
       valia pro Railway** (achado no item 75, 02/09/2026): ficou **9
@@ -5314,18 +5370,17 @@ existia). Construído:
       — a página existe e funciona, mas hoje precisa do link ser copiado/enviado
       manualmente; ninguém envia isso pro cliente sozinho ainda.
 - [ ] **Integração real de Pix (transferência automática de repasse)** —
-      **atualizado 05/09/2026 (itens 109-111)**: deixou de ser só "qual
-      provedor" — toda a arquitetura de repasse automático já está
-      construída e testada (confirmação de chave Pix, seleção de quem
-      pagar, agendamento por entregador/loja, criptografia das
-      credenciais). O que falta agora é 100% dependente do usuário/
-      externo: (1) abrir conta real em Mercado Pago/Asaas/Stone e
-      cadastrar a API key em Integrações; (2) confirmar contra a doc
-      oficial atual de cada provedor o endpoint exato de PIX-OUT (enviar
-      pra uma chave arbitrária) — `dispatch-engine/pagamentos.js` tem os
-      3 adaptadores como stub que falha de propósito até isso ser
-      verificado, pra nunca arriscar um payload adivinhado com dinheiro
-      real. Ver item 109-113 acima pro detalhe completo.
+      **atualizado 06/09/2026 (itens 116-117)**: Asaas está IMPLEMENTADO
+      de verdade agora (endpoint/payload confirmados contra a doc
+      oficial, pesquisado antes de codar) — só falta o usuário abrir
+      conta real na Asaas, completar a aprovação/prova de vida (exigida
+      pela própria Asaas antes de habilitar transferências) e cadastrar
+      a API key em Integrações. Mercado Pago **não tem** endpoint
+      público de PIX-OUT pra chave de terceiro (confirmado por
+      pesquisa) — continua stub, só sai dessa situação com contato
+      comercial direto. Stone ainda não foi pesquisada. Ver item
+      109-117 acima pro detalhe completo (arquitetura + achados da
+      pesquisa + testes).
 - [x] ~~Reteste real do fluxo de cadastro (item 16) antes do piloto valer pra
       valer~~ — feito em 18/08/2026 depois do rate limit resetar (ver item
       18). `signUp()` real + e-mail confirmado de verdade, PII limpa com

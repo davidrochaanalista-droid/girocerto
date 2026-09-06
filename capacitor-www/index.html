@@ -638,6 +638,17 @@ complementar). -->
     </div>
     <div id="sq_pixEdit" style="display:none;margin-bottom:18px;">
       <input type="text" id="sq_pixInput" placeholder="Nova chave Pix" style="width:100%;padding:11px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;margin-bottom:8px;">
+      <!-- item 116 (06/09/2026): tipo obrigatório, mesmo motivo do modal
+      de confirmação automática — o provedor de Pix exige, nunca
+      adivinhamos por formato. -->
+      <select id="sq_pixTipo" style="width:100%;padding:11px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;background:#fff;margin-bottom:8px;">
+        <option value="">Tipo da chave…</option>
+        <option value="cpf">CPF</option>
+        <option value="cnpj">CNPJ</option>
+        <option value="email">E-mail</option>
+        <option value="telefone">Telefone</option>
+        <option value="aleatoria">Aleatória</option>
+      </select>
       <div style="display:flex;gap:8px;">
         <button class="btn-ghost" style="flex:1;" onclick="fecharEdicaoPix()">Cancelar</button>
         <button class="btn-primary" style="flex:1;" id="sq_pixSalvarBtn" onclick="pedirConfirmacaoSenha(salvarChavePix)">Salvar</button>
@@ -959,6 +970,23 @@ precisa_confirmar_chave_pix()/confirmar_chave_pix() no schema). -->
     <div id="cpix_editWrap" style="display:none;margin-bottom:12px;">
       <input type="text" id="cpix_novaChave" placeholder="Nova chave Pix" style="width:100%;padding:11px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;">
     </div>
+    <!-- item 116 (06/09/2026): tipo da chave agora é OBRIGATÓRIO — o
+    provedor de Pix (Asaas) exige informar explicitamente (CPF/CNPJ/
+    e-mail/telefone/aleatória) pra fazer a transferência de verdade, e
+    adivinhar por formato é arriscado (CPF e telefone com DDD são os
+    dois 11 dígitos). Sempre visível, mesmo quando só confirmando (sem
+    editar o valor) — pode ser a 1ª vez que essa pessoa declara o tipo. -->
+    <div style="margin-bottom:12px;">
+      <label style="display:block;font-size:12px;font-weight:600;color:var(--gray);margin-bottom:5px;">Tipo da chave</label>
+      <select id="cpix_tipo" style="width:100%;padding:11px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;background:#fff;">
+        <option value="">Selecione…</option>
+        <option value="cpf">CPF</option>
+        <option value="cnpj">CNPJ</option>
+        <option value="email">E-mail</option>
+        <option value="telefone">Telefone</option>
+        <option value="aleatoria">Aleatória</option>
+      </select>
+    </div>
     <div id="cpixMsg" class="msg"></div>
     <div style="display:flex;gap:10px;margin-top:8px;">
       <button class="btn-ghost" style="flex:1;" onclick="abrirEdicaoChavePixConfirmacao()">Está errada, corrigir</button>
@@ -1087,6 +1115,7 @@ let latLojaAtual = null, lngLojaAtual = null; // item 102 (04/09/2026): evita re
 let clienteTelefoneAtual = null; // item 58: "Falar com o cliente" (por parada, muda a cada abrirEntrega())
 let tipoVinculoAtual = null; // item 80 (03/09/2026): 'fixo' (vínculo com uma loja específica) | 'freelance' | null (sem vínculo nenhum ainda, ver carregarPessoaSemVinculo() do item 76) — usado pra texto da tela de Saque não prometer "fale com a loja" pra quem não tem uma loja específica
 let chavePixAtual = null; // item 83 (03/09/2026): já vem no select('*') de pessoas_entregadoras/entregadores_completo, só nunca tinha sido capturada numa variável própria — usado pra mostrar a chave mascarada na tela de Saque
+let chavePixTipoAtual = null; // item 116/117 (06/09/2026): tipo da chave (cpf/cnpj/email/telefone/aleatoria) — obrigatório pro repasse automático real (Asaas exige, nunca adivinhamos por formato)
 let minhaPosicaoAtual = null; // item 38 — última posição conhecida, pro mapa embutido
 let statusEntregadorCanalAtivo = false;
 let pollStatusEntregadorTimer = null;
@@ -1958,6 +1987,7 @@ async function carregarEntregador(p_forcarRedescoberta){
   pessoaId = entregador.pessoa_id;
   tipoVinculoAtual = entregador.tipo_vinculo; // item 80 — 'fixo' | 'freelance', já vem de entregadores_completo
   chavePixAtual = entregador.chave_pix; // item 83
+  chavePixTipoAtual = entregador.chave_pix_tipo; // item 116/117
   appNavegacaoPreferido = entregador.app_navegacao_preferido || 'waze'; // item 37
   registrarPushEntregador(); // no-op fora do app nativo (Capacitor) — ver função
 
@@ -2047,6 +2077,7 @@ async function carregarPessoaSemVinculo(pessoa){
   pessoaId = pessoa.id;
   tipoVinculoAtual = null; // item 80 — sem vínculo nenhum, não é nem 'fixo' nem 'freelance' formalmente; tela de Saque trata como freelance (sem loja específica)
   chavePixAtual = pessoa.chave_pix; // item 83
+  chavePixTipoAtual = pessoa.chave_pix_tipo; // item 116/117
   appNavegacaoPreferido = pessoa.app_navegacao_preferido || 'waze';
   registrarPushEntregador();
 
@@ -3900,6 +3931,7 @@ function atualizarTextoSaquePorPerfil(){
 
 function abrirEdicaoPix(){
   document.getElementById('sq_pixInput').value = chavePixAtual || '';
+  document.getElementById('sq_pixTipo').value = chavePixTipoAtual || '';
   document.getElementById('sq_pixMsg').className = 'msg';
   document.getElementById('sq_pixView').style.display = 'none';
   document.getElementById('sq_pixEdit').style.display = 'block';
@@ -3912,16 +3944,28 @@ async function salvarChavePix(){
   const msg = document.getElementById('sq_pixMsg');
   msg.className = 'msg';
   const novaChave = document.getElementById('sq_pixInput').value.trim();
+  const tipo = document.getElementById('sq_pixTipo').value;
   if(!novaChave){
     msg.textContent = 'Digite uma chave Pix válida.';
     msg.className = 'msg error';
     return;
   }
+  // item 116 (06/09/2026): tipo obrigatório — o provedor de Pix
+  // (Asaas) exige informar explicitamente, nunca adivinhamos pelo
+  // formato da chave (CPF e telefone com DDD são os dois 11 dígitos).
+  if(!tipo){
+    msg.textContent = 'Escolha o tipo da chave (CPF, e-mail, etc).';
+    msg.className = 'msg error';
+    return;
+  }
   const btn = document.getElementById('sq_pixSalvarBtn');
   btn.disabled = true; btn.textContent = 'Salvando...';
-  // mesma policy RLS de sempre ("pessoa atualiza seu proprio cadastro") —
-  // sem RPC nova, update direto na própria linha.
-  const { error } = await supabaseClient.from('pessoas_entregadoras').update({ chave_pix: novaChave }).eq('id', pessoaId);
+  // item 116: agora via confirmar_chave_pix() (RPC) em vez de update
+  // direto na tabela — precisa gravar chave_pix_tipo e
+  // chave_pix_confirmada_em juntos (editar a chave aqui já vale como
+  // confirmação de verdade, reduz fricção: não pede de novo no modal
+  // automático se a pessoa acabou de confirmar por aqui).
+  const { error } = await supabaseClient.rpc('confirmar_chave_pix', { p_nova_chave: novaChave, p_tipo: tipo });
   btn.disabled = false; btn.textContent = 'Salvar';
   if(error){
     msg.textContent = 'Não deu pra salvar: ' + error.message;
@@ -3929,6 +3973,7 @@ async function salvarChavePix(){
     return;
   }
   chavePixAtual = novaChave;
+  chavePixTipoAtual = tipo;
   atualizarTextoSaquePorPerfil();
   fecharEdicaoPix();
 }
@@ -3948,6 +3993,7 @@ async function verificarConfirmacaoChavePix(){
   document.getElementById('cpix_atual').textContent = chavePixAtual ? mascararChavePix(chavePixAtual) : 'Nenhuma chave cadastrada ainda.';
   document.getElementById('cpix_editWrap').style.display = 'none';
   document.getElementById('cpix_novaChave').value = '';
+  document.getElementById('cpix_tipo').value = chavePixTipoAtual || '';
   document.getElementById('cpixMsg').className = 'msg';
   document.getElementById('modalConfirmarPix').classList.add('show');
 }
@@ -3962,12 +4008,19 @@ async function confirmarChavePixModal(){
   msg.className = 'msg';
   const editando = document.getElementById('cpix_editWrap').style.display === 'block';
   const novaChave = editando ? document.getElementById('cpix_novaChave').value.trim() : null;
+  const tipo = document.getElementById('cpix_tipo').value;
   if(editando && !novaChave){
     msg.textContent = 'Digite uma chave Pix válida.'; msg.className = 'msg error'; return;
   }
-  const { error } = await supabaseClient.rpc('confirmar_chave_pix', { p_nova_chave: novaChave });
+  // item 116: tipo é obrigatório — o repasse automático real (Asaas)
+  // não funciona sem isso, e nunca adivinhamos pelo formato da chave.
+  if(!tipo){
+    msg.textContent = 'Escolha o tipo da chave (CPF, e-mail, etc).'; msg.className = 'msg error'; return;
+  }
+  const { error } = await supabaseClient.rpc('confirmar_chave_pix', { p_nova_chave: novaChave, p_tipo: tipo });
   if(error){ msg.textContent = 'Não deu pra confirmar: ' + error.message; msg.className = 'msg error'; return; }
   if(novaChave) chavePixAtual = novaChave;
+  chavePixTipoAtual = tipo;
   document.getElementById('modalConfirmarPix').classList.remove('show');
 }
 

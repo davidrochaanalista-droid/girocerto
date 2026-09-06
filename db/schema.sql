@@ -7825,3 +7825,156 @@ begin
   return new;
 end;
 $$;
+
+-- ==============================================================
+-- ITEM 116 (06/09/2026, pedido direto do usuário: "resolve a pendência
+-- da transferência automática de Pix, atua como especialista") —
+-- TIPO DA CHAVE PIX + TRANSFERÊNCIA REAL VIA ASAAS
+-- ==============================================================
+-- Pesquisado antes de escrever qualquer código (nunca adivinhar payload
+-- com dinheiro real em jogo): Mercado Pago NÃO tem endpoint público de
+-- envio de Pix pra chave de terceiro (só divisão de pagamento entre
+-- contas Mercado Pago via /v1/advanced_payments/{id}/disburses — exige
+-- que o destinatário TENHA conta MP, não serve aqui). Asaas TEM,
+-- documentado oficialmente (docs.asaas.com/reference/
+-- transferir-para-conta-de-outra-instituicao-ou-chave-pix):
+-- POST /v3/transfers, header "access_token" (não Bearer), payload
+-- {value, pixAddressKey, pixAddressKeyType, externalReference}.
+--
+-- ACHADO ao desenhar a integração: pixAddressKeyType é OBRIGATÓRIO
+-- (cpf/cnpj/email/telefone/aleatória) e o projeto só guardava o VALOR
+-- da chave, nunca o tipo. Adivinhar por formato é arriscado (CPF e
+-- telefone com DDD são os dois 11 dígitos numéricos) — dinheiro pra
+-- chave errada não tem desfazer. Correção: o entregador informa o tipo
+-- explicitamente, encaixado no MESMO fluxo de confirmação de chave que
+-- já existia (item 111) — nunca inferido.
+alter table pessoas_entregadoras add column if not exists chave_pix_tipo text
+  check (chave_pix_tipo in ('cpf', 'cnpj', 'email', 'telefone', 'aleatoria'));
+
+-- confirmar_chave_pix() ganha o tipo como parâmetro obrigatório agora
+-- (era só chave opcional antes) — precisa de drop, mesmo motivo do item
+-- 112 (Postgres não deixa "create or replace" adicionar parâmetro no
+-- meio da assinatura original).
+drop function if exists confirmar_chave_pix(text);
+create or replace function confirmar_chave_pix(p_nova_chave text default null, p_tipo text default null)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if p_tipo is not null and p_tipo not in ('cpf', 'cnpj', 'email', 'telefone', 'aleatoria') then
+    raise exception 'Tipo de chave Pix inválido: %', p_tipo;
+  end if;
+
+  update pessoas_entregadoras
+  set chave_pix = coalesce(nullif(p_nova_chave, ''), chave_pix),
+      chave_pix_tipo = coalesce(p_tipo, chave_pix_tipo),
+      chave_pix_confirmada_em = now()
+  where auth_user_id = auth.uid();
+end;
+$$;
+
+-- as 2 funções de seleção do motor agora também devolvem o tipo —
+-- sem isso o Node não tem como montar o payload do Asaas. Reforça a
+-- exigência: só entra na seleção quem tem chave_pix_tipo preenchido
+-- (chave sem tipo declarado fica de fora do lote, mesmo com chave
+-- confirmada — mesma filosofia de "prefere não pagar a pagar errado").
+-- drop necessário: muda o tipo de retorno (coluna nova no meio da
+-- tabela), "create or replace" não permite isso.
+drop function if exists repasses_freelance_prontos_para_pagar();
+create or replace function repasses_freelance_prontos_para_pagar()
+returns table (
+  tenant_id uuid, pessoa_id uuid, chave_pix text, chave_pix_tipo text, valor_total numeric, repasse_ids uuid[]
+)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select e.tenant_id, e.pessoa_id, p.chave_pix, p.chave_pix_tipo, sum(r.valor) as valor_total, array_agg(r.id) as repasse_ids
+  from repasses r
+  join entregadores e on e.id = r.entregador_id
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where r.status = 'pendente'
+    and e.tipo_vinculo <> 'fixo'
+    and p.chave_pix is not null
+    and p.chave_pix_tipo is not null
+    and p.chave_pix_confirmada_em >= current_date - interval '1 day'
+    and (r.tentativa_transferencia_em is null or r.tentativa_transferencia_em < now() - interval '10 minutes')
+  group by e.tenant_id, e.pessoa_id, p.chave_pix, p.chave_pix_tipo;
+$$;
+revoke execute on function repasses_freelance_prontos_para_pagar() from public, authenticated, anon;
+
+drop function if exists pagamentos_fixos_prontos_para_pagar();
+create or replace function pagamentos_fixos_prontos_para_pagar()
+returns table (
+  pagamento_id uuid, tenant_id uuid, chave_pix text, chave_pix_tipo text, valor numeric
+)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select pf.id, e.tenant_id, p.chave_pix, p.chave_pix_tipo, pf.valor
+  from pagamentos_fixos pf
+  join entregadores e on e.id = pf.entregador_id
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where pf.status = 'pendente'
+    and p.chave_pix is not null
+    and p.chave_pix_tipo is not null
+    and p.chave_pix_confirmada_em >= current_date - interval '1 day'
+    and (pf.tentativa_transferencia_em is null or pf.tentativa_transferencia_em < now() - interval '10 minutes');
+$$;
+revoke execute on function pagamentos_fixos_prontos_para_pagar() from public, authenticated, anon;
+
+-- trava contra transferência em duplicidade (achado da pesquisa: Asaas
+-- não documenta idempotency key nenhuma — o "externalReference" ajuda a
+-- CONCILIAR depois, mas não impede o Asaas de aceitar 2 chamadas iguais
+-- se o motor tentar 2x por engano, ex: crash entre a chamada HTTP e o
+-- marcar-como-pago). Reaproveita tentativa_transferencia_em (já
+-- existia): antes de tentar, o motor marca "tentando agora"; a seleção
+-- exclui quem tentou há menos de 10min, dando tempo da 1ª tentativa
+-- terminar (sucesso ou erro) antes de qualquer retry automático.
+create or replace function marcar_tentativa_repasses(p_repasse_ids uuid[])
+returns void language sql security definer set search_path = public, pg_temp as $$
+  update repasses set tentativa_transferencia_em = now() where id = any(p_repasse_ids);
+$$;
+revoke execute on function marcar_tentativa_repasses(uuid[]) from public, authenticated, anon;
+
+create or replace function marcar_tentativa_pagamento_fixo(p_pagamento_id uuid)
+returns void language sql security definer set search_path = public, pg_temp as $$
+  update pagamentos_fixos set tentativa_transferencia_em = now() where id = p_pagamento_id;
+$$;
+revoke execute on function marcar_tentativa_pagamento_fixo(uuid) from public, authenticated, anon;
+
+-- ==============================================================
+-- ITEM 117 (06/09/2026) — entregadores_completo ganha chave_pix_tipo
+-- (item 116 criou a coluna, mas nunca atualizou essa view — o app do
+-- entregador lê o cadastro via ela, sem isso o front nunca saberia se
+-- já existe um tipo confirmado).
+-- ==============================================================
+create or replace view entregadores_completo
+with (security_invoker = true) as
+select
+  e.id, e.tenant_id, e.pessoa_id, e.tipo_vinculo, e.valor_fixo, e.periodicidade_fixo,
+  e.aceita_feira, e.limite_rotas_simultaneas, e.criado_em as vinculo_criado_em,
+  p.auth_user_id, p.email, p.nome, p.telefone, p.status, p.status_antes_pausa,
+  p.lat, p.lng, p.localizacao_atualizada_em, p.possui_maquininha, p.chave_pix,
+  p.bloqueado_ate, p.pausar_apos_rota_atual, p.modo_disponibilidade,
+  p.device_id_atual, p.device_id_atualizado_em,
+  p.consentimento_lgpd_aceito_em, p.dados_anonimizados_em, p.app_navegacao_preferido,
+  p.tipo_veiculo, p.data_nascimento, p.cpf, p.rg_numero, p.endereco, p.numero_residencia, p.cep,
+  p.cnh_numero, p.cnh_validade, p.cnh_foto_url, p.crlv_validade, p.crlv_foto_url, p.placa,
+  p.comprovante_residencia_foto_url, p.cnh_alerta_enviado_em, p.crlv_alerta_enviado_em,
+  p.foto_rg_url, p.foto_rg_segurando_url, p.foto_bicicleta_url, p.responsavel_nome,
+  p.responsavel_documento_foto_url, p.status_verificacao, p.motivo_reprovacao,
+  p.verificacao_enviada_em, p.verificacao_prazo_limite, p.aprovado_por, p.aprovado_em,
+  p.is_teste, p.push_token, p.push_plataforma, p.criado_em as pessoa_criado_em,
+  p.contato_emergencia_nome, p.contato_emergencia_telefone,
+  e.periodicidade_pagamento_fixo, e.dia_semana_pagamento_fixo,
+  e.dia_mes_pagamento_fixo_1, e.dia_mes_pagamento_fixo_2, e.usar_quinto_dia_util_fixo,
+  p.chave_pix_confirmada_em,
+  p.chave_pix_tipo
+from entregadores e
+join pessoas_entregadoras p on p.id = e.pessoa_id;
