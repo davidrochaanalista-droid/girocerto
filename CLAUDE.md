@@ -5083,6 +5083,91 @@ pendência da transferência automática de Pix, atua como especialista")
   código bate com a doc oficial, mas só um teste em sandbox real
   confirma de ponta a ponta. Mercado Pago e Stone continuam inativos.
 
+**Item 118 (06/09/2026, pedido direto do usuário: "Saldo insuficiente
+paga quem cabe, preferencia os freelancer... cria um campo na tela do
+lojista que mostra qual entregador fixo foi pago e qual não foi") —
+arquitetura de Subcontas Asaas + alocação por orçamento + acerto manual:**
+- **Por que Subcontas em vez de "banco interno" do GiroCerto**: o
+  usuário sugeriu a loja/feirante mandar o Pix pro GiroCerto, que
+  repassaria pro entregador. Recusado depois de pesquisa — isso coloca
+  o GiroCerto custodiando dinheiro de terceiro, território de
+  "instituição de pagamento" regulada pelo Banco Central. Alternativa
+  recomendada e aceita pelo usuário: **Subcontas Asaas + Split de
+  Pagamento** — cada loja/feirante tem sua PRÓPRIA subconta (dinheiro
+  nunca é pool do GiroCerto), o GiroCerto só orquestra o repasse pro
+  entregador a partir do saldo JÁ confirmado na subconta de cada um.
+  Confirmado por pesquisa que subcontas não aumentam custo de forma
+  relevante. Achado que trava o rollout: Asaas dá um período de
+  avaliação regulatória de 60 dias, com teto de 10 subcontas/R$2000 por
+  subconta até liberar volume maior — rollout tem que começar com
+  piloto pequeno, não as 67 lojas de uma vez.
+- **Achado crítico de pesquisa**: `GET /v3/finance/balance` só devolve
+  o saldo de QUEM autentica a chamada — não aceita parâmetro pra
+  consultar outra conta pela `walletId` usando a chave mestre. Por isso
+  cada subconta precisa da PRÓPRIA `apiKey` guardada (cifrada), não só
+  do `walletId`.
+- **Schema novo**: `subcontas_asaas` (wallet_id, api_key_cifrada,
+  webhook_auth_token_cifrado, saldo_confirmado — RLS: loja/feirante só
+  enxerga a própria, nunca edita) e `subconta_movimentos` (ledger de
+  depósito/repasse, só leitura pro dono). `pagamentos_fixos` ganhou
+  `metodo_pagamento` (`pix_automatico`/`manual`).
+- **Webhook receiver** (`dispatch-engine/index.js`,
+  `POST /webhooks/asaas/:walletId`): autentica via `authToken` PRÓPRIO
+  do GiroCerto (nunca a apiKey da Asaas) mandado no header
+  `asaas-access-token` — único mecanismo anti-forjadura, validado no
+  banco (`verificar_webhook_subconta()`) antes de confiar em qualquer
+  payload. Evento `PAYMENT_RECEIVED` soma no `saldo_confirmado`; outros
+  eventos são ignorados sem erro.
+- **Alocação por orçamento** (`processarTenantComSubconta()` em
+  `pagamentos.js`): antes de QUALQUER pagamento, reconfirma o saldo
+  REAL via chamada viva à API da subconta (nunca confia só no webhook —
+  defesa em profundidade). Sem confirmação de saldo real, nada é pago
+  no ciclo (fail-safe). Fila por prioridade
+  (`fila_repasses_por_prioridade()`): **freelancer primeiro** (pedido
+  explícito do usuário — "os fixo... consegue receber na loja", ou
+  seja, tem um fallback que o freelancer não tem), alocação gulosa
+  (paga quem cabe, pula quem não cabe pra esse ciclo — nunca
+  tudo-ou-nada). Quem não coube num ciclo é retentado automaticamente
+  no próximo, quando o saldo permitir — nunca fica travado pra sempre
+  (comprovado em teste).
+- **Acerto manual do fixo** (`marcar_pagamento_fixo_manual()`,
+  ownership-checked): a loja marca "pagou na loja" pra um fixo
+  pendente — muda `status='pago', metodo_pagamento='manual'`, o que
+  automaticamente tira o item da fila automática (só olha
+  `status='pendente'`), prevenindo pagamento em duplicidade. UI nova em
+  `painel-loja.html` (aba Entregadores): card "Repasse automático
+  (Pix)" com saldo devedor (`saldo_devedor_da_minha_loja()`, 3 números:
+  freelance/fixo/total) + lista de fixos pendentes com botão "Marcar
+  pago na loja" por linha.
+- **2 bugs reais achados e corrigidos durante o próprio desenvolvimento
+  dos testes** (nenhum dos dois foi assumido — cada um só foi
+  confirmado corrigido depois de reproduzir e re-testar): (1)
+  `fila_repasses_por_prioridade()` usava `order by prioridade`
+  (alias da SELECT list não vale pra ORDER BY nesse contexto de função
+  SQL) — corrigido pra `order by 2` (posicional); (2)
+  `verificar_webhook_subconta()` referenciava uma variável
+  `v_token_recebido` que nunca existia (o parâmetro real chama
+  `p_token_recebido`) — erro só aparecia em runtime
+  (`column "v_token_recebido" does not exist`), não em tempo de
+  criação da função.
+- Testado: `tests/subcontas.test.js` (24/24, novo) cobre acerto manual,
+  saldo devedor, ordenação/filtro da fila, cifragem das credenciais da
+  subconta, e bloqueio das 7 RPCs service-role pro client.
+  `tests/webhook_asaas.test.js` (12/12, novo) cobre o webhook (token
+  válido/forjado/evento irrelevante) e a alocação por orçamento
+  (freelance > fixo, nunca paga além do saldo real, retry quando sobra
+  saldo, fail-safe quando a API de saldo falha) — sem depender do
+  dia/hora real (`podeFreelanceHoje` passado explícito no teste).
+  Testado ao vivo em `painel-loja.html` com conta descartável: saldo
+  devedor e lista de pendentes renderizaram certo, "Marcar pago na
+  loja" mudou o status de verdade e sumiu da fila automática — limpeza
+  confirmada, zero resíduo. Suite completa: 260/260 (mais o achado de
+  que `despacho_motor` sozinho tem flakiness de timing conhecida — rodado
+  isolado deu 29/29 limpo, então não é regressão desta rodada).
+- **Segue como pendência real**: nenhuma subconta de verdade foi criada
+  ainda (arquitetura pronta, mas depende do usuário abrir a subconta
+  na Asaas pra cada loja piloto — ver pendência atualizada abaixo).
+
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
       valia pro Railway** (achado no item 75, 02/09/2026): ficou **9
@@ -5370,17 +5455,20 @@ pendência da transferência automática de Pix, atua como especialista")
       — a página existe e funciona, mas hoje precisa do link ser copiado/enviado
       manualmente; ninguém envia isso pro cliente sozinho ainda.
 - [ ] **Integração real de Pix (transferência automática de repasse)** —
-      **atualizado 06/09/2026 (itens 116-117)**: Asaas está IMPLEMENTADO
-      de verdade agora (endpoint/payload confirmados contra a doc
-      oficial, pesquisado antes de codar) — só falta o usuário abrir
-      conta real na Asaas, completar a aprovação/prova de vida (exigida
-      pela própria Asaas antes de habilitar transferências) e cadastrar
-      a API key em Integrações. Mercado Pago **não tem** endpoint
-      público de PIX-OUT pra chave de terceiro (confirmado por
-      pesquisa) — continua stub, só sai dessa situação com contato
-      comercial direto. Stone ainda não foi pesquisada. Ver item
-      109-117 acima pro detalhe completo (arquitetura + achados da
-      pesquisa + testes).
+      **atualizado 06/09/2026 (item 118)**: arquitetura de Subcontas
+      Asaas + alocação por orçamento (freelance > fixo) + acerto manual
+      do fixo está TODA implementada e testada (260/260 na suite). Falta
+      só o lado operacional: abrir a conta master Asaas (precisa ser
+      CNPJ — pessoa física não cria subconta), passar pelo período de
+      avaliação regulatória de 60 dias (teto de 10 subcontas/R$2000 por
+      subconta até liberar volume maior — rollout tem que começar com
+      piloto pequeno), e criar de fato a 1ª subconta real pra alguma
+      loja piloto. Mercado Pago **não tem** endpoint público de PIX-OUT
+      pra chave de terceiro (confirmado por pesquisa) — continua stub,
+      só sai dessa situação com contato comercial direto. Stone ainda
+      não foi pesquisada. Alternativas pesquisadas (Iugu/Efí/Cora) têm
+      mais fricção que Asaas pro caso de uso. Ver itens 109-118 acima
+      pro detalhe completo (arquitetura + achados da pesquisa + testes).
 - [x] ~~Reteste real do fluxo de cadastro (item 16) antes do piloto valer pra
       valer~~ — feito em 18/08/2026 depois do rate limit resetar (ver item
       18). `signUp()` real + e-mail confirmado de verdade, PII limpa com

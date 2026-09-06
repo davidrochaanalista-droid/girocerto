@@ -39,7 +39,7 @@ const { Client } = require('pg');
 const { createClient } = require('@supabase/supabase-js');
 const express = require('express');
 const firebaseAdmin = require('firebase-admin');
-const { verificarRepassesAutomaticos } = require('./pagamentos');
+const { verificarRepassesAutomaticos, tratarWebhookAsaas } = require('./pagamentos');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -844,6 +844,28 @@ async function main() {
 
   const app = express();
   app.get('/health', (req, res) => res.json({ status: 'ok', tentadosPorRota: tentadosPorRota.size, timersAtivos: timersPorRota.size }));
+
+  // item 118 (06/09/2026): webhook da Asaas — confirma depósito na
+  // subconta da loja ANTES do motor de repasse liberar pagamento pra
+  // entregador (ver dispatch-engine/pagamentos.js). express.json() só
+  // pra essa rota (não precisa no resto do arquivo, que não recebe
+  // body JSON fora do bloco de teste abaixo).
+  app.post('/webhooks/asaas/:walletId', express.json(), async (req, res) => {
+    try {
+      await tratarWebhookAsaas(admin, req.params.walletId, req.headers['asaas-access-token'], req.body);
+      res.status(200).json({ ok: true });
+    } catch (e) {
+      // sempre 200 pra evitar retry infinito da Asaas em erro nosso
+      // (log fica pra investigar) — só token inválido vira 401 de
+      // propósito, ver tratarWebhookAsaas().
+      if (e.codigoHttp) {
+        res.status(e.codigoHttp).json({ ok: false, erro: e.message });
+      } else {
+        console.error('[webhook-asaas] erro inesperado:', e.message);
+        res.status(200).json({ ok: false });
+      }
+    }
+  });
 
   // achado 24/08/2026: notificar_pedido_pronto()/notificar_resposta_despacho()
   // agora NÃO disparam pg_notify pra pedido/tentativa de tenant de teste (pra

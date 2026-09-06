@@ -7978,3 +7978,341 @@ select
   p.chave_pix_tipo
 from entregadores e
 join pessoas_entregadoras p on p.id = e.pessoa_id;
+
+-- ==============================================================
+-- ITEM 118 (06/09/2026, pedido direto do usuário) — SUBCONTAS ASAAS:
+-- saldo devedor visível, pagamento manual do fixo (evita pagar 2x), e
+-- estrutura de dados da subconta/ledger. A criação de subconta em si e
+-- o webhook de confirmação de depósito ficam pro Node (dispatch-engine)
+-- — dependem de endpoint/payload que ainda estão sendo confirmados
+-- contra a doc oficial da Asaas antes de codar (mesmo princípio de
+-- sempre: nunca adivinhar payload com dinheiro real em jogo).
+-- ==============================================================
+
+-- pagamentos_fixos ganha o "como foi pago" — decisão do usuário:
+-- entregador FIXO pode receber direto na loja (dinheiro/Pix manual),
+-- diferente do freelancer (sem esse fallback, por isso tem prioridade
+-- no automático quando o saldo da subconta não cobre todo mundo).
+alter table pagamentos_fixos add column if not exists metodo_pagamento text
+  not null default 'pix_automatico'
+  check (metodo_pagamento in ('pix_automatico', 'manual'));
+
+-- loja marca "paguei esse fixo na mão" — tira ele da fila do motor
+-- automático na hora (pagamentos_fixos_prontos_para_pagar() só olha
+-- status='pendente', então isso já é suficiente pra nunca pagar 2x).
+create or replace function marcar_pagamento_fixo_manual(p_pagamento_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if p_pagamento_id not in (
+    select pf.id from pagamentos_fixos pf
+    join entregadores e on e.id = pf.entregador_id
+    where e.tenant_id in (select minhas_tenant_ids_dono())
+  ) then
+    raise exception 'Pagamento não encontrado ou não pertence a essa loja.';
+  end if;
+
+  update pagamentos_fixos
+  set status = 'pago', metodo_pagamento = 'manual', pago_em = now()
+  where id = p_pagamento_id and status = 'pendente';
+end;
+$$;
+
+-- saldo devedor da loja (item 118, ponto 1 do desenho: visível ANTES do
+-- dia de pagar, não só no dia). Soma repasses freelance pendentes +
+-- pagamentos fixos pendentes — mesmos critérios de posse já usados nas
+-- outras policies (tenant_id in minhas_tenant_ids()), então dono E
+-- funcionário conseguem ver (funcionário não mexe em Integrações, mas
+-- saber quanto a loja deve não é dado sensível do mesmo jeito).
+create or replace function saldo_devedor_da_minha_loja()
+returns table (total_freelance numeric, total_fixo numeric, total_geral numeric)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select
+    coalesce((
+      select sum(r.valor) from repasses r
+      join entregadores e on e.id = r.entregador_id
+      where e.tenant_id in (select minhas_tenant_ids())
+        and r.status = 'pendente'
+    ), 0) as total_freelance,
+    coalesce((
+      select sum(pf.valor) from pagamentos_fixos pf
+      join entregadores e on e.id = pf.entregador_id
+      where e.tenant_id in (select minhas_tenant_ids())
+        and pf.status = 'pendente'
+    ), 0) as total_fixo,
+    coalesce((
+      select sum(r.valor) from repasses r
+      join entregadores e on e.id = r.entregador_id
+      where e.tenant_id in (select minhas_tenant_ids())
+        and r.status = 'pendente'
+    ), 0) + coalesce((
+      select sum(pf.valor) from pagamentos_fixos pf
+      join entregadores e on e.id = pf.entregador_id
+      where e.tenant_id in (select minhas_tenant_ids())
+        and pf.status = 'pendente'
+    ), 0) as total_geral;
+$$;
+
+-- ------------------------------------------------------------
+-- SUBCONTA ASAAS — uma por loja OU por estabelecimento de feira (nunca
+-- as duas, mesma separação deliberada restaurante/feira do resto do
+-- projeto). wallet_id não é segredo (é só um identificador), mas o
+-- saldo é dado sensível o bastante pra não liberar update client-side —
+-- só leitura direta, escrita só via função/webhook (service role).
+-- ------------------------------------------------------------
+create table if not exists subcontas_asaas (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid references tenants(id) on delete cascade,
+  estabelecimento_id uuid references estabelecimentos(id) on delete cascade,
+  wallet_id text not null unique,
+  -- ACHADO DA PESQUISA (06/09/2026, antes de codar): GET /v3/finance/balance
+  -- da Asaas sempre devolve o saldo de QUEM ESTÁ AUTENTICADO — não aceita
+  -- consultar outra conta via walletId com a chave mestra. Pra conferir o
+  -- saldo real de UMA subconta específica (nunca confiar só no webhook —
+  -- ver item 118, ponto 4), é obrigatório usar a própria apiKey daquela
+  -- subconta, capturada UMA VEZ na resposta de criação (a doc avisa: não
+  -- pode ser recuperada depois, só regenerada). Cifrada com o mesmo
+  -- mecanismo do item 109 (pgp_sym_encrypt + credenciais_sistema).
+  api_key_cifrada bytea,
+  -- token que O PRÓPRIO GIROCERTO define ao configurar o webhook dessa
+  -- subconta (nunca a apiKey da Asaas) — a Asaas devolve esse valor no
+  -- header "asaas-access-token" em todo POST de webhook; é como
+  -- confirmamos que o webhook é legítimo e não forjado. Cifrado pelo
+  -- mesmo motivo.
+  webhook_auth_token_cifrado bytea,
+  chave_pix_recarga text,
+  saldo_confirmado numeric(10,2) not null default 0,
+  criado_em timestamptz not null default now(),
+  atualizado_em timestamptz not null default now(),
+  check (
+    (tenant_id is not null and estabelecimento_id is null) or
+    (tenant_id is null and estabelecimento_id is not null)
+  )
+);
+create unique index if not exists idx_subcontas_asaas_tenant on subcontas_asaas (tenant_id) where tenant_id is not null;
+create unique index if not exists idx_subcontas_asaas_estabelecimento on subcontas_asaas (estabelecimento_id) where estabelecimento_id is not null;
+
+alter table subcontas_asaas enable row level security;
+create policy "loja ve a propria subconta" on subcontas_asaas for select using (
+  tenant_id in (select minhas_tenant_ids())
+);
+create policy "feirante ve a propria subconta" on subcontas_asaas for select using (
+  estabelecimento_id in (select id from estabelecimentos where auth_user_id = auth.uid())
+);
+
+-- ledger de auditoria — todo depósito confirmado (via webhook) e todo
+-- débito de repasse, sem exceção. Só leitura pro dono, escrita só via
+-- service role/funções internas (nunca direto pelo client).
+create table if not exists subconta_movimentos (
+  id uuid primary key default gen_random_uuid(),
+  subconta_id uuid not null references subcontas_asaas(id) on delete cascade,
+  tipo text not null check (tipo in ('deposito', 'repasse')),
+  valor numeric(10,2) not null check (valor > 0),
+  referencia text,
+  criado_em timestamptz not null default now()
+);
+create index if not exists idx_subconta_movimentos_subconta on subconta_movimentos (subconta_id, criado_em desc);
+
+alter table subconta_movimentos enable row level security;
+create policy "loja ve o extrato da propria subconta" on subconta_movimentos for select using (
+  subconta_id in (select id from subcontas_asaas where tenant_id in (select minhas_tenant_ids()))
+);
+create policy "feirante ve o extrato da propria subconta" on subconta_movimentos for select using (
+  subconta_id in (select id from subcontas_asaas where estabelecimento_id in (select id from estabelecimentos where auth_user_id = auth.uid()))
+);
+
+-- seleção de repasses/pagamentos PRONTOS PRA PAGAR, já em ORDEM DE
+-- PRIORIDADE por tenant (item 118, ponto 3 do desenho: freelancer
+-- primeiro — sem fallback de receber na loja — fixo depois, já que
+-- pode ser acertado na mão se o saldo não cobrir todo mundo). Devolve
+-- tudo junto (freelance e fixo) com uma coluna "tipo" e "prioridade"
+-- pro Node montar a lista e alocar contra o saldo da subconta,
+-- decidindo quem cabe. Continua restrito a service_role.
+create or replace function fila_repasses_por_prioridade(p_tenant_id uuid)
+returns table (
+  tipo text, prioridade int, referencia_id uuid, chave_pix text, chave_pix_tipo text,
+  valor numeric, repasse_ids uuid[]
+)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select 'freelance'::text, 1, e.pessoa_id, p.chave_pix, p.chave_pix_tipo,
+    sum(r.valor), array_agg(r.id)
+  from repasses r
+  join entregadores e on e.id = r.entregador_id
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where e.tenant_id = p_tenant_id
+    and r.status = 'pendente'
+    and e.tipo_vinculo <> 'fixo'
+    and p.chave_pix is not null and p.chave_pix_tipo is not null
+    and p.chave_pix_confirmada_em >= current_date - interval '1 day'
+    and (r.tentativa_transferencia_em is null or r.tentativa_transferencia_em < now() - interval '10 minutes')
+  group by e.pessoa_id, p.chave_pix, p.chave_pix_tipo
+
+  union all
+
+  select 'fixo'::text, 2, pf.id, p.chave_pix, p.chave_pix_tipo,
+    pf.valor, array[pf.id]
+  from pagamentos_fixos pf
+  join entregadores e on e.id = pf.entregador_id
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where e.tenant_id = p_tenant_id
+    and pf.status = 'pendente'
+    and p.chave_pix is not null and p.chave_pix_tipo is not null
+    and p.chave_pix_confirmada_em >= current_date - interval '1 day'
+    and (pf.tentativa_transferencia_em is null or pf.tentativa_transferencia_em < now() - interval '10 minutes')
+
+  order by 2;
+$$;
+revoke execute on function fila_repasses_por_prioridade(uuid) from public, authenticated, anon;
+
+-- lista de tenants/estabelecimentos com subconta ativa — o motor
+-- (Node) usa isso pra saber por quem iterar.
+create or replace function tenants_com_subconta_ativa()
+returns table (tenant_id uuid, wallet_id text, saldo_confirmado numeric)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select tenant_id, wallet_id, saldo_confirmado
+  from subcontas_asaas
+  where tenant_id is not null;
+$$;
+revoke execute on function tenants_com_subconta_ativa() from public, authenticated, anon;
+
+create or replace function debitar_subconta_apos_repasse(p_tenant_id uuid, p_valor numeric, p_referencia text)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_subconta_id uuid;
+begin
+  select id into v_subconta_id from subcontas_asaas where tenant_id = p_tenant_id;
+  if v_subconta_id is null then
+    raise exception 'Tenant % não tem subconta.', p_tenant_id;
+  end if;
+
+  update subcontas_asaas set saldo_confirmado = saldo_confirmado - p_valor, atualizado_em = now()
+  where id = v_subconta_id;
+
+  insert into subconta_movimentos (subconta_id, tipo, valor, referencia)
+  values (v_subconta_id, 'repasse', p_valor, p_referencia);
+end;
+$$;
+revoke execute on function debitar_subconta_apos_repasse(uuid, numeric, text) from public, authenticated, anon;
+
+-- ------------------------------------------------------------
+-- credenciais da subconta (apiKey própria + token de webhook) —
+-- cifradas com o MESMO mecanismo do item 109
+-- (_chave_criptografia_integracoes() + credenciais_sistema). Só
+-- service_role (dispatch-engine) toca nisso, nunca o client.
+-- ------------------------------------------------------------
+create or replace function registrar_subconta_asaas(
+  p_tenant_id uuid, p_wallet_id text, p_api_key text, p_webhook_token text, p_chave_pix_recarga text default null
+) returns uuid
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_chave text;
+  v_id uuid;
+begin
+  v_chave := _chave_criptografia_integracoes();
+  insert into subcontas_asaas (tenant_id, wallet_id, api_key_cifrada, webhook_auth_token_cifrado, chave_pix_recarga)
+  values (
+    p_tenant_id, p_wallet_id,
+    pgp_sym_encrypt(p_api_key, v_chave),
+    pgp_sym_encrypt(p_webhook_token, v_chave),
+    p_chave_pix_recarga
+  )
+  returning id into v_id;
+  return v_id;
+end;
+$$;
+revoke execute on function registrar_subconta_asaas(uuid, text, text, text, text) from public, authenticated, anon;
+
+-- decifra a apiKey PRÓPRIA da subconta — necessária pro Node consultar
+-- o saldo real (achado da pesquisa: GET /v3/finance/balance só devolve
+-- o saldo de quem autentica, não aceita walletId com a chave mestra).
+create or replace function api_key_da_subconta(p_tenant_id uuid)
+returns text
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_chave text;
+  v_cifrado bytea;
+begin
+  v_chave := _chave_criptografia_integracoes();
+  select api_key_cifrada into v_cifrado from subcontas_asaas where tenant_id = p_tenant_id;
+  if v_cifrado is null then return null; end if;
+  return pgp_sym_decrypt(v_cifrado, v_chave);
+end;
+$$;
+revoke execute on function api_key_da_subconta(uuid) from public, authenticated, anon;
+
+-- valida o header "asaas-access-token" de um webhook recebido — devolve
+-- o tenant_id se bater (autêntico), null se não. Nunca devolve o token
+-- em si, só o resultado da comparação — princípio de menor exposição.
+create or replace function verificar_webhook_subconta(p_wallet_id text, p_token_recebido text)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_chave text;
+  v_cifrado bytea;
+  v_tenant_id uuid;
+begin
+  v_chave := _chave_criptografia_integracoes();
+  select tenant_id, webhook_auth_token_cifrado into v_tenant_id, v_cifrado
+  from subcontas_asaas where wallet_id = p_wallet_id;
+  if v_cifrado is null or p_token_recebido is null then return null; end if;
+  if pgp_sym_decrypt(v_cifrado, v_chave) = p_token_recebido then
+    return v_tenant_id;
+  end if;
+  return null;
+end;
+$$;
+revoke execute on function verificar_webhook_subconta(text, text) from public, authenticated, anon;
+
+-- registra um DEPÓSITO confirmado (webhook PAYMENT_RECEIVED da própria
+-- subconta) — soma no saldo e grava no extrato. Simétrico a
+-- debitar_subconta_apos_repasse() acima.
+create or replace function registrar_deposito_subconta(p_tenant_id uuid, p_valor numeric, p_referencia text)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_subconta_id uuid;
+begin
+  select id into v_subconta_id from subcontas_asaas where tenant_id = p_tenant_id;
+  if v_subconta_id is null then
+    raise exception 'Tenant % não tem subconta.', p_tenant_id;
+  end if;
+
+  update subcontas_asaas set saldo_confirmado = saldo_confirmado + p_valor, atualizado_em = now()
+  where id = v_subconta_id;
+
+  insert into subconta_movimentos (subconta_id, tipo, valor, referencia)
+  values (v_subconta_id, 'deposito', p_valor, p_referencia);
+end;
+$$;
+revoke execute on function registrar_deposito_subconta(uuid, numeric, text) from public, authenticated, anon;

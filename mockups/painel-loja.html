@@ -303,6 +303,22 @@
         <div id="solicitacoesSaqueBox"><div class="empty">Carregando…</div></div>
       </div>
 
+      <!-- item 118 (06/09/2026, pedido direto do usuário: "cria um campo na
+      tela do lojista que mostra qual entregador fixo foi pago e qual não
+      foi, assim o lojista clica no nome e coloca pagamento feito na loja")
+      — repasse automático via subconta Asaas. Saldo devedor mostra quanto
+      falta pagar (freelance sempre tem prioridade quando o saldo não
+      cobre tudo); fixos pendentes aqui podem ser quitados na mão (loja
+      pagou por fora) pra não entrar 2x na fila automática. -->
+      <div class="card" style="margin-bottom:18px;">
+        <div class="card-title" style="margin-bottom:8px;">Repasse automático (Pix)</div>
+        <p style="color:var(--gray);font-size:13px;margin:0 0 10px;">
+          Quando a loja tem subconta Asaas configurada, o repasse sai sozinho — freelancers têm prioridade se o saldo não cobrir tudo. Fixo que já recebeu por fora, marque abaixo pra não pagar 2x.
+        </p>
+        <div id="saldoDevedorBox" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;"></div>
+        <div id="pagamentosFixosPendentesBox"><div class="empty">Carregando…</div></div>
+      </div>
+
       <!-- item 113 (05/09/2026, pedido direto do usuário: "cada
       entregador tem sua forma de receber, o lojista escolhe") — toque
       no nome de um entregador FIXO abre a config de pagamento dele.
@@ -852,6 +868,8 @@ function abrirEntregadores(){
   trocarView('entregadores');
   carregarSolicitacoesSaque();
   carregarListaEntregadores();
+  carregarSaldoDevedor();
+  carregarPagamentosFixosPendentes();
 }
 
 async function carregarSolicitacoesSaque(){
@@ -911,6 +929,73 @@ async function marcarRepassePago(entregadorId){
     .eq('status', 'pendente');
   if(error){ alert('Não deu pra marcar como pago: ' + error.message); return; }
   carregarSolicitacoesSaque();
+}
+
+// ------------------------------------------------------------
+// item 118 (06/09/2026) — saldo devedor da loja (soma do que falta pagar
+// pra freelance + fixo, via repasses/pagamentos_fixos pendentes) e lista
+// de fixos pendentes com opção de marcar como pago na loja (evita pagar
+// 2x quando o repasse automático via subconta Asaas ainda não rodou).
+// ------------------------------------------------------------
+async function carregarSaldoDevedor(){
+  const box = document.getElementById('saldoDevedorBox');
+  const { data, error } = await supabaseClient.rpc('saldo_devedor_da_minha_loja');
+  if(error || !data || !data.length){ box.innerHTML = ''; return; }
+  const r = data[0];
+  const cartao = (rotulo, valor) => `
+    <div style="flex:1;min-width:140px;background:var(--paper);border-radius:10px;padding:10px 14px;">
+      <div style="font-size:12px;color:var(--gray);">${rotulo}</div>
+      <div style="font-size:18px;font-weight:800;">R$ ${Number(valor || 0).toFixed(2).replace('.', ',')}</div>
+    </div>
+  `;
+  box.innerHTML = cartao('Freelance a pagar', r.total_freelance) + cartao('Fixo a pagar', r.total_fixo) + cartao('Total devedor', r.total_geral);
+}
+
+async function carregarPagamentosFixosPendentes(){
+  const box = document.getElementById('pagamentosFixosPendentesBox');
+  box.innerHTML = '<div class="empty">Carregando…</div>';
+
+  const { data: entregadoresDoTenant, error: erroEntregadores } = await supabaseClient
+    .from('entregadores_completo')
+    .select('id, nome')
+    .eq('tenant_id', tenantId)
+    .eq('tipo_vinculo', 'fixo');
+  if(erroEntregadores){ box.innerHTML = '<div class="empty">Não deu pra carregar.</div>'; return; }
+
+  const idsFixos = (entregadoresDoTenant || []).map(e => e.id);
+  if(!idsFixos.length){ box.innerHTML = '<div class="empty">Nenhum entregador fixo cadastrado.</div>'; return; }
+
+  const { data: pendentes, error: erroPendentes } = await supabaseClient
+    .from('pagamentos_fixos')
+    .select('id, entregador_id, valor, referencia_data')
+    .eq('status', 'pendente')
+    .in('entregador_id', idsFixos)
+    .order('referencia_data');
+  if(erroPendentes){ box.innerHTML = '<div class="empty">Não deu pra carregar.</div>'; return; }
+
+  if(!pendentes || !pendentes.length){ box.innerHTML = '<div class="empty">Nenhum pagamento fixo pendente.</div>'; return; }
+
+  box.innerHTML = pendentes.map(p => {
+    const entregador = entregadoresDoTenant.find(e => e.id === p.entregador_id);
+    const nome = entregador ? entregador.nome : 'Entregador';
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);">
+        <div>
+          <div style="font-weight:700;font-size:13.5px;">${escapeHtml(nome)} — R$ ${Number(p.valor).toFixed(2).replace('.', ',')}</div>
+          <div style="font-size:12px;color:var(--gray);">Referente a ${new Date(p.referencia_data + 'T00:00:00').toLocaleDateString('pt-BR')} — ainda não recebeu</div>
+        </div>
+        <button class="action-btn" onclick="marcarPagamentoFixoManualNaLoja('${p.id}')">Marcar pago na loja</button>
+      </div>
+    `;
+  }).join('');
+}
+
+async function marcarPagamentoFixoManualNaLoja(pagamentoId){
+  if(!confirm('Confirma que esse entregador já recebeu esse valor por fora (na loja)? Isso tira ele da fila de repasse automático pra esse pagamento.')) return;
+  const { error } = await supabaseClient.rpc('marcar_pagamento_fixo_manual', { p_pagamento_id: pagamentoId });
+  if(error){ alert('Não deu pra marcar como pago: ' + error.message); return; }
+  carregarSaldoDevedor();
+  carregarPagamentosFixosPendentes();
 }
 
 // ------------------------------------------------------------
