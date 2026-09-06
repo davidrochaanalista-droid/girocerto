@@ -4981,6 +4981,34 @@ automático via Pix:**
   loja) testados ao vivo no navegador com contas descartáveis, limpas
   depois.
 
+**Item 114 (06/09/2026) — teste em escala (100 entregadores/67 lojas/18
+feirantes, pedido direto do usuário) achou um bug real de feira que
+nenhum teste automatizado cobria:**
+- **`checar_liberacao_grupo()` nunca liberava o grupo pra
+  `pronto_para_coleta` quando o FEIRANTE confirmava pagamento pelo fluxo
+  normal do app** (RLS real, não service role). Causa: a função não era
+  `security definer` — o `UPDATE` interno em `pedido_grupo` rodava com o
+  privilégio de quem disparou o `UPDATE` em `pedido` (o feirante), que
+  não tem NENHUMA policy de `UPDATE` em `pedido_grupo` — bloqueado em
+  silêncio pela RLS (0 linhas afetadas, sem erro). Corrigido com
+  `security definer` (mesmo padrão de `gerar_repasse_ao_entregar()`,
+  item 55). Reproduzido isoladamente antes e depois do fix pra confirmar
+  a correção de verdade.
+- **`tests/feira.test.js` criado** (não existia NENHUMA cobertura
+  automatizada de feira antes — é exatamente por isso que esse bug nunca
+  foi pego): cobre `criar_pedido_manual_feirante()`, o fix de
+  `checar_liberacao_grupo()`, e `cancelar_pedido_grupo_pelo_feirante()`
+  (incluindo rejeição de cancelar 2x). 8/8. Adicionado a
+  `tests/run-all.js`. 186/186 na suite completa.
+- Testes em escala em si (100 entregadores/67 lojas/18 feirantes,
+  pagamentos/cancelamentos/alertas/disparo pro cliente) rodados por um
+  fork isolado, com limpeza confirmada (8 queries de verificação, zero
+  resíduo). Achado adicional de qualidade (não bug): `pedido_grupo` tem
+  zero policy de UPDATE pra qualquer papel — todo avanço de estado
+  depende de RPC/trigger `SECURITY DEFINER`, o que é seguro mas é fácil
+  de esquecer o `security definer` numa função nova (como aconteceu
+  aqui) — vale revisão pontual por outros triggers na mesma situação.
+
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
       valia pro Railway** (achado no item 75, 02/09/2026): ficou **9

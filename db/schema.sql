@@ -7784,3 +7784,44 @@ begin
   where id = p_entregador_id;
 end;
 $$;
+
+-- ==============================================================
+-- ITEM 114 (06/09/2026) — FIX: checar_liberacao_grupo() nunca liberava
+-- o grupo de verdade (achado real, teste em escala de 100 entregadores/
+-- 67 lojas/18 feirantes)
+-- ==============================================================
+-- Bug confirmado e reproduzido isoladamente: quando o FEIRANTE confirma
+-- pagamento pelo fluxo normal do app (UPDATE pedido.status_pagamento via
+-- RLS, role authenticated), o UPDATE interno em pedido_grupo
+-- ("status = 'pronto_para_coleta'") rodava com o privilégio de quem
+-- disparou o UPDATE em pedido — o feirante. pedido_grupo não tem
+-- NENHUMA policy de UPDATE pro feirante, então esse update era
+-- silenciosamente bloqueado pela RLS (0 linhas afetadas, sem erro
+-- nenhum) — o grupo nunca saía de 'aguardando_pagamentos'. Nunca foi
+-- pego porque não existia teste automatizado cobrindo esse fluxo de
+-- feira via RLS real. Mesmo padrão já usado em gerar_repasse_ao_entregar()
+-- (item 55): security definer, pra rodar com o privilégio do DONO da
+-- função (postgres), não de quem disparou o UPDATE.
+create or replace function checar_liberacao_grupo()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  pendentes int;
+begin
+  if new.status_pagamento = 'confirmado' and old.status_pagamento is distinct from 'confirmado' then
+    select count(*) into pendentes
+    from pedido
+    where pedido_grupo_id = new.pedido_grupo_id
+      and status_pagamento != 'confirmado';
+
+    if pendentes = 0 then
+      update pedido_grupo set status = 'pronto_para_coleta', updated_at = now()
+      where id = new.pedido_grupo_id;
+    end if;
+  end if;
+  return new;
+end;
+$$;
