@@ -944,6 +944,29 @@ referências a tentativas_despacho no arquivo inteiro antes desta sessão). -->
   </div>
 </div>
 
+<!-- ===================== MODAL: CONFIRMAR CHAVE PIX (item 111) ===================== -->
+<!-- item 109-111 (05/09/2026, pedido direto do usuário): repasse automático
+de Pix — freelance confirma terça (paga quarta 11h), fixo confirma no dia
+anterior ao pagamento configurado pela loja. Esta é a trava de segurança
+combinada com o usuário: sem confirmar, a pessoa fica de fora do lote
+daquele ciclo — nunca manda pra chave desatualizada (ver
+precisa_confirmar_chave_pix()/confirmar_chave_pix() no schema). -->
+<div class="overlay" id="modalConfirmarPix">
+  <div class="modal">
+    <h2 style="margin-bottom:4px;">🔑 Confirme sua chave Pix</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 16px;">Você tem repasse programado pros próximos dias. Confirme se essa chave ainda está certa antes do sistema enviar.</p>
+    <p style="font-weight:700;font-size:15px;margin-bottom:12px;" id="cpix_atual">—</p>
+    <div id="cpix_editWrap" style="display:none;margin-bottom:12px;">
+      <input type="text" id="cpix_novaChave" placeholder="Nova chave Pix" style="width:100%;padding:11px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;">
+    </div>
+    <div id="cpixMsg" class="msg"></div>
+    <div style="display:flex;gap:10px;margin-top:8px;">
+      <button class="btn-ghost" style="flex:1;" onclick="abrirEdicaoChavePixConfirmacao()">Está errada, corrigir</button>
+      <button class="btn-primary" style="flex:1;" onclick="confirmarChavePixModal()">Está certa, confirmar</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===================== MODAL: CONFIRMAR SENHA (item 86) ===================== -->
 <!-- item 86 (03/09/2026, pedido direto do usuário): confirmação antes de
 alterar dado sensível (documentos, chave Pix). Verificação por SMS ficou
@@ -2001,6 +2024,7 @@ async function carregarEntregador(p_forcarRedescoberta){
   }
 
   await checarTurnoAtivo();
+  verificarConfirmacaoChavePix(); // item 111 — não bloqueia a tela, só mostra o modal se for o dia certo
 }
 
 // item 76 (02/09/2026): turno/dashboard reduzido pra freelance sem vínculo
@@ -2066,6 +2090,7 @@ async function carregarPessoaSemVinculo(pessoa){
   document.getElementById('avisoDocumento').style.display = 'none';
 
   await checarTurnoAtivo();
+  verificarConfirmacaoChavePix(); // item 111
 }
 
 function legendaMotivoReprovacao(motivo){
@@ -3906,6 +3931,44 @@ async function salvarChavePix(){
   chavePixAtual = novaChave;
   atualizarTextoSaquePorPerfil();
   fecharEdicaoPix();
+}
+
+// item 111 (05/09/2026): checagem de "precisa confirmar chave Pix antes
+// do repasse automático" — chamada 1x depois que carregarEntregador()/
+// carregarPessoaSemVinculo() resolve a sessão (mesmo ponto de outras
+// checagens pós-login). Não bloqueia a tela: só abre o modal quando a
+// RPC confirma que é o dia certo (ver precisa_confirmar_chave_pix() no
+// schema — cobre freelance (terça) e fixo (dia anterior ao pagamento da
+// própria loja) com a MESMA checagem, já que a chave é da pessoa, não
+// do vínculo).
+async function verificarConfirmacaoChavePix(){
+  const { data: precisa, error } = await supabaseClient.rpc('precisa_confirmar_chave_pix');
+  if(error){ console.error('precisa_confirmar_chave_pix():', error.message); return; }
+  if(!precisa) return;
+  document.getElementById('cpix_atual').textContent = chavePixAtual ? mascararChavePix(chavePixAtual) : 'Nenhuma chave cadastrada ainda.';
+  document.getElementById('cpix_editWrap').style.display = 'none';
+  document.getElementById('cpix_novaChave').value = '';
+  document.getElementById('cpixMsg').className = 'msg';
+  document.getElementById('modalConfirmarPix').classList.add('show');
+}
+
+function abrirEdicaoChavePixConfirmacao(){
+  document.getElementById('cpix_novaChave').value = chavePixAtual || '';
+  document.getElementById('cpix_editWrap').style.display = 'block';
+}
+
+async function confirmarChavePixModal(){
+  const msg = document.getElementById('cpixMsg');
+  msg.className = 'msg';
+  const editando = document.getElementById('cpix_editWrap').style.display === 'block';
+  const novaChave = editando ? document.getElementById('cpix_novaChave').value.trim() : null;
+  if(editando && !novaChave){
+    msg.textContent = 'Digite uma chave Pix válida.'; msg.className = 'msg error'; return;
+  }
+  const { error } = await supabaseClient.rpc('confirmar_chave_pix', { p_nova_chave: novaChave });
+  if(error){ msg.textContent = 'Não deu pra confirmar: ' + error.message; msg.className = 'msg error'; return; }
+  if(novaChave) chavePixAtual = novaChave;
+  document.getElementById('modalConfirmarPix').classList.remove('show');
 }
 
 async function abrirSaque(){

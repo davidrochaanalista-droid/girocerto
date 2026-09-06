@@ -33,28 +33,43 @@ async function run() {
     await pg.query(`insert into usuarios_loja (tenant_id, auth_user_id, nome, papel) values ($1,$2,'Funcionario','funcionario')`, [tenantId, funcUser.id]);
     const sessFunc = await signInAs(funcUser.email);
 
-    console.log('\n=== CRUD de integracoes: só dono ===');
+    console.log('\n=== CRUD de integracoes: item 109 (05/09/2026) — credenciais cifradas em repouso, só via RPC ===');
     {
-      const { error: eInsertDono, data: insertDono } = await sessDono.from('integracoes').insert({
-        tenant_id: tenantId, brendi_api_key: 'brendi-123', whatsapp_phone_number_id: 'wa-123',
-        whatsapp_access_token: 'token-abc', pix_provider: 'mercado_pago', pix_provider_api_key: 'pix-xyz',
-      }).select('id').single();
-      r.check('dono cria integracoes do próprio tenant', !eInsertDono && insertDono, eInsertDono);
+      const { error: eSalvarDono } = await sessDono.rpc('salvar_integracoes_seguro', {
+        p_campos: {
+          brendi_api_key: 'brendi-123', whatsapp_phone_number_id: 'wa-123',
+          whatsapp_access_token: 'token-abc', pix_provider: 'mercado_pago', pix_provider_api_key: 'pix-xyz',
+        },
+      });
+      r.check('dono salva integracoes do próprio tenant via salvar_integracoes_seguro()', !eSalvarDono, eSalvarDono);
 
-      const { data: readDono, error: eReadDono } = await sessDono.from('integracoes').select('brendi_api_key').eq('tenant_id', tenantId).single();
-      r.check('dono lê as próprias integracoes', !eReadDono && readDono && readDono.brendi_api_key === 'brendi-123', { eReadDono, readDono });
+      const { data: carregado, error: eCarregarDono } = await sessDono.rpc('carregar_integracoes_segura');
+      const linhaDono = (carregado || [])[0];
+      r.check('dono lê as próprias integracoes decifradas via carregar_integracoes_segura()', !eCarregarDono && linhaDono && linhaDono.brendi_api_key === 'brendi-123', { eCarregarDono, linhaDono });
 
-      const { error: eUpdateDono } = await sessDono.from('integracoes').update({ pix_provider: 'asaas' }).eq('tenant_id', tenantId);
-      const { data: afterUpdate } = await sessDono.from('integracoes').select('pix_provider').eq('tenant_id', tenantId).single();
-      r.check('dono atualiza integracoes', !eUpdateDono && afterUpdate.pix_provider === 'asaas', afterUpdate);
+      const { error: eDireto } = await sessDono.from('integracoes').insert({ tenant_id: tenantId, brendi_api_key: 'tentativa-direta' });
+      r.check('dono NÃO consegue inserir direto na tabela (sem policy de insert de propósito, só a RPC escreve)', !!eDireto, eDireto);
+
+      const { rows: linhaCrua } = await pg.query(`select brendi_api_key from integracoes where tenant_id = $1`, [tenantId]);
+      r.check('valor armazenado no banco é bytea cifrado, nunca o texto puro "brendi-123"', Buffer.isBuffer(linhaCrua[0].brendi_api_key), linhaCrua[0]);
+
+      const { error: eAtualizarDono } = await sessDono.rpc('salvar_integracoes_seguro', {
+        p_campos: { pix_provider: 'asaas', pix_provider_api_key: 'pix-xyz' },
+      });
+      const { data: aposAtualizar } = await sessDono.rpc('carregar_integracoes_segura');
+      r.check('dono atualiza integracoes via RPC (upsert)', !eAtualizarDono && aposAtualizar[0].pix_provider === 'asaas', { eAtualizarDono, aposAtualizar });
 
       const { data: readFunc, error: eReadFunc } = await sessFunc.from('integracoes').select('brendi_api_key').eq('tenant_id', tenantId);
-      r.check('funcionário NÃO consegue ler integracoes (0 linhas, RLS bloqueia por papel antes de qualquer PIN)', !eReadFunc && readFunc && readFunc.length === 0, { eReadFunc, readFunc });
+      r.check('funcionário NÃO consegue ler integracoes direto (0 linhas, RLS bloqueia por papel antes de qualquer PIN)', !eReadFunc && readFunc && readFunc.length === 0, { eReadFunc, readFunc });
 
-      const { error: eInsertFunc, data: insertFunc } = await sessFunc.from('integracoes').insert({
-        tenant_id: tenantId, brendi_api_key: 'tentativa-func',
-      }).select('id');
-      r.check('funcionário NÃO consegue criar integracoes de outro tenant/mesmo tenant', (!!eInsertFunc || !insertFunc || insertFunc.length === 0), { eInsertFunc, insertFunc });
+      const { error: eSalvarFunc } = await sessFunc.rpc('salvar_integracoes_seguro', { p_campos: { brendi_api_key: 'tentativa-func' } });
+      r.check('funcionário NÃO consegue salvar integracoes via RPC (checagem de papel=dono dentro da função)', !!eSalvarFunc, eSalvarFunc);
+
+      const { data: carregarFunc, error: eCarregarFunc } = await sessFunc.rpc('carregar_integracoes_segura');
+      r.check('funcionário NÃO consegue carregar integracoes via RPC', !!eCarregarFunc, { eCarregarFunc, carregarFunc });
+
+      const { error: eHelperVazado } = await sessDono.rpc('_chave_criptografia_integracoes');
+      r.check('achado real (item 109): helper interno da chave de criptografia não é chamável por nenhum client (revoke explícito de authenticated/anon, não só public)', !!eHelperVazado, eHelperVazado);
     }
 
     console.log('\n=== Fluxo de PIN: set, verificar (certo e errado), tem_pin ===');

@@ -4917,6 +4917,70 @@ C:\Users\Usuário\Projetos\giro certo
   Capacitor) **corrigida por estar desatualizada** — ver texto revisado
   logo acima, na seção original da pendência.
 
+**Itens 109-113 (05/09/2026, pedido direto do usuário: "máxima
+integração possível, com máxima segurança") — arquitetura de repasse
+automático via Pix:**
+- **Item 109 — credenciais de `integracoes` cifradas em repouso.**
+  Brendi/WhatsApp/Pix/iFood/99/Rappi migraram de texto puro pra `bytea`
+  cifrado (pgcrypto `pgp_sym_encrypt`), chave guardada em
+  `credenciais_sistema` (RLS sem nenhuma política — deny-all pra
+  authenticated/anon). Acesso agora só via `salvar_integracoes_seguro()`/
+  `carregar_integracoes_segura()`; `painel-loja.html` atualizado.
+  **Achado real durante o teste**: o helper interno da chave
+  (`_chave_criptografia_integracoes()`) estava chamável por qualquer
+  usuário autenticado — Supabase concede EXECUTE em `authenticated`/
+  `anon` em toda função nova por padrão, e `revoke ... from public`
+  sozinho não tira esse acesso. Corrigido (revoke explícito dos 2 roles),
+  teste teria pego isso automaticamente se já existisse — adicionado a
+  `integracoes.test.js`. Também adicionados os 4 campos novos de
+  credencial (iFood client_id/secret, 99Food, Rappi) — só armazenamento,
+  nenhuma chamada de API real ainda.
+- **Item 110→112 — periodicidade de pagamento do FIXO.** Desenhado
+  inicialmente como config da LOJA inteira (item 110), corrigido pelo
+  usuário: cada entregador fixo negocia sua própria forma de receber
+  com a loja (um recebe por fim de turno, outro semanal, outro mensal,
+  na MESMA loja) — colunas movidas de `tenants` pra `entregadores`
+  (item 112, nenhum tenant real tinha configurado ainda, migração sem
+  perda de dado). 4 periodicidades: `fim_de_turno`/`semanal`/`mensal`/
+  `quinzenal`, com opção de "5º dia útil do mês" (`quinto_dia_util()`,
+  só desconta fim de semana — feriado é limitação conhecida, sem
+  calendário no projeto).
+- **Item 111 — confirmação de chave Pix + seleção de quem pagar.**
+  Trava de segurança central: no dia anterior ao pagamento, o app do
+  entregador mostra um modal pra confirmar (ou corrigir) a chave Pix —
+  quem não confirma fica DE FORA do lote daquele ciclo (nunca manda pra
+  chave desatualizada). Freelancer sempre confirma terça/paga quarta
+  11h+ (repasse por entrega); fixo confirma no dia anterior à SUA
+  própria data configurada. Tabela nova `pagamentos_fixos` (ledger do
+  fixo, já que valor_fixo é config, não histórico) com trava
+  `unique(entregador_id, referencia_data)` contra pagamento duplicado.
+  Funções de seleção/marcação (`repasses_freelance_prontos_para_pagar`,
+  `pagamentos_fixos_prontos_para_pagar`, `marcar_repasses_pagos`, etc.)
+  restritas a `service_role` — nunca chamáveis pelo client.
+- **Item 113 — tela da loja pra configurar o pagamento de cada fixo.**
+  `painel-loja.html` → Entregadores ganhou lista de cadastrados; tocar
+  no nome de um fixo abre modal de config (valor + periodicidade + dia,
+  campos condicionais). RPC `atualizar_pagamento_fixo()` (SECURITY
+  DEFINER, checa posse + `tipo_vinculo='fixo'`) é o único jeito de
+  escrever — não existe policy de UPDATE direta em `entregadores` pra
+  loja, de propósito.
+- **Motor de execução** (`dispatch-engine/pagamentos.js`, novo arquivo):
+  roda a cada 5min dentro do processo já ativo do dispatch-engine,
+  idempotente por construção (a seleção só devolve quem ainda está
+  pendente — rodar de novo após restart não duplica nem perde). **A
+  chamada HTTP real de transferência (`transferirPix()`) está
+  propositalmente inativa** pra Mercado Pago/Asaas/Stone — nenhuma
+  credencial real existe no projeto ainda, e o endpoint exato de
+  PIX-OUT (enviar pra chave arbitrária) precisa ser confirmado contra a
+  doc oficial de cada provedor antes de ativar (Pix errado não tem
+  desfazer). Ver pendência abaixo.
+- Testado: 178/178 (suite completa) depois de todas as migrações,
+  incluindo `integracoes.test.js` reescrito pro novo modelo de acesso.
+  Fluxos de UI (Integrações cifradas, modal de confirmação de chave Pix
+  no app do entregador, config de pagamento por entregador no painel da
+  loja) testados ao vivo no navegador com contas descartáveis, limpas
+  depois.
+
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
       valia pro Railway** (achado no item 75, 02/09/2026): ficou **9
@@ -5203,10 +5267,19 @@ C:\Users\Usuário\Projetos\giro certo
       link (WhatsApp) pro `cliente_telefone` quando o pedido entra em `a_caminho`
       — a página existe e funciona, mas hoje precisa do link ser copiado/enviado
       manualmente; ninguém envia isso pro cliente sozinho ainda.
-- [ ] **Integração real de Pix** — decisão de produto pendente (qual provedor:
-      `mercado_pago`/`asaas`/`stone`/`outro`), não decisão técnica. Confirmado
-      isolado e não vazado por vários arquivos — ver `tests/COBERTURA.md` seção
-      "Pendência isolada — Pix" pro que falta decidir exatamente.
+- [ ] **Integração real de Pix (transferência automática de repasse)** —
+      **atualizado 05/09/2026 (itens 109-111)**: deixou de ser só "qual
+      provedor" — toda a arquitetura de repasse automático já está
+      construída e testada (confirmação de chave Pix, seleção de quem
+      pagar, agendamento por entregador/loja, criptografia das
+      credenciais). O que falta agora é 100% dependente do usuário/
+      externo: (1) abrir conta real em Mercado Pago/Asaas/Stone e
+      cadastrar a API key em Integrações; (2) confirmar contra a doc
+      oficial atual de cada provedor o endpoint exato de PIX-OUT (enviar
+      pra uma chave arbitrária) — `dispatch-engine/pagamentos.js` tem os
+      3 adaptadores como stub que falha de propósito até isso ser
+      verificado, pra nunca arriscar um payload adivinhado com dinheiro
+      real. Ver item 109-113 acima pro detalhe completo.
 - [x] ~~Reteste real do fluxo de cadastro (item 16) antes do piloto valer pra
       valer~~ — feito em 18/08/2026 depois do rate limit resetar (ver item
       18). `signUp()` real + e-mail confirmado de verdade, PII limpa com
@@ -5239,6 +5312,12 @@ C:\Users\Usuário\Projetos\giro certo
       Rappi exige contato comercial direto pra aprovação. O código já
       está pronto do lado de dentro (reage a `pedidos.status='cancelado'`),
       só falta a integração de verdade escrever nesse campo.
+      **Atualizado 05/09/2026 (item 109)**: painel-loja.html → Integrações
+      já tem os campos de credencial (iFood Client ID/Secret, 99Food e
+      Rappi API key), cifrados em repouso — só armazenamento, nenhuma
+      chamada de API real ainda. Falta a mesma coisa de sempre: conta de
+      parceiro em cada plataforma antes de escrever o receptor de
+      webhook/polling de verdade.
 - [ ] **Provedor de SMS não configurado** — bloqueia envio de código de
       verificação por SMS (item 88 pediu como alternativa à senha).
       Precisa contratar um provedor (Twilio ou equivalente) e configurar

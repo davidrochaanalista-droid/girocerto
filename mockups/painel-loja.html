@@ -303,7 +303,18 @@
         <div id="solicitacoesSaqueBox"><div class="empty">Carregando…</div></div>
       </div>
 
-      <div class="empty">Lista de entregadores cadastrados ainda não foi construída.</div>
+      <!-- item 113 (05/09/2026, pedido direto do usuário: "cada
+      entregador tem sua forma de receber, o lojista escolhe") — toque
+      no nome de um entregador FIXO abre a config de pagamento dele.
+      Freelancer não tem essa config (repasse por entrega, ciclo semanal
+      automático — item 109/111), aparece só como info. -->
+      <div class="card">
+        <div class="card-title" style="margin-bottom:8px;">Entregadores cadastrados</div>
+        <p style="color:var(--gray);font-size:13px;margin:0 0 10px;">
+          Toque no nome de um entregador fixo pra configurar valor e quando ele recebe.
+        </p>
+        <div id="listaEntregadoresBox"><div class="empty">Carregando…</div></div>
+      </div>
     </div>
     <div class="main mainview" id="mv-relatorios" style="display:none;">
       <h1>Relatórios</h1>
@@ -338,6 +349,19 @@
         </select>
       </div>
       <div class="field"><label>Chave de API</label><input type="text" id="int_pix_key"></div>
+
+      <!-- PENDÊNCIA ISOLADA — mesma observação da Brendi/Pix acima: salvar aqui
+      só guarda a credencial (integracoes.ifood_*/n99_api_key/rappi_api_key),
+      nenhuma integração funcional com essas plataformas existe hoje. -->
+      <h2 style="font-size:15px;margin:22px 0 12px;">iFood</h2>
+      <div class="field"><label>Client ID</label><input type="text" id="int_ifood_client_id"></div>
+      <div class="field"><label>Client Secret</label><input type="text" id="int_ifood_client_secret"></div>
+
+      <h2 style="font-size:15px;margin:22px 0 12px;">99Food</h2>
+      <div class="field"><label>Chave de API</label><input type="text" id="int_99_key"></div>
+
+      <h2 style="font-size:15px;margin:22px 0 12px;">Rappi</h2>
+      <div class="field"><label>Chave de API</label><input type="text" id="int_rappi_key"></div>
 
       <button class="btn-primary" onclick="salvarIntegracoes()">Salvar</button>
     </div>
@@ -388,6 +412,61 @@
     <div class="nav2">
       <button class="btn-ghost" onclick="fecharModalPin()">Cancelar</button>
       <button class="btn-primary" id="pinBtn" onclick="confirmarPin()">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- MODAL: CONFIGURAR PAGAMENTO DO FIXO (item 113) ---------- -->
+<!-- item 113 (05/09/2026, pedido direto do usuário): cada entregador
+fixo tem sua PRÓPRIA periodicidade — não é config da loja inteira (ver
+atualizar_pagamento_fixo() no schema, item 112). -->
+<div class="overlay" id="modalPagamentoFixo">
+  <div class="modal-card" style="width:340px;">
+    <h2 id="pf_nomeEntregador" style="margin-bottom:4px;">—</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 16px;">Configure o valor e quando esse entregador recebe.</p>
+    <div class="msg" id="pfMsg"></div>
+    <div class="field"><label>Valor por pagamento (R$)</label><input type="number" step="0.01" min="0" id="pf_valor"></div>
+    <div class="field">
+      <label>Periodicidade</label>
+      <select id="pf_periodicidade" onchange="atualizarCamposPeriodicidadeFixo()">
+        <option value="fim_de_turno">Fim de turno (paga no mesmo dia)</option>
+        <option value="semanal">Semanal</option>
+        <option value="mensal">Mensal</option>
+        <option value="quinzenal">Quinzenal (2x por mês)</option>
+      </select>
+    </div>
+    <div class="field" id="pf_campoDiaSemana" style="display:none;">
+      <label>Dia da semana</label>
+      <select id="pf_diaSemana">
+        <option value="0">Domingo</option>
+        <option value="1">Segunda</option>
+        <option value="2">Terça</option>
+        <option value="3">Quarta</option>
+        <option value="4">Quinta</option>
+        <option value="5">Sexta</option>
+        <option value="6">Sábado</option>
+      </select>
+    </div>
+    <div class="field" id="pf_campoQuintoUtil" style="display:none;">
+      <label style="display:flex;align-items:center;gap:8px;font-weight:400;">
+        <input type="checkbox" id="pf_quintoUtil" onchange="atualizarCamposPeriodicidadeFixo()" style="width:auto;">
+        Pagar no 5º dia útil do mês (em vez de um dia fixo)
+      </label>
+    </div>
+    <div class="field" id="pf_campoDiaMes1" style="display:none;">
+      <label id="pf_labelDiaMes1">Dia do mês</label>
+      <input type="number" min="1" max="31" id="pf_diaMes1">
+    </div>
+    <div class="field" id="pf_campoDiaMes2" style="display:none;">
+      <label>2ª data do mês</label>
+      <input type="number" min="1" max="31" id="pf_diaMes2">
+    </div>
+    <p id="pf_avisoTroca" style="display:none;color:var(--gray);font-size:12.5px;margin:0 0 12px;background:var(--paper);border-radius:8px;padding:8px 10px;">
+      ⚠ Você mudou a periodicidade — confira se o valor ainda faz sentido pra nova frequência (R$X por turno é bem diferente de R$X por mês).
+    </p>
+    <div class="nav2">
+      <button class="btn-ghost" onclick="fecharModalPagamentoFixo()">Cancelar</button>
+      <button class="btn-primary" onclick="salvarPagamentoFixo()">Salvar</button>
     </div>
   </div>
 </div>
@@ -772,6 +851,7 @@ function copiarLinkCadastroEntregador(){
 function abrirEntregadores(){
   trocarView('entregadores');
   carregarSolicitacoesSaque();
+  carregarListaEntregadores();
 }
 
 async function carregarSolicitacoesSaque(){
@@ -831,6 +911,124 @@ async function marcarRepassePago(entregadorId){
     .eq('status', 'pendente');
   if(error){ alert('Não deu pra marcar como pago: ' + error.message); return; }
   carregarSolicitacoesSaque();
+}
+
+// ------------------------------------------------------------
+// item 113 (05/09/2026, pedido direto do usuário): lista de entregadores
+// + config de pagamento individual do fixo — "cada entregador tem sua
+// forma de receber, o lojista escolhe" (não é config da loja inteira).
+// Toque no nome de um fixo abre o modal; freelancer não tem essa config
+// (repasse por entrega, ciclo semanal automático, ver item 109/111).
+// ------------------------------------------------------------
+let entregadoresListaCache = [];
+
+async function carregarListaEntregadores(){
+  const box = document.getElementById('listaEntregadoresBox');
+  const { data, error } = await supabaseClient
+    .from('entregadores_completo')
+    .select('id, nome, tipo_vinculo, valor_fixo, periodicidade_pagamento_fixo')
+    .eq('tenant_id', tenantId)
+    .order('nome');
+  if(error){ box.innerHTML = '<div class="empty">Não deu pra carregar.</div>'; return; }
+  entregadoresListaCache = data || [];
+  if(!entregadoresListaCache.length){ box.innerHTML = '<div class="empty">Nenhum entregador cadastrado ainda.</div>'; return; }
+
+  box.innerHTML = entregadoresListaCache.map(e => {
+    const ehFixo = e.tipo_vinculo === 'fixo';
+    const subtitulo = ehFixo
+      ? (e.periodicidade_pagamento_fixo ? legendaPeriodicidadeFixo(e.periodicidade_pagamento_fixo) + ' — R$ ' + Number(e.valor_fixo || 0).toFixed(2).replace('.', ',') : 'Fixo — pagamento ainda não configurado')
+      : 'Freelancer';
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);">
+        <div>
+          <div style="font-weight:700;font-size:13.5px;${ehFixo ? 'cursor:pointer;text-decoration:underline;text-decoration-style:dotted;' : ''}" ${ehFixo ? `onclick="abrirModalPagamentoFixo('${e.id}')"` : ''}>${escapeHtml(e.nome)}</div>
+          <div style="font-size:12px;color:var(--gray);">${subtitulo}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function legendaPeriodicidadeFixo(p){
+  return { fim_de_turno: 'Fim de turno', semanal: 'Semanal', mensal: 'Mensal', quinzenal: 'Quinzenal' }[p] || p;
+}
+
+let pagamentoFixoEntregadorId = null;
+let pagamentoFixoPeriodicidadeOriginal = null;
+
+function abrirModalPagamentoFixo(entregadorId){
+  const e = entregadoresListaCache.find(x => x.id === entregadorId);
+  if(!e) return;
+  pagamentoFixoEntregadorId = entregadorId;
+  pagamentoFixoPeriodicidadeOriginal = e.periodicidade_pagamento_fixo;
+
+  document.getElementById('pf_nomeEntregador').textContent = e.nome;
+  document.getElementById('pfMsg').className = 'msg';
+  document.getElementById('pf_valor').value = e.valor_fixo || '';
+  document.getElementById('pf_periodicidade').value = e.periodicidade_pagamento_fixo || 'fim_de_turno';
+  document.getElementById('pf_diaSemana').value = '0';
+  document.getElementById('pf_diaMes1').value = '';
+  document.getElementById('pf_diaMes2').value = '';
+  document.getElementById('pf_quintoUtil').checked = false;
+  document.getElementById('pf_avisoTroca').style.display = 'none';
+  atualizarCamposPeriodicidadeFixo();
+  document.getElementById('modalPagamentoFixo').classList.add('show');
+}
+
+function fecharModalPagamentoFixo(){
+  document.getElementById('modalPagamentoFixo').classList.remove('show');
+}
+
+function atualizarCamposPeriodicidadeFixo(){
+  const p = document.getElementById('pf_periodicidade').value;
+  const quintoUtil = document.getElementById('pf_quintoUtil').checked;
+
+  document.getElementById('pf_campoDiaSemana').style.display = p === 'semanal' ? 'block' : 'none';
+  document.getElementById('pf_campoQuintoUtil').style.display = p === 'mensal' ? 'block' : 'none';
+  document.getElementById('pf_campoDiaMes1').style.display = (p === 'quinzenal' || (p === 'mensal' && !quintoUtil)) ? 'block' : 'none';
+  document.getElementById('pf_campoDiaMes2').style.display = p === 'quinzenal' ? 'block' : 'none';
+  document.getElementById('pf_labelDiaMes1').textContent = p === 'quinzenal' ? '1ª data do mês' : 'Dia do mês';
+
+  document.getElementById('pf_avisoTroca').style.display =
+    (pagamentoFixoPeriodicidadeOriginal && p !== pagamentoFixoPeriodicidadeOriginal) ? 'block' : 'none';
+}
+
+async function salvarPagamentoFixo(){
+  const msg = document.getElementById('pfMsg');
+  msg.className = 'msg';
+  const valor = parseFloat(document.getElementById('pf_valor').value);
+  if(!valor || valor <= 0){
+    msg.textContent = 'Digite um valor válido.'; msg.className = 'msg error'; return;
+  }
+  const periodicidade = document.getElementById('pf_periodicidade').value;
+  const quintoUtil = document.getElementById('pf_quintoUtil').checked;
+  const diaSemana = periodicidade === 'semanal' ? parseInt(document.getElementById('pf_diaSemana').value, 10) : null;
+  const diaMes1 = (periodicidade === 'quinzenal' || (periodicidade === 'mensal' && !quintoUtil))
+    ? parseInt(document.getElementById('pf_diaMes1').value, 10) : null;
+  const diaMes2 = periodicidade === 'quinzenal' ? parseInt(document.getElementById('pf_diaMes2').value, 10) : null;
+
+  if(periodicidade === 'semanal' && Number.isNaN(diaSemana)){
+    msg.textContent = 'Escolha o dia da semana.'; msg.className = 'msg error'; return;
+  }
+  if((periodicidade === 'mensal' && !quintoUtil) && (Number.isNaN(diaMes1) || diaMes1 < 1 || diaMes1 > 31)){
+    msg.textContent = 'Digite um dia do mês válido (1 a 31).'; msg.className = 'msg error'; return;
+  }
+  if(periodicidade === 'quinzenal' && (Number.isNaN(diaMes1) || Number.isNaN(diaMes2))){
+    msg.textContent = 'Digite as 2 datas do mês.'; msg.className = 'msg error'; return;
+  }
+
+  const { error } = await supabaseClient.rpc('atualizar_pagamento_fixo', {
+    p_entregador_id: pagamentoFixoEntregadorId,
+    p_valor_fixo: valor,
+    p_periodicidade: periodicidade,
+    p_dia_semana: diaSemana,
+    p_dia_mes_1: diaMes1,
+    p_dia_mes_2: diaMes2,
+    p_usar_quinto_dia_util: periodicidade === 'mensal' ? quintoUtil : false,
+  });
+  if(error){ msg.textContent = 'Não deu pra salvar: ' + error.message; msg.className = 'msg error'; return; }
+  fecharModalPagamentoFixo();
+  carregarListaEntregadores();
 }
 
 // ------------------------------------------------------------
@@ -1457,8 +1655,14 @@ async function confirmarPin(){
   carregarIntegracoes();
 }
 
+// item 109 (05/09/2026): lê/grava via RPC (salvar_integracoes_seguro/
+// carregar_integracoes_segura) em vez de acesso direto à tabela —
+// credenciais agora ficam cifradas em repouso (pgp_sym_encrypt), a
+// tabela só devolve texto cifrado pra quem consultar direto.
 async function carregarIntegracoes(){
-  const { data } = await supabaseClient.from('integracoes').select('*').eq('tenant_id', tenantId).maybeSingle();
+  const { data: linhas, error } = await supabaseClient.rpc('carregar_integracoes_segura');
+  if(error){ console.error('Não deu pra carregar integrações:', error.message); return; }
+  const data = (linhas || [])[0];
   if(!data) return;
   document.getElementById('int_brendi').value = data.brendi_api_key || '';
   document.getElementById('int_wa_phone').value = data.whatsapp_phone_number_id || '';
@@ -1466,21 +1670,27 @@ async function carregarIntegracoes(){
   document.getElementById('int_wa_verify').value = data.whatsapp_webhook_verify_token || '';
   document.getElementById('int_pix_provider').value = data.pix_provider || 'mercado_pago';
   document.getElementById('int_pix_key').value = data.pix_provider_api_key || '';
+  document.getElementById('int_ifood_client_id').value = data.ifood_client_id || '';
+  document.getElementById('int_ifood_client_secret').value = data.ifood_client_secret || '';
+  document.getElementById('int_99_key').value = data.n99_api_key || '';
+  document.getElementById('int_rappi_key').value = data.rappi_api_key || '';
 }
 
 async function salvarIntegracoes(){
   const msg = document.getElementById('integMsg');
   const payload = {
-    tenant_id: tenantId,
     brendi_api_key: document.getElementById('int_brendi').value || null,
     whatsapp_phone_number_id: document.getElementById('int_wa_phone').value || null,
     whatsapp_access_token: document.getElementById('int_wa_token').value || null,
     whatsapp_webhook_verify_token: document.getElementById('int_wa_verify').value || null,
     pix_provider: document.getElementById('int_pix_provider').value,
     pix_provider_api_key: document.getElementById('int_pix_key').value || null,
-    atualizado_em: new Date().toISOString(),
+    ifood_client_id: document.getElementById('int_ifood_client_id').value || null,
+    ifood_client_secret: document.getElementById('int_ifood_client_secret').value || null,
+    n99_api_key: document.getElementById('int_99_key').value || null,
+    rappi_api_key: document.getElementById('int_rappi_key').value || null,
   };
-  const { error } = await supabaseClient.from('integracoes').upsert(payload, { onConflict: 'tenant_id' });
+  const { error } = await supabaseClient.rpc('salvar_integracoes_seguro', { p_campos: payload });
   if(error){ msg.textContent = 'Não deu pra salvar: ' + error.message; msg.className = 'msg error'; return; }
   msg.textContent = 'Salvo com sucesso.'; msg.className = 'msg success';
 }

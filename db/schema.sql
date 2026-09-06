@@ -2282,6 +2282,14 @@ create table if not exists integracoes (
   pix_provider text check (pix_provider in ('mercado_pago', 'asaas', 'stone', 'outro')),
   pix_provider_api_key text,
 
+  -- 05/09/2026: só armazenamento, igual Brendi/Pix acima — nenhuma chamada
+  -- de API desses provedores existe hoje. É o lugar pra colar a chave
+  -- quando a integração funcional entrar em pauta.
+  ifood_client_id text,
+  ifood_client_secret text,
+  n99_api_key text,
+  rappi_api_key text,
+
   atualizado_em timestamptz not null default now()
 );
 
@@ -7059,5 +7067,720 @@ begin
   returning id into v_ocorrencia_id;
 
   return v_ocorrencia_id;
+end;
+$$;
+
+-- ==============================================================
+-- ITEM 109 (05/09/2026, pedido direto do usuário: "máxima integração
+-- possível, com máxima segurança") — CRIPTOGRAFIA EM REPOUSO DAS
+-- CREDENCIAIS DE INTEGRAÇÃO
+-- ==============================================================
+-- Achado real: até agora toda credencial salva em `integracoes` (Brendi,
+-- WhatsApp, Pix, iFood, 99Food, Rappi) ficava em TEXTO PURO na tabela —
+-- um dump do banco ou acesso indevido exporia tudo de uma vez. Com
+-- repasse automático de Pix vindo a seguir (usa essas mesmas credenciais
+-- pra mover dinheiro de verdade), isso deixou de ser aceitável.
+--
+-- Abordagem: pgcrypto (já habilitado) com a chave simétrica guardada
+-- numa tabela própria, RLS ligado e SEM NENHUMA política — authenticated
+-- e anon ficam bloqueados por padrão (deny-all do RLS sem policy), só o
+-- dono da tabela (postgres) enxerga, que é exatamente quem executa as
+-- funções SECURITY DEFINER abaixo. Testado antes de escrever isto:
+-- Supabase hospedado NEGA "alter database set app.x" pro role do
+-- projeto ("permission denied to set parameter") — abordagem de GUC de
+-- banco não é viável aqui, daí essa tabela em vez disso.
+create table if not exists credenciais_sistema (
+  chave text primary key,
+  valor text not null,
+  criado_em timestamptz not null default now()
+);
+alter table credenciais_sistema enable row level security;
+
+insert into credenciais_sistema (chave, valor)
+values ('integracoes_encryption_key', encode(gen_random_bytes(32), 'hex'))
+on conflict (chave) do nothing;
+
+-- helper interno — NUNCA exposto como RPC pro client (revoke logo
+-- abaixo); só chamado de dentro de outras funções SECURITY DEFINER, que
+-- herdam o privilégio do dono (postgres).
+create or replace function _chave_criptografia_integracoes()
+returns text
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select valor from credenciais_sistema where chave = 'integracoes_encryption_key';
+$$;
+-- ACHADO REAL (05/09/2026, testado end-to-end antes de seguir): Supabase
+-- concede EXECUTE em toda função nova diretamente pros roles
+-- `authenticated`/`anon` (privilégio próprio deles, não só via PUBLIC) —
+-- "revoke ... from public" sozinho NÃO tira esse acesso. Confirmado com
+-- teste real: um usuário autenticado qualquer conseguia chamar essa
+-- função e ler a chave de criptografia em texto puro. Precisa revogar
+-- dos 2 roles nomeados explicitamente, não só de public.
+revoke execute on function _chave_criptografia_integracoes() from public, authenticated, anon;
+
+-- migra os campos sensíveis de texto puro pra bytea criptografado, sem
+-- perder nenhuma linha já existente (add coluna nova / copia cifrado /
+-- derruba a antiga / renomeia). Idempotente: só mexe em coluna que ainda
+-- não é bytea.
+do $$
+declare
+  v_chave text := (select valor from credenciais_sistema where chave = 'integracoes_encryption_key');
+  v_col text;
+begin
+  foreach v_col in array array[
+    'brendi_api_key', 'whatsapp_access_token', 'whatsapp_webhook_verify_token',
+    'pix_provider_api_key', 'ifood_client_id', 'ifood_client_secret',
+    'n99_api_key', 'rappi_api_key'
+  ]
+  loop
+    if exists (
+      select 1 from information_schema.columns
+      where table_name = 'integracoes' and column_name = v_col and data_type <> 'bytea'
+    ) then
+      execute format('alter table integracoes add column %I_enc bytea', v_col);
+      execute format(
+        'update integracoes set %I_enc = pgp_sym_encrypt(%I, %L) where %I is not null',
+        v_col, v_col, v_chave, v_col
+      );
+      execute format('alter table integracoes drop column %I', v_col);
+      execute format('alter table integracoes rename column %I_enc to %I', v_col, v_col);
+    end if;
+  end loop;
+end $$;
+
+-- acesso direto à tabela agora só devolve texto cifrado (inofensivo) —
+-- toda leitura/escrita de verdade passa pelas 2 funções abaixo. Troca
+-- "for all" (que permitia insert/update direto, potencialmente gravando
+-- texto puro por engano) por só "for select".
+drop policy if exists "dono ve e edita integracoes do seu tenant" on integracoes;
+create policy "dono ve integracoes do seu tenant (cifrado)" on integracoes for select using (
+  tenant_id in (select minhas_tenant_ids_dono())
+);
+
+create or replace function salvar_integracoes_seguro(p_campos jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_tenant_id uuid;
+  v_chave text;
+begin
+  select tenant_id into v_tenant_id from usuarios_loja
+    where auth_user_id = auth.uid() and papel = 'dono';
+  if v_tenant_id is null then
+    raise exception 'Acesso restrito ao dono da loja.';
+  end if;
+
+  v_chave := _chave_criptografia_integracoes();
+
+  insert into integracoes (
+    tenant_id, brendi_api_key, whatsapp_phone_number_id, whatsapp_access_token,
+    whatsapp_webhook_verify_token, pix_provider, pix_provider_api_key,
+    ifood_client_id, ifood_client_secret, n99_api_key, rappi_api_key, atualizado_em
+  ) values (
+    v_tenant_id,
+    case when p_campos->>'brendi_api_key' is not null then pgp_sym_encrypt(p_campos->>'brendi_api_key', v_chave) end,
+    p_campos->>'whatsapp_phone_number_id',
+    case when p_campos->>'whatsapp_access_token' is not null then pgp_sym_encrypt(p_campos->>'whatsapp_access_token', v_chave) end,
+    case when p_campos->>'whatsapp_webhook_verify_token' is not null then pgp_sym_encrypt(p_campos->>'whatsapp_webhook_verify_token', v_chave) end,
+    p_campos->>'pix_provider',
+    case when p_campos->>'pix_provider_api_key' is not null then pgp_sym_encrypt(p_campos->>'pix_provider_api_key', v_chave) end,
+    case when p_campos->>'ifood_client_id' is not null then pgp_sym_encrypt(p_campos->>'ifood_client_id', v_chave) end,
+    case when p_campos->>'ifood_client_secret' is not null then pgp_sym_encrypt(p_campos->>'ifood_client_secret', v_chave) end,
+    case when p_campos->>'n99_api_key' is not null then pgp_sym_encrypt(p_campos->>'n99_api_key', v_chave) end,
+    case when p_campos->>'rappi_api_key' is not null then pgp_sym_encrypt(p_campos->>'rappi_api_key', v_chave) end,
+    now()
+  )
+  on conflict (tenant_id) do update set
+    brendi_api_key = excluded.brendi_api_key,
+    whatsapp_phone_number_id = excluded.whatsapp_phone_number_id,
+    whatsapp_access_token = excluded.whatsapp_access_token,
+    whatsapp_webhook_verify_token = excluded.whatsapp_webhook_verify_token,
+    pix_provider = excluded.pix_provider,
+    pix_provider_api_key = excluded.pix_provider_api_key,
+    ifood_client_id = excluded.ifood_client_id,
+    ifood_client_secret = excluded.ifood_client_secret,
+    n99_api_key = excluded.n99_api_key,
+    rappi_api_key = excluded.rappi_api_key,
+    atualizado_em = now();
+end;
+$$;
+
+create or replace function carregar_integracoes_segura()
+returns table (
+  brendi_api_key text, whatsapp_phone_number_id text, whatsapp_access_token text,
+  whatsapp_webhook_verify_token text, pix_provider text, pix_provider_api_key text,
+  ifood_client_id text, ifood_client_secret text, n99_api_key text, rappi_api_key text
+)
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_tenant_id uuid;
+  v_chave text;
+begin
+  select tenant_id into v_tenant_id from usuarios_loja
+    where auth_user_id = auth.uid() and papel = 'dono';
+  if v_tenant_id is null then
+    raise exception 'Acesso restrito ao dono da loja.';
+  end if;
+
+  v_chave := _chave_criptografia_integracoes();
+
+  return query
+  select
+    case when i.brendi_api_key is not null then pgp_sym_decrypt(i.brendi_api_key, v_chave) end,
+    i.whatsapp_phone_number_id,
+    case when i.whatsapp_access_token is not null then pgp_sym_decrypt(i.whatsapp_access_token, v_chave) end,
+    case when i.whatsapp_webhook_verify_token is not null then pgp_sym_decrypt(i.whatsapp_webhook_verify_token, v_chave) end,
+    i.pix_provider,
+    case when i.pix_provider_api_key is not null then pgp_sym_decrypt(i.pix_provider_api_key, v_chave) end,
+    case when i.ifood_client_id is not null then pgp_sym_decrypt(i.ifood_client_id, v_chave) end,
+    case when i.ifood_client_secret is not null then pgp_sym_decrypt(i.ifood_client_secret, v_chave) end,
+    case when i.n99_api_key is not null then pgp_sym_decrypt(i.n99_api_key, v_chave) end,
+    case when i.rappi_api_key is not null then pgp_sym_decrypt(i.rappi_api_key, v_chave) end
+  from integracoes i
+  where i.tenant_id = v_tenant_id;
+end;
+$$;
+
+-- ==============================================================
+-- ITEM 110 (05/09/2026, pedido direto do usuário): POLÍTICA DE
+-- PAGAMENTO DO FIXO, POR LOJA
+-- ==============================================================
+-- tipo_vinculo='fixo' recebe salário periódico (valor_fixo), independente
+-- do volume de entregas — diferente do repasse por entrega do freelancer
+-- (esse continua no ciclo semanal quarta 11h, item 109/111). A LOJA
+-- escolhe uma única política de pagamento que vale pra TODOS os seus
+-- vínculos fixos (não é escolha individual do entregador) — é assim que
+-- funciona numa folha de pagamento real: a empresa define o dia, não
+-- cada funcionário.
+alter table tenants add column if not exists periodicidade_pagamento_fixo text
+  check (periodicidade_pagamento_fixo in ('fim_de_turno', 'semanal', 'mensal', 'quinzenal'));
+-- 'fim_de_turno': paga no mesmo dia, ao fechar o turno.
+-- 'semanal': 1x/semana, no dia_semana_pagamento_fixo escolhido.
+-- 'mensal': 1x/mês, no dia_mes_pagamento_fixo_1 (ou 5º dia útil, ver abaixo).
+-- 'quinzenal': 2x/mês, nas 2 datas (dia_mes_pagamento_fixo_1 e _2).
+
+alter table tenants add column if not exists dia_semana_pagamento_fixo smallint
+  check (dia_semana_pagamento_fixo between 0 and 6); -- 0=domingo..6=sábado, só 'semanal'
+
+alter table tenants add column if not exists dia_mes_pagamento_fixo_1 smallint
+  check (dia_mes_pagamento_fixo_1 between 1 and 31); -- 'mensal' (dia único) ou 'quinzenal' (1ª data)
+
+alter table tenants add column if not exists dia_mes_pagamento_fixo_2 smallint
+  check (dia_mes_pagamento_fixo_2 between 1 and 31); -- só 'quinzenal' (2ª data)
+
+-- quando true, ignora dia_mes_pagamento_fixo_1 e calcula o 5º dia útil do
+-- mês (só desconta fim de semana — feriado fica de fora, LIMITAÇÃO
+-- CONHECIDA, sem calendário de feriados no projeto ainda).
+alter table tenants add column if not exists usar_quinto_dia_util_fixo boolean not null default false;
+
+-- calcula o 5º dia útil de um mês (seg-sex, sem feriados) — usado por
+-- precisa_confirmar_chave_pix()/executar_pagamentos_fixos() (item 111)
+-- pra saber se hoje é dia de pagar quem usa essa opção.
+create or replace function quinto_dia_util(p_ano int, p_mes int)
+returns date
+language sql
+immutable
+as $$
+  select dia from (
+    select (make_date(p_ano, p_mes, 1) + (n || ' days')::interval)::date as dia
+    from generate_series(0, 40) as n
+  ) dias
+  where extract(isodow from dia) < 6 -- 1=segunda..5=sexta (isodow: 6=sábado,7=domingo)
+  order by dia
+  offset 4 limit 1;
+$$;
+
+-- ==============================================================
+-- ITEM 111 (05/09/2026, pedido direto do usuário) — CONFIRMAÇÃO DE
+-- CHAVE PIX + SELEÇÃO DE QUEM PAGAR, PRA REPASSE AUTOMÁTICO
+-- ==============================================================
+-- Desenho combinado com o usuário: no dia ANTERIOR ao pagamento, o
+-- entregador confirma a própria chave Pix no app — evita mandar dinheiro
+-- pra chave errada/desatualizada. Freelancer segue ciclo semanal fixo
+-- (confirma terça, paga quarta a partir das 11h — repasse por entrega,
+-- ver item 109). Fixo segue a política DA LOJA (item 110: fim de turno/
+-- semanal/mensal/quinzenal) — salário periódico (valor_fixo),
+-- independente de volume de entregas.
+--
+-- 'fim_de_turno' não tem "dia anterior" (é no mesmo instante que o turno
+-- fecha) — PENDÊNCIA CONHECIDA, documentada no CLAUDE.md: o hook no
+-- fechamento de turno pra essa opção específica ainda não foi
+-- construído, só o dado de configuração existe.
+
+alter table pessoas_entregadoras add column if not exists chave_pix_confirmada_em timestamptz;
+
+alter table repasses add column if not exists transferencia_erro text;
+alter table repasses add column if not exists tentativa_transferencia_em timestamptz;
+
+-- ledger de pagamento do FIXO — não existe repasse por entrega pra esse
+-- caso (valor_fixo é config, não histórico), então cada execução gera
+-- 1 linha aqui. unique(entregador_id, referencia_data) é a trava contra
+-- pagar o mesmo fixo 2x no mesmo dia (proteção real contra reexecução
+-- se o serviço reiniciar no meio da janela de pagamento — mesma classe
+-- de cuidado já documentada como limitação do dispatch-engine, mas aqui
+-- é dinheiro de verdade, então virou trava de banco, não só comentário).
+create table if not exists pagamentos_fixos (
+  id uuid primary key default gen_random_uuid(),
+  entregador_id uuid not null references entregadores(id) on delete cascade,
+  valor numeric(10,2) not null,
+  referencia_data date not null,
+  status text not null default 'pendente' check (status in ('pendente', 'pago')),
+  pix_txid text,
+  transferencia_erro text,
+  tentativa_transferencia_em timestamptz,
+  pago_em timestamptz,
+  criado_em timestamptz not null default now(),
+  unique (entregador_id, referencia_data)
+);
+alter table pagamentos_fixos enable row level security;
+create policy "entregador ve seus proprios pagamentos fixos" on pagamentos_fixos for select using (
+  entregador_id in (select id from entregadores where pessoa_id in
+    (select id from pessoas_entregadoras where auth_user_id = auth.uid()))
+);
+create policy "loja ve pagamentos fixos dos seus entregadores" on pagamentos_fixos for select using (
+  entregador_id in (select id from entregadores where tenant_id in (select minhas_tenant_ids()))
+);
+
+-- true quando p_data é dia de pagamento fixo pra esse tenant, conforme a
+-- política escolhida (item 110). 'fim_de_turno' devolve sempre false
+-- aqui de propósito (não é baseado em data — ver pendência acima).
+create or replace function hoje_e_dia_pagamento_fixo(p_tenant_id uuid, p_data date default current_date)
+returns boolean
+language plpgsql
+stable
+set search_path = public, pg_temp
+as $$
+declare
+  v_tenant record;
+begin
+  select periodicidade_pagamento_fixo, dia_semana_pagamento_fixo,
+         dia_mes_pagamento_fixo_1, dia_mes_pagamento_fixo_2, usar_quinto_dia_util_fixo
+  into v_tenant from tenants where id = p_tenant_id;
+
+  if v_tenant.periodicidade_pagamento_fixo is null or v_tenant.periodicidade_pagamento_fixo = 'fim_de_turno' then
+    return false;
+  end if;
+
+  if v_tenant.periodicidade_pagamento_fixo = 'semanal' then
+    return extract(dow from p_data) = v_tenant.dia_semana_pagamento_fixo;
+  end if;
+
+  if v_tenant.periodicidade_pagamento_fixo = 'mensal' then
+    if v_tenant.usar_quinto_dia_util_fixo then
+      return p_data = quinto_dia_util(extract(year from p_data)::int, extract(month from p_data)::int);
+    end if;
+    return extract(day from p_data) = v_tenant.dia_mes_pagamento_fixo_1;
+  end if;
+
+  if v_tenant.periodicidade_pagamento_fixo = 'quinzenal' then
+    return extract(day from p_data) in (v_tenant.dia_mes_pagamento_fixo_1, v_tenant.dia_mes_pagamento_fixo_2);
+  end if;
+
+  return false;
+end;
+$$;
+
+-- RPC do app do entregador: mostra o card "confirme sua chave Pix"?
+-- Cobre os 2 casos (freelance: terça, com repasse pendente em qualquer
+-- vínculo dessa pessoa; fixo: amanhã é dia de pagamento em algum tenant
+-- onde essa pessoa tem vínculo fixo). Uma confirmação só resolve os 2
+-- casos (chave_pix é da PESSOA, não do vínculo).
+create or replace function precisa_confirmar_chave_pix()
+returns boolean
+language plpgsql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+declare
+  v_pessoa_id uuid;
+  v_confirmada_recente boolean;
+  v_precisa_freelance boolean;
+  v_precisa_fixo boolean;
+begin
+  select id into v_pessoa_id from pessoas_entregadoras where auth_user_id = auth.uid();
+  if v_pessoa_id is null then
+    return false;
+  end if;
+
+  select (chave_pix_confirmada_em >= current_date - interval '1 day')
+    into v_confirmada_recente
+  from pessoas_entregadoras where id = v_pessoa_id;
+
+  if coalesce(v_confirmada_recente, false) then
+    return false;
+  end if;
+
+  select exists (
+    select 1 from repasses r
+    join entregadores e on e.id = r.entregador_id
+    where e.pessoa_id = v_pessoa_id
+      and r.status = 'pendente'
+      and extract(dow from current_date) = 2 -- terça (0=domingo)
+  ) into v_precisa_freelance;
+
+  select exists (
+    select 1 from entregadores e
+    where e.pessoa_id = v_pessoa_id
+      and e.tipo_vinculo = 'fixo'
+      and hoje_e_dia_pagamento_fixo(e.tenant_id, current_date + 1)
+  ) into v_precisa_fixo;
+
+  return v_precisa_freelance or v_precisa_fixo;
+end;
+$$;
+
+-- entregador confirma (e opcionalmente corrige) a própria chave Pix.
+create or replace function confirmar_chave_pix(p_nova_chave text default null)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  update pessoas_entregadoras
+  set chave_pix = coalesce(nullif(p_nova_chave, ''), chave_pix),
+      chave_pix_confirmada_em = now()
+  where auth_user_id = auth.uid();
+end;
+$$;
+
+-- ------------------------------------------------------------
+-- daqui pra baixo: funções só do MOTOR (dispatch-engine, service role)
+-- — nunca chamadas pelo client, por isso o revoke explícito de
+-- authenticated/anon em cada uma (mesmo achado do item 109: Supabase
+-- concede EXECUTE nesses 2 roles em toda função nova por padrão).
+-- ------------------------------------------------------------
+
+create or replace function repasses_freelance_prontos_para_pagar()
+returns table (
+  tenant_id uuid, pessoa_id uuid, chave_pix text, valor_total numeric, repasse_ids uuid[]
+)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select e.tenant_id, e.pessoa_id, p.chave_pix, sum(r.valor) as valor_total, array_agg(r.id) as repasse_ids
+  from repasses r
+  join entregadores e on e.id = r.entregador_id
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where r.status = 'pendente'
+    and e.tipo_vinculo <> 'fixo'
+    and p.chave_pix is not null
+    and p.chave_pix_confirmada_em >= current_date - interval '1 day'
+  group by e.tenant_id, e.pessoa_id, p.chave_pix;
+$$;
+revoke execute on function repasses_freelance_prontos_para_pagar() from public, authenticated, anon;
+
+create or replace function marcar_repasses_pagos(p_repasse_ids uuid[], p_pix_txid text)
+returns void
+language sql
+security definer
+set search_path = public, pg_temp
+as $$
+  update repasses set status = 'pago', pago_em = now(), pix_txid = p_pix_txid
+  where id = any(p_repasse_ids);
+$$;
+revoke execute on function marcar_repasses_pagos(uuid[], text) from public, authenticated, anon;
+
+create or replace function marcar_repasses_com_erro(p_repasse_ids uuid[], p_erro text)
+returns void
+language sql
+security definer
+set search_path = public, pg_temp
+as $$
+  update repasses set transferencia_erro = p_erro, tentativa_transferencia_em = now()
+  where id = any(p_repasse_ids);
+$$;
+revoke execute on function marcar_repasses_com_erro(uuid[], text) from public, authenticated, anon;
+
+-- gera (se ainda não existir) os pagamentos fixos pendentes de HOJE —
+-- idempotente via unique(entregador_id, referencia_data), seguro pra
+-- chamar de novo se o serviço reiniciar no meio da janela.
+create or replace function gerar_pagamentos_fixos_do_dia()
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  insert into pagamentos_fixos (entregador_id, valor, referencia_data)
+  select e.id, e.valor_fixo, current_date
+  from entregadores e
+  where e.tipo_vinculo = 'fixo'
+    and e.valor_fixo is not null
+    and hoje_e_dia_pagamento_fixo(e.tenant_id)
+  on conflict (entregador_id, referencia_data) do nothing;
+end;
+$$;
+revoke execute on function gerar_pagamentos_fixos_do_dia() from public, authenticated, anon;
+
+create or replace function pagamentos_fixos_prontos_para_pagar()
+returns table (
+  pagamento_id uuid, tenant_id uuid, chave_pix text, valor numeric
+)
+language sql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+  select pf.id, e.tenant_id, p.chave_pix, pf.valor
+  from pagamentos_fixos pf
+  join entregadores e on e.id = pf.entregador_id
+  join pessoas_entregadoras p on p.id = e.pessoa_id
+  where pf.status = 'pendente'
+    and p.chave_pix is not null
+    and p.chave_pix_confirmada_em >= current_date - interval '1 day';
+$$;
+revoke execute on function pagamentos_fixos_prontos_para_pagar() from public, authenticated, anon;
+
+create or replace function marcar_pagamento_fixo_pago(p_pagamento_id uuid, p_pix_txid text)
+returns void language sql security definer set search_path = public, pg_temp as $$
+  update pagamentos_fixos set status = 'pago', pago_em = now(), pix_txid = p_pix_txid where id = p_pagamento_id;
+$$;
+revoke execute on function marcar_pagamento_fixo_pago(uuid, text) from public, authenticated, anon;
+
+create or replace function marcar_pagamento_fixo_erro(p_pagamento_id uuid, p_erro text)
+returns void language sql security definer set search_path = public, pg_temp as $$
+  update pagamentos_fixos set transferencia_erro = p_erro, tentativa_transferencia_em = now() where id = p_pagamento_id;
+$$;
+revoke execute on function marcar_pagamento_fixo_erro(uuid, text) from public, authenticated, anon;
+
+-- decifra a credencial de Pix da loja pro motor de pagamento chamar a
+-- API do provedor certo. Só service_role (dispatch-engine) — nunca
+-- exposta pro client.
+create or replace function credenciais_pix_do_tenant(p_tenant_id uuid)
+returns table (pix_provider text, pix_provider_api_key text)
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_chave text;
+begin
+  v_chave := _chave_criptografia_integracoes();
+  return query
+  select i.pix_provider,
+    case when i.pix_provider_api_key is not null then pgp_sym_decrypt(i.pix_provider_api_key, v_chave) end
+  from integracoes i where i.tenant_id = p_tenant_id;
+end;
+$$;
+revoke execute on function credenciais_pix_do_tenant(uuid) from public, authenticated, anon;
+
+-- ==============================================================
+-- ITEM 112 (05/09/2026) — CORREÇÃO DE ESCOPO: periodicidade de
+-- pagamento do FIXO é POR ENTREGADOR, não por loja
+-- ==============================================================
+-- Item 110 tinha colocado a política em `tenants` (uma regra pra todos
+-- os fixos da loja) — correção do usuário: na prática cada loja negocia
+-- a forma de pagamento individualmente com cada entregador fixo (um
+-- recebe por fim de turno, outro semanal, outro mensal, na MESMA loja).
+-- Move as 5 colunas de tenants pra entregadores. Nenhum tenant em
+-- produção tinha essa configuração preenchida ainda (checado antes de
+-- migrar), então é só mover a coluna, sem carregar dado nenhum.
+alter table entregadores add column if not exists periodicidade_pagamento_fixo text
+  check (periodicidade_pagamento_fixo in ('fim_de_turno', 'semanal', 'mensal', 'quinzenal'));
+alter table entregadores add column if not exists dia_semana_pagamento_fixo smallint
+  check (dia_semana_pagamento_fixo between 0 and 6);
+alter table entregadores add column if not exists dia_mes_pagamento_fixo_1 smallint
+  check (dia_mes_pagamento_fixo_1 between 1 and 31);
+alter table entregadores add column if not exists dia_mes_pagamento_fixo_2 smallint
+  check (dia_mes_pagamento_fixo_2 between 1 and 31);
+alter table entregadores add column if not exists usar_quinto_dia_util_fixo boolean not null default false;
+
+alter table tenants drop column if exists periodicidade_pagamento_fixo;
+alter table tenants drop column if exists dia_semana_pagamento_fixo;
+alter table tenants drop column if exists dia_mes_pagamento_fixo_1;
+alter table tenants drop column if exists dia_mes_pagamento_fixo_2;
+alter table tenants drop column if exists usar_quinto_dia_util_fixo;
+
+-- mesma lógica do item 111, agora lendo a config do VÍNCULO
+-- (entregadores), não mais do tenant. Assinatura (uuid, date) igual —
+-- drop necessário: Postgres não deixa "create or replace" renomear
+-- parâmetro (p_tenant_id -> p_entregador_id) mesmo com o mesmo tipo.
+drop function if exists hoje_e_dia_pagamento_fixo(uuid, date);
+create or replace function hoje_e_dia_pagamento_fixo(p_entregador_id uuid, p_data date default current_date)
+returns boolean
+language plpgsql
+stable
+set search_path = public, pg_temp
+as $$
+declare
+  v_e record;
+begin
+  select periodicidade_pagamento_fixo, dia_semana_pagamento_fixo,
+         dia_mes_pagamento_fixo_1, dia_mes_pagamento_fixo_2, usar_quinto_dia_util_fixo
+  into v_e from entregadores where id = p_entregador_id;
+
+  if v_e.periodicidade_pagamento_fixo is null or v_e.periodicidade_pagamento_fixo = 'fim_de_turno' then
+    return false;
+  end if;
+
+  if v_e.periodicidade_pagamento_fixo = 'semanal' then
+    return extract(dow from p_data) = v_e.dia_semana_pagamento_fixo;
+  end if;
+
+  if v_e.periodicidade_pagamento_fixo = 'mensal' then
+    if v_e.usar_quinto_dia_util_fixo then
+      return p_data = quinto_dia_util(extract(year from p_data)::int, extract(month from p_data)::int);
+    end if;
+    return extract(day from p_data) = v_e.dia_mes_pagamento_fixo_1;
+  end if;
+
+  if v_e.periodicidade_pagamento_fixo = 'quinzenal' then
+    return extract(day from p_data) in (v_e.dia_mes_pagamento_fixo_1, v_e.dia_mes_pagamento_fixo_2);
+  end if;
+
+  return false;
+end;
+$$;
+
+-- reaponta as 2 chamadas que antes passavam e.tenant_id — agora passam
+-- e.id (o vínculo), já que a config é dele agora.
+create or replace function precisa_confirmar_chave_pix()
+returns boolean
+language plpgsql
+security definer
+stable
+set search_path = public, pg_temp
+as $$
+declare
+  v_pessoa_id uuid;
+  v_confirmada_recente boolean;
+  v_precisa_freelance boolean;
+  v_precisa_fixo boolean;
+begin
+  select id into v_pessoa_id from pessoas_entregadoras where auth_user_id = auth.uid();
+  if v_pessoa_id is null then
+    return false;
+  end if;
+
+  select (chave_pix_confirmada_em >= current_date - interval '1 day')
+    into v_confirmada_recente
+  from pessoas_entregadoras where id = v_pessoa_id;
+
+  if coalesce(v_confirmada_recente, false) then
+    return false;
+  end if;
+
+  select exists (
+    select 1 from repasses r
+    join entregadores e on e.id = r.entregador_id
+    where e.pessoa_id = v_pessoa_id
+      and r.status = 'pendente'
+      and extract(dow from current_date) = 2
+  ) into v_precisa_freelance;
+
+  select exists (
+    select 1 from entregadores e
+    where e.pessoa_id = v_pessoa_id
+      and e.tipo_vinculo = 'fixo'
+      and hoje_e_dia_pagamento_fixo(e.id, current_date + 1)
+  ) into v_precisa_fixo;
+
+  return v_precisa_freelance or v_precisa_fixo;
+end;
+$$;
+
+create or replace function gerar_pagamentos_fixos_do_dia()
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  insert into pagamentos_fixos (entregador_id, valor, referencia_data)
+  select e.id, e.valor_fixo, current_date
+  from entregadores e
+  where e.tipo_vinculo = 'fixo'
+    and e.valor_fixo is not null
+    and hoje_e_dia_pagamento_fixo(e.id)
+  on conflict (entregador_id, referencia_data) do nothing;
+end;
+$$;
+revoke execute on function gerar_pagamentos_fixos_do_dia() from public, authenticated, anon;
+
+-- ==============================================================
+-- ITEM 113 (05/09/2026, pedido direto do usuário) — TELA DA LOJA PRA
+-- CONFIGURAR PAGAMENTO DE CADA ENTREGADOR FIXO
+-- ==============================================================
+-- entregadores_completo ganha as colunas novas do item 112 (config de
+-- pagamento por vínculo) + chave_pix_confirmada_em (item 111) — mesma
+-- view, mesmo padrão de sempre, só mais campos pro painel-loja.html
+-- mostrar/editar.
+create or replace view entregadores_completo
+with (security_invoker = true) as
+select
+  e.id, e.tenant_id, e.pessoa_id, e.tipo_vinculo, e.valor_fixo, e.periodicidade_fixo,
+  e.aceita_feira, e.limite_rotas_simultaneas, e.criado_em as vinculo_criado_em,
+  p.auth_user_id, p.email, p.nome, p.telefone, p.status, p.status_antes_pausa,
+  p.lat, p.lng, p.localizacao_atualizada_em, p.possui_maquininha, p.chave_pix,
+  p.bloqueado_ate, p.pausar_apos_rota_atual, p.modo_disponibilidade,
+  p.device_id_atual, p.device_id_atualizado_em,
+  p.consentimento_lgpd_aceito_em, p.dados_anonimizados_em, p.app_navegacao_preferido,
+  p.tipo_veiculo, p.data_nascimento, p.cpf, p.rg_numero, p.endereco, p.numero_residencia, p.cep,
+  p.cnh_numero, p.cnh_validade, p.cnh_foto_url, p.crlv_validade, p.crlv_foto_url, p.placa,
+  p.comprovante_residencia_foto_url, p.cnh_alerta_enviado_em, p.crlv_alerta_enviado_em,
+  p.foto_rg_url, p.foto_rg_segurando_url, p.foto_bicicleta_url, p.responsavel_nome,
+  p.responsavel_documento_foto_url, p.status_verificacao, p.motivo_reprovacao,
+  p.verificacao_enviada_em, p.verificacao_prazo_limite, p.aprovado_por, p.aprovado_em,
+  p.is_teste, p.push_token, p.push_plataforma, p.criado_em as pessoa_criado_em,
+  p.contato_emergencia_nome, p.contato_emergencia_telefone,
+  -- colunas novas (item 112/113) — acrescentadas no FINAL de propósito:
+  -- "create or replace view" no Postgres não deixa inserir coluna no
+  -- meio da lista (só no fim), mesmo trocando o nome de nada.
+  e.periodicidade_pagamento_fixo, e.dia_semana_pagamento_fixo,
+  e.dia_mes_pagamento_fixo_1, e.dia_mes_pagamento_fixo_2, e.usar_quinto_dia_util_fixo,
+  p.chave_pix_confirmada_em
+from entregadores e
+join pessoas_entregadoras p on p.id = e.pessoa_id;
+
+-- loja (dono) configura como/quando UM entregador fixo específico
+-- recebe — decisão do usuário: "cada entregador tem sua forma de
+-- receber, o lojista escolhe" (não existe policy de UPDATE em
+-- entregadores pra loja, de propósito — vai tudo por aqui, com a
+-- checagem de posse + tipo_vinculo='fixo' explícita).
+create or replace function atualizar_pagamento_fixo(
+  p_entregador_id uuid,
+  p_valor_fixo numeric,
+  p_periodicidade text,
+  p_dia_semana smallint default null,
+  p_dia_mes_1 smallint default null,
+  p_dia_mes_2 smallint default null,
+  p_usar_quinto_dia_util boolean default false
+) returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if p_entregador_id not in (
+    select id from entregadores where tenant_id in (select minhas_tenant_ids_dono()) and tipo_vinculo = 'fixo'
+  ) then
+    raise exception 'Entregador não encontrado ou não é um vínculo fixo dessa loja.';
+  end if;
+
+  if p_periodicidade not in ('fim_de_turno', 'semanal', 'mensal', 'quinzenal') then
+    raise exception 'Periodicidade inválida: %', p_periodicidade;
+  end if;
+
+  update entregadores set
+    valor_fixo = p_valor_fixo,
+    periodicidade_pagamento_fixo = p_periodicidade,
+    dia_semana_pagamento_fixo = p_dia_semana,
+    dia_mes_pagamento_fixo_1 = p_dia_mes_1,
+    dia_mes_pagamento_fixo_2 = p_dia_mes_2,
+    usar_quinto_dia_util_fixo = p_usar_quinto_dia_util
+  where id = p_entregador_id;
 end;
 $$;

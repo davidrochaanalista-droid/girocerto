@@ -39,6 +39,7 @@ const { Client } = require('pg');
 const { createClient } = require('@supabase/supabase-js');
 const express = require('express');
 const firebaseAdmin = require('firebase-admin');
+const { verificarRepassesAutomaticos } = require('./pagamentos');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -821,6 +822,17 @@ async function main() {
 
   await expurgarLocalizacoesAntigas();
   setInterval(expurgarLocalizacoesAntigas, 24 * 60 * 60 * 1000);
+
+  // item 109-111 (05/09/2026): repasse automático de Pix — freelance
+  // (quarta 11h+) e fixo (data configurada por cada loja, ver
+  // hoje_e_dia_pagamento_fixo() no schema). Idempotente por construção
+  // (a seleção em si só devolve quem ainda está pendente — ver
+  // dispatch-engine/pagamentos.js), então rodar de novo a cada 5min ou
+  // depois de um restart no meio da janela é seguro, não duplica.
+  verificarRepassesAutomaticos(admin).catch((e) => console.error('[pagamentos] falha na checagem inicial:', e.message));
+  setInterval(() => {
+    verificarRepassesAutomaticos(admin).catch((e) => console.error('[pagamentos] falha na checagem periódica:', e.message));
+  }, 5 * 60 * 1000);
 
   // rede de segurança final (ver despacharPedidosOrfaos): cobre qualquer
   // NOTIFY perdido que a checagem pós-reconexão não pegou (ex: reconexão
