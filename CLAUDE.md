@@ -5009,6 +5009,24 @@ nenhum teste automatizado cobria:**
   de esquecer o `security definer` numa função nova (como aconteceu
   aqui) — vale revisão pontual por outros triggers na mesma situação.
 
+**Item 115 (06/09/2026, pedido direto do usuário, a partir de um mockup
+ilustrativo em Downloads/tela-feirante-mockup.html) — menu inferior no
+painel do feirante:** a tela de Pedidos já batia quase 100% com o
+mockup (mesmas classes/copy, herdadas do item 41) — a única diferença
+real era a falta do menu inferior Pedidos/Vendas/Perfil (só Pedidos
+existia). Construído:
+- **Vendas**: agrega `pedido.valor_produtos` (venda da própria banca —
+  taxa de entrega fica de fora de propósito, não é receita do feirante)
+  em 3 janelas (hoje/7 dias/30 dias) + lista das últimas vendas. Mesmo
+  padrão client-side de `carregarRelatorios()` em painel-loja.html.
+- **Perfil**: edita nome/telefone/chave Pix da própria linha em
+  `estabelecimentos` — policy `"feirante ve e edita seu estabelecimento"`
+  (`for all`) já cobria, sem RPC nova.
+- Testado ao vivo com conta descartável (2 pedidos pagos, R$10+R$20):
+  Vendas somou R$30 certo nas 3 janelas, Perfil salvou e persistiu de
+  verdade, navegação entre as 3 views funcionando. Sem mudança de banco
+  nesta rodada — só `painel-feirante.html`.
+
 ## Pendências reais no momento
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
       valia pro Railway** (achado no item 75, 02/09/2026): ficou **9

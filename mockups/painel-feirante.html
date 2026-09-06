@@ -85,6 +85,43 @@
 
   .vazio{text-align:center;color:var(--sage);font-size:13.5px;padding:30px 0;}
   .msg-erro{background:var(--error-soft);color:var(--error);border-radius:10px;padding:11px 13px;font-size:13px;margin-bottom:14px;}
+  .msg-ok-inline{background:rgba(59,91,63,.1);color:var(--leaf);border-radius:10px;padding:11px 13px;font-size:13px;margin-bottom:14px;}
+
+  /* item 115 (06/09/2026, pedido direto do usuário, a partir do mockup
+  ilustrativo tela-feirante-mockup.html): menu inferior Pedidos/Vendas/
+  Perfil — a tela só tinha Pedidos até aqui. position:fixed (não
+  absolute) porque essa é uma página real, não o frame de telefone do
+  mockup. */
+  .view{display:none;}
+  .view.ativa{display:block;}
+  .corpo{padding-bottom:90px;}
+  .nav-inferior{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--border);padding:12px 24px calc(14px + env(safe-area-inset-bottom));display:flex;justify-content:space-around;z-index:20;}
+  .nav-item{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px;color:var(--sage);font-weight:600;background:none;border:none;cursor:pointer;font-family:'Inter',sans-serif;padding:4px 10px;}
+  .nav-item.ativo{color:var(--leaf);}
+  .nav-dot{width:5px;height:5px;border-radius:50%;background:currentColor;opacity:0;}
+  .nav-item.ativo .nav-dot{opacity:1;}
+
+  /* Vendas */
+  .stats-vendas{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px;}
+  .stat-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px 16px;}
+  .stat-card.full{grid-column:1 / -1;background:var(--ink);}
+  .stat-card.full .stat-label{color:rgba(237,231,217,.6);}
+  .stat-card.full .stat-valor{color:var(--marigold);}
+  .stat-label{font-size:11px;color:var(--sage);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;}
+  .stat-valor{font-family:'Fraunces',serif;font-weight:700;font-size:22px;color:var(--ink);}
+  .venda-row{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--border);font-size:13.5px;}
+  .venda-row:last-child{border-bottom:none;}
+  .venda-row .venda-cliente{font-weight:600;}
+  .venda-row .venda-data{color:var(--sage);font-size:11.5px;}
+  .venda-row .venda-valor{font-family:'Space Mono',monospace;font-weight:700;color:var(--leaf);}
+
+  /* Perfil */
+  .perfil-field{margin-bottom:14px;}
+  .perfil-field label{display:block;font-size:12px;font-weight:600;color:var(--sage);margin-bottom:5px;}
+  .perfil-field input{width:100%;padding:12px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14.5px;font-family:'Inter',sans-serif;background:var(--card);}
+  .perfil-field input:focus{outline:none;border-color:var(--marigold);}
+  .perfil-feira-atual{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:18px;font-size:13.5px;}
+  .perfil-feira-atual .rotulo-secao{margin-bottom:4px;}
 
   /* item 89: "Novo pedido" + "Meus produtos" — primeiro uso de modal
   neste arquivo, mesmo padrão visual (overlay/modal-card) já usado nos
@@ -212,13 +249,55 @@
   </div>
 
   <div class="corpo">
-    <div id="msgErro" class="msg-erro" style="display:none;"></div>
+    <!-- item 115 (06/09/2026): 3 views agora (Pedidos/Vendas/Perfil),
+    trocadas pelo menu inferior — ver trocarView(). -->
+    <div id="view-pedidos" class="view ativa">
+      <div id="msgErro" class="msg-erro" style="display:none;"></div>
 
-    <div class="rotulo-secao">Confirmar recebimento — Pix</div>
-    <div id="boxConfirmar"></div>
+      <div class="rotulo-secao">Confirmar recebimento — Pix</div>
+      <div id="boxConfirmar"></div>
 
-    <div class="rotulo-secao" style="margin-top:22px;">Na fila (pagamento pendente)</div>
-    <div id="boxFila"></div>
+      <div class="rotulo-secao" style="margin-top:22px;">Na fila (pagamento pendente)</div>
+      <div id="boxFila"></div>
+    </div>
+
+    <div id="view-vendas" class="view">
+      <div class="stats-vendas">
+        <div class="stat-card">
+          <div class="stat-label">Hoje</div>
+          <div class="stat-valor" id="v_hoje">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">7 dias</div>
+          <div class="stat-valor" id="v_semana">—</div>
+        </div>
+        <div class="stat-card full">
+          <div class="stat-label">Total vendido (30 dias)</div>
+          <div class="stat-valor" id="v_mes">—</div>
+        </div>
+      </div>
+      <div class="rotulo-secao">Últimas vendas</div>
+      <div id="v_lista"><div class="vazio">Carregando…</div></div>
+    </div>
+
+    <div id="view-perfil" class="view">
+      <div class="perfil-feira-atual">
+        <div class="rotulo-secao">Sua feira</div>
+        <span id="pf_feiraNome">—</span>
+      </div>
+      <div id="pf_msg" class="msg-erro" style="display:none;"></div>
+      <div id="pf_msgOk" class="msg-ok-inline" style="display:none;"></div>
+      <div class="perfil-field"><label>Nome da banca</label><input type="text" id="pf_nome"></div>
+      <div class="perfil-field"><label>Telefone (WhatsApp)</label><input type="tel" id="pf_telefone"></div>
+      <div class="perfil-field"><label>Chave Pix</label><input type="text" id="pf_chavePix"></div>
+      <button class="btn-confirmar" onclick="salvarPerfil()">Salvar alterações</button>
+    </div>
+  </div>
+
+  <div class="nav-inferior">
+    <button class="nav-item ativo" id="nav_pedidos" onclick="trocarView('pedidos')"><span class="nav-dot"></span>Pedidos</button>
+    <button class="nav-item" id="nav_vendas" onclick="trocarView('vendas')"><span class="nav-dot"></span>Vendas</button>
+    <button class="nav-item" id="nav_perfil" onclick="trocarView('perfil')"><span class="nav-dot"></span>Perfil</button>
   </div>
 </div>
 
@@ -287,6 +366,7 @@ const SUPABASE_ANON_KEY = 'sb_publishable_2f1de7VdoaxdWnGHHZenGQ_3ROsSDSi';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 let estabelecimentoId = null;
+let estabelecimentoAtual = null; // item 115
 
 async function login(){
   const email = document.getElementById('loginEmail').value;
@@ -458,7 +538,7 @@ async function iniciarApp(){
 
   const { data: estabelecimento, error } = await supabaseClient
     .from('estabelecimentos')
-    .select('id, nome, tipo_negocio')
+    .select('id, nome, tipo_negocio, telefone, chave_pix')
     .eq('auth_user_id', user.id)
     .eq('tipo_negocio', 'feirante')
     .single();
@@ -469,6 +549,7 @@ async function iniciarApp(){
   }
 
   estabelecimentoId = estabelecimento.id;
+  estabelecimentoAtual = estabelecimento; // item 115 — usado pra pré-preencher a view Perfil sem re-consultar
 
   // achado ao vivo (25/08/2026): "feira" mostrada no cabeçalho vem da
   // participação mais recente do feirante (feirante_participacao ->
@@ -558,6 +639,119 @@ async function carregarPedidos(){
   boxFila.querySelectorAll('button[data-pedido-id]').forEach(btn => {
     btn.addEventListener('click', () => confirmarPagamento(btn.dataset.pedidoId));
   });
+}
+
+// ------------------------------------------------------------
+// item 115 (06/09/2026, pedido direto do usuário a partir do mockup
+// ilustrativo tela-feirante-mockup.html): menu inferior Pedidos/Vendas/
+// Perfil — só existia Pedidos até aqui.
+// ------------------------------------------------------------
+function trocarView(nome){
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('ativa'));
+  document.getElementById('view-' + nome).classList.add('ativa');
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('ativo'));
+  document.getElementById('nav_' + nome).classList.add('ativo');
+
+  if(nome === 'vendas') carregarVendas();
+  if(nome === 'perfil') carregarPerfil();
+}
+
+// Vendas: soma valor_produtos (venda da PRÓPRIA banca — a taxa de
+// entrega não é receita do feirante, fica de fora de propósito) dos
+// pedidos com pagamento confirmado. Mesmo padrão de carregarRelatorios()
+// em painel-loja.html (agregação client-side sobre uma janela de dias).
+async function carregarVendas(){
+  const lista = document.getElementById('v_lista');
+  const trintaDiasAtras = new Date();
+  trintaDiasAtras.setDate(trintaDiasAtras.getDate() - 30);
+  trintaDiasAtras.setHours(0, 0, 0, 0);
+
+  const { data: pedidos, error } = await supabaseClient
+    .from('pedido')
+    .select('valor_produtos, created_at, pedido_grupo:pedido_grupo_id(consumidor:consumidor_id(nome))')
+    .eq('estabelecimento_id', estabelecimentoId)
+    .eq('status_pagamento', 'confirmado')
+    .gte('created_at', trintaDiasAtras.toISOString())
+    .order('created_at', { ascending: false });
+
+  if(error){
+    lista.innerHTML = '<p class="vazio">Não deu pra carregar as vendas.</p>';
+    return;
+  }
+
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const seteDiasAtras = new Date(); seteDiasAtras.setDate(seteDiasAtras.getDate() - 7); seteDiasAtras.setHours(0, 0, 0, 0);
+
+  let totalHoje = 0, totalSemana = 0, totalMes = 0;
+  (pedidos || []).forEach(p => {
+    const criado = new Date(p.created_at);
+    const valor = Number(p.valor_produtos || 0);
+    totalMes += valor;
+    if(criado >= seteDiasAtras) totalSemana += valor;
+    if(criado >= hoje) totalHoje += valor;
+  });
+
+  document.getElementById('v_hoje').textContent = formatarReal(totalHoje);
+  document.getElementById('v_semana').textContent = formatarReal(totalSemana);
+  document.getElementById('v_mes').textContent = formatarReal(totalMes);
+
+  lista.innerHTML = (pedidos || []).length
+    ? pedidos.slice(0, 20).map(p => `
+        <div class="venda-row">
+          <div>
+            <div class="venda-cliente">${escapeHtml(p.pedido_grupo?.consumidor?.nome || 'Cliente')}</div>
+            <div class="venda-data">${new Date(p.created_at).toLocaleDateString('pt-BR')}</div>
+          </div>
+          <div class="venda-valor">${formatarReal(p.valor_produtos)}</div>
+        </div>
+      `).join('')
+    : '<p class="vazio">Nenhuma venda nos últimos 30 dias.</p>';
+}
+
+// Perfil: nome/telefone/chave Pix são da PRÓPRIA linha em
+// estabelecimentos — policy "feirante ve e edita seu estabelecimento"
+// (for all) já cobre update direto, sem RPC nova.
+function carregarPerfil(){
+  document.getElementById('pf_feiraNome').textContent = document.getElementById('t_feiraNome').textContent;
+  document.getElementById('pf_nome').value = estabelecimentoAtual?.nome || '';
+  document.getElementById('pf_telefone').value = estabelecimentoAtual?.telefone || '';
+  document.getElementById('pf_chavePix').value = estabelecimentoAtual?.chave_pix || '';
+  document.getElementById('pf_msg').style.display = 'none';
+  document.getElementById('pf_msgOk').style.display = 'none';
+}
+
+async function salvarPerfil(){
+  const msg = document.getElementById('pf_msg');
+  const msgOk = document.getElementById('pf_msgOk');
+  msg.style.display = 'none';
+  msgOk.style.display = 'none';
+
+  const nome = document.getElementById('pf_nome').value.trim();
+  const telefone = document.getElementById('pf_telefone').value.trim();
+  const chavePix = document.getElementById('pf_chavePix').value.trim();
+
+  if(!nome){
+    msg.textContent = 'O nome da banca não pode ficar vazio.';
+    msg.style.display = 'block';
+    return;
+  }
+
+  const { error } = await supabaseClient
+    .from('estabelecimentos')
+    .update({ nome, telefone, chave_pix: chavePix })
+    .eq('id', estabelecimentoId);
+
+  if(error){
+    msg.textContent = 'Não deu pra salvar: ' + error.message;
+    msg.style.display = 'block';
+    return;
+  }
+
+  estabelecimentoAtual = { ...estabelecimentoAtual, nome, telefone, chave_pix: chavePix };
+  document.getElementById('t_bancaNome').textContent = nome;
+  document.getElementById('t_avatar').textContent = nome.split(' ').map(w => w[0]).slice(0,2).join('').toUpperCase();
+  msgOk.textContent = 'Salvo com sucesso.';
+  msgOk.style.display = 'block';
 }
 
 function renderCardPago(p){
