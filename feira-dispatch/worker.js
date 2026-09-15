@@ -18,6 +18,7 @@
 // dado de teste via estabelecimentos.is_teste).
 
 require('dotenv').config();
+const crypto = require('crypto');
 const { Client } = require('pg');
 const { createClient } = require('@supabase/supabase-js');
 const express = require('express');
@@ -213,6 +214,19 @@ async function iniciarListener() {
   console.log('[listener-feira] conectado — escutando pedido_grupo_pronto e pedido_grupo_cancelado_em_rota');
 }
 
+// Rota /admin/hub-metricas (ver main(), abaixo) é chamada pelo backend do
+// hub OmniFlow Studio, nunca por um usuário logado -- autenticada por
+// segredo compartilhado (header X-Hub-Key) em vez de JWT, mesmo padrão já
+// usado no dispatch-engine e no SalonOS.
+function verificarChaveHub(chave) {
+  if (!chave || !process.env.HUB_METRICS_KEY) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(chave), Buffer.from(process.env.HUB_METRICS_KEY));
+  } catch {
+    return false; // tamanhos diferentes -- claramente não bate
+  }
+}
+
 async function main() {
   await despacharGruposOrfaos();
   await iniciarListener();
@@ -250,6 +264,28 @@ async function main() {
 
   const app = express();
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+  app.get('/admin/hub-metricas', async (req, res) => {
+    if (!verificarChaveHub(req.headers['x-hub-key'])) return res.sendStatus(401);
+
+    const [
+      { count: rotasEmAndamento, error: errRotas },
+      { count: paradasPendentes, error: errParadas },
+      { count: flagsRevisaoPendentes, error: errFlags },
+    ] = await Promise.all([
+      supabase.from('entrega_rota').select('id', { count: 'exact', head: true }).in('status', ['em_montagem', 'em_rota']),
+      supabase.from('rota_parada').select('id', { count: 'exact', head: true }).eq('status', 'pendente'),
+      supabase.from('entregador_flag_revisao').select('id', { count: 'exact', head: true }).eq('status', 'aguardando_revisao'),
+    ]);
+    const erro = errRotas || errParadas || errFlags;
+    if (erro) return res.status(500).json({ erro: erro.message });
+
+    res.json({
+      rotas_em_andamento: rotasEmAndamento ?? 0,
+      paradas_pendentes: paradasPendentes ?? 0,
+      flags_revisao_pendentes: flagsRevisaoPendentes ?? 0,
+    });
+  });
 
   // Mesmo princípio do dispatch-engine (ver comentário lá): NOTIFY nunca
   // dispara pra estabelecimento de teste, então um teste que sobe este

@@ -35,6 +35,7 @@
 // aceitável; documentado, não escondido.
 
 require('dotenv').config();
+const crypto = require('crypto');
 const { Client } = require('pg');
 const { createClient } = require('@supabase/supabase-js');
 const express = require('express');
@@ -816,6 +817,19 @@ async function expurgarLocalizacoesAntigas() {
   console.log(`[expurgo] localizacoes_entregador: ${count ?? 0} linha(s) com mais de ${DIAS_RETENCAO_LOCALIZACAO} dias apagada(s).`);
 }
 
+// Rota /admin/hub-metricas (ver main(), abaixo) é chamada pelo backend do
+// hub OmniFlow Studio, nunca por um usuário logado -- autenticada por
+// segredo compartilhado (header X-Hub-Key) em vez de JWT, mesmo padrão já
+// usado no SalonOS (src/routes/hub-metricas.js).
+function verificarChaveHub(chave) {
+  if (!chave || !process.env.HUB_METRICS_KEY) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(chave), Buffer.from(process.env.HUB_METRICS_KEY));
+  } catch {
+    return false; // tamanhos diferentes -- claramente não bate
+  }
+}
+
 async function main() {
   await reconciliarNaSubida();
   await iniciarListener();
@@ -844,6 +858,28 @@ async function main() {
 
   const app = express();
   app.get('/health', (req, res) => res.json({ status: 'ok', tentadosPorRota: tentadosPorRota.size, timersAtivos: timersPorRota.size }));
+
+  app.get('/admin/hub-metricas', async (req, res) => {
+    if (!verificarChaveHub(req.headers['x-hub-key'])) return res.sendStatus(401);
+
+    const [
+      { count: pedidosEmDespacho, error: errPedidos },
+      { count: rotasAtivas, error: errRotas },
+      { count: entregadoresDisponiveis, error: errEntregadores },
+    ] = await Promise.all([
+      admin.from('pedidos').select('id', { count: 'exact', head: true }).eq('status', 'pronto').is('rota_id', null),
+      admin.from('rotas_entrega').select('id', { count: 'exact', head: true }).eq('status', 'planejada'),
+      admin.from('pessoas_entregadoras').select('id', { count: 'exact', head: true }).eq('status', 'disponivel'),
+    ]);
+    const erro = errPedidos || errRotas || errEntregadores;
+    if (erro) return res.status(500).json({ erro: erro.message });
+
+    res.json({
+      pedidos_em_despacho: pedidosEmDespacho ?? 0,
+      rotas_ativas: rotasAtivas ?? 0,
+      entregadores_disponiveis: entregadoresDisponiveis ?? 0,
+    });
+  });
 
   // item 118 (06/09/2026): webhook da Asaas — confirma depósito na
   // subconta da loja ANTES do motor de repasse liberar pagamento pra
