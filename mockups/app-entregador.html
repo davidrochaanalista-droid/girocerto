@@ -522,6 +522,7 @@ complementar). -->
           <a class="util-btn util-btn-texto" href="tel:192">🚑 192</a>
           <span class="util-sep"></span>
           <button class="util-btn" onclick="abrirSaque()" title="Saque">💰</button>
+          <button class="util-btn" onclick="abrirVagas()" title="Vagas de entregador">🧰</button>
           <button class="util-btn" onclick="abrirViewMfa()" title="Verificação em duas etapas">🔒</button>
           <button class="util-btn" onclick="deslogar()" title="Sair">🚪</button>
         </div>
@@ -658,6 +659,20 @@ complementar). -->
 
     <p style="font-weight:700;font-size:13.5px;margin-bottom:10px;">Últimas entregas</p>
     <div id="sq_lista"><div class="empty">Carregando…</div></div>
+  </div>
+
+  <!-- ===================== VIEW: VAGAS DE ENTREGADOR (item 119, 18/09/2026, pedido direto do usuário) =====================
+  Loja publica vaga de vínculo fixo (local, dia da semana, período,
+  diária, taxa opcional) em painel-loja.html; qualquer entregador
+  logado vê aqui, de qualquer loja, e pode aceitar. Aceitar já cria o
+  vínculo fixo na hora, sem passo nenhum a mais (ver
+  aceitar_vaga_entregador() no schema). -->
+  <div class="view" id="view-vagas">
+    <button class="link-btn" onclick="mostrar('view-turno')" style="margin-bottom:14px;">← Voltar</button>
+    <h2 style="margin-bottom:4px;">Vagas de entregador</h2>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 18px;">Vagas de vínculo fixo publicadas por lojas. Ao aceitar, você já vira fixo pra esse dia e período.</p>
+    <div id="vg_msg" class="msg"></div>
+    <div id="vg_lista"><div class="empty">Carregando…</div></div>
   </div>
 
   <!-- ===================== VIEW: PROBLEMA COM O VEÍCULO (item 51) =====================
@@ -4100,6 +4115,81 @@ async function carregarSaque(){
       </div>
     </div>
   `).join('');
+}
+
+// ------------------------------------------------------------
+// item 119 (18/09/2026, pedido direto do usuário): vagas de vínculo fixo
+// publicadas por qualquer loja — RLS ("entregador ve vagas abertas de
+// qualquer loja") já devolve só as abertas (ou a própria, se já
+// preenchida por essa pessoa), sem filtro nenhum de tenant aqui. Aceitar
+// chama aceitar_vaga_entregador() (RPC), que resolve tudo (cria/atualiza
+// o vínculo, vira fixo, registra o turno) a partir de auth.uid() — não
+// depende do TENANT_ID/entregadorId da sessão atual, funciona mesmo pra
+// uma loja onde a pessoa nunca trabalhou antes.
+// ------------------------------------------------------------
+const DIAS_SEMANA_LABEL_VAGA = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+const PERIODO_LABEL_VAGA = { manha: 'Manhã', tarde: 'Tarde', noite: 'Noite' };
+
+async function abrirVagas(){
+  mostrar('view-vagas');
+  await carregarVagasDisponiveis();
+}
+
+async function carregarVagasDisponiveis(){
+  const lista = document.getElementById('vg_lista');
+  const msg = document.getElementById('vg_msg');
+  msg.className = 'msg';
+  msg.textContent = '';
+  lista.innerHTML = '<div class="empty">Carregando…</div>';
+
+  const { data, error } = await supabaseClient
+    .from('vagas_entregador')
+    .select('id, local, dia_semana, periodo, horario_inicio, horario_fim, valor_diaria, taxa_entrega, observacoes, status')
+    .eq('status', 'aberta')
+    .order('criada_em', { ascending: false });
+
+  if(error){
+    lista.innerHTML = '';
+    msg.textContent = 'Não deu pra carregar as vagas: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+
+  if(!data || !data.length){
+    lista.innerHTML = '<div class="empty">Nenhuma vaga aberta no momento.</div>';
+    return;
+  }
+
+  lista.innerHTML = data.map(v => {
+    const horario = (v.horario_inicio || v.horario_fim) ? ` (${(v.horario_inicio || '').slice(0,5)}${v.horario_fim ? ' às ' + v.horario_fim.slice(0,5) : ''})` : '';
+    const taxa = v.taxa_entrega ? ` + ${formatarReal(Number(v.taxa_entrega))} por entrega` : '';
+    return `
+      <div class="stop-card" style="margin-bottom:10px;">
+        <div style="font-weight:700;margin-bottom:2px;">${DIAS_SEMANA_LABEL_VAGA[v.dia_semana]} — ${PERIODO_LABEL_VAGA[v.periodo]}${horario}</div>
+        <div style="font-size:13px;color:var(--gray);margin-bottom:6px;">${escapeHtml(v.local)}</div>
+        <div style="font-weight:700;margin-bottom:${v.observacoes ? '4px' : '10px'};">${formatarReal(Number(v.valor_diaria))} / diária${taxa}</div>
+        ${v.observacoes ? `<div style="font-size:12.5px;color:var(--gray);margin-bottom:10px;">${escapeHtml(v.observacoes)}</div>` : ''}
+        <button class="btn-primary" onclick="aceitarVaga('${v.id}')" style="margin:0;">Aceitar vaga</button>
+      </div>
+    `;
+  }).join('');
+}
+
+async function aceitarVaga(vagaId){
+  const msg = document.getElementById('vg_msg');
+  msg.className = 'msg';
+  msg.textContent = '';
+
+  const { error } = await supabaseClient.rpc('aceitar_vaga_entregador', { p_vaga_id: vagaId });
+  if(error){
+    msg.textContent = 'Não deu pra aceitar essa vaga: ' + error.message;
+    msg.className = 'msg error';
+    return;
+  }
+
+  msg.textContent = 'Vaga aceita! Você já está fixo pra esse dia e período.';
+  msg.className = 'msg success';
+  await carregarVagasDisponiveis();
 }
 
 async function solicitarSaque(){

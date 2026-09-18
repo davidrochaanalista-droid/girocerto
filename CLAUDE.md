@@ -5168,7 +5168,93 @@ arquitetura de Subcontas Asaas + alocação por orçamento + acerto manual:**
   ainda (arquitetura pronta, mas depende do usuário abrir a subconta
   na Asaas pra cada loja piloto — ver pendência atualizada abaixo).
 
+**Item 119 (18/09/2026, pedido direto do usuário) — INCIDENTE real achado
++ vagas de entregador:**
+
+- **Incidente real achado (não relacionado ao pedido original)**: ao
+  retomar a sessão, o projeto Railway inteiro (`girocerto-dispatch-engine`,
+  `girocerto-feira-dispatch`, `girocerto-osrm`) estava **Offline** —
+  `railway list` nem sequer mostrava o projeto na conta
+  `davidrocha.coitinho@gmail.com` (conta usada nessa sessão pra outro
+  projeto). Investigação: o projeto está numa conta Railway DIFERENTE
+  (`davidrochaanalista-droid`, mesma família de conta já usada no GitHub
+  do GiroCerto/Escudo da Vida — ver memória `multi_conta_github_gotcha`).
+  Depois de logar na conta certa (`railway login --browserless`), `railway
+  up -c` em `dispatch-engine/` devolveu **"Your trial has expired. Please
+  select a plan to continue using Railway."** — não é bug, não é
+  `railway down` esquecido: **o trial gratuito do Railway expirou**, e
+  isso derrubou os 3 serviços de uma vez. Baseado no último deploy real
+  (item 118, 06/09) e na idade dos deploys do Vercel (12 dias), o motor
+  de despacho real (restaurante + feira) ficou **fora do ar por ~12 dias
+  sem ninguém perceber** — incidente MAIOR que o de 33h já documentado
+  abaixo. **Ação pendente do usuário**: adicionar forma de pagamento e
+  mudar pro plano Hobby (ou superior) em
+  `https://railway.com/project/014bc898-408b-4e38-9b92-0137b7b605a2`
+  (conta `davidrocha.analista@gmail.com`), depois disso rodar `railway up
+  -c` nos 2 serviços reais (osrm fica pra depois, já estava pausado por
+  decisão anterior — ver pendência de OSRM). **Decisão do usuário**:
+  depois de resolver o trial, transferir o projeto inteiro pra
+  `davidrocha.coitinho@gmail.com` (unificar conta) — transferência de
+  projeto só existe pelo painel web do Railway, não tem comando no CLI;
+  fica pendente pro usuário fazer.
+
+- **Vagas de entregador (pedido direto do usuário)**: loja publica vaga
+  de vínculo fixo (local, dia da semana, período, diária, taxa por
+  entrega opcional) em `painel-loja.html` (aba Entregadores → novo card
+  "Publicar vaga de entregador" + "Vagas publicadas", com botão
+  Cancelar pra vaga ainda aberta). Qualquer entregador logado vê no
+  `app-entregador.html` (novo botão 🧰 na barra de utilidades da tela
+  de turno → tela "Vagas de entregador") vagas abertas de QUALQUER
+  loja, mesmo sem nenhum vínculo prévio com ela, e pode aceitar.
+  - **Schema novo** (`vagas_entregador`, `entregador_turno_fixo`):
+    turno fixo vive em tabela própria, não em colunas soltas de
+    `entregadores` (que já é 1 linha por pessoa+loja) — um entregador
+    pode acumular vários turnos fixos, inclusive em lojas diferentes ou
+    na mesma loja em dias/períodos diferentes. Índice único parcial
+    impede 2 turnos ativos no mesmo dia+período (não dá pra estar fixo
+    em 2 lugares ao mesmo tempo, mesmo em lojas diferentes).
+  - **`aceitar_vaga_entregador(p_vaga_id)`** (RPC, security definer):
+    espelha `solicitar_vinculo_loja()` pra achar/criar o vínculo
+    `entregadores` a partir de `auth.uid()`, mas força `tipo_vinculo =
+    'fixo'` (aceitar vaga é compromisso mais forte que freelance solto,
+    mesmo que a pessoa já fosse freelance dessa loja antes) e grava o
+    diária/turno. Lock (`for update`) na vaga evita 2 entregadores
+    aceitando a mesma ao mesmo tempo; recusa se já não estiver
+    `'aberta'`, ou se o entregador já tiver turno ativo colidindo no
+    mesmo dia+período (em qualquer loja).
+  - **RLS**: loja só gerencia vagas do próprio tenant
+    (`minhas_tenant_ids_dono()`); entregador vê vagas abertas de
+    QUALQUER loja + a própria se já preenchida por ele; turno fixo:
+    entregador vê o seu, loja vê o dos entregadores vinculados a ela.
+  - **Testado**: `tests/vagas_entregador.test.js` novo, 14/14 — loja
+    publica (RLS bloqueia outra loja), entregador sem vínculo nenhum
+    aceita do zero (cria vínculo fixo + turno), vaga preenchida não
+    aceita de novo, colisão de turno no mesmo dia/período é bloqueada,
+    RLS do turno fixo (entregador/loja/terceiro). Migração aplicada
+    direto no banco hospedado via `pg.Client` (mesmo banco de sempre,
+    sem staging) antes de rodar o teste — aditiva só (`create table if
+    not exists`, `create or replace function`), sem risco pro que já
+    existia.
+  - Não testado ainda no navegador de verdade (só via `tests/`) — ver
+    Ordem sugerida.
+
 ## Pendências reais no momento
+- [ ] **URGENTE: trial do Railway expirou, motor de despacho real fora
+      do ar (item 119, 18/09/2026)** — os 3 serviços
+      (`dispatch-engine`/`feira-dispatch`/`osrm`) estão Offline há ~12
+      dias. Ação do usuário: adicionar forma de pagamento e trocar pro
+      plano Hobby em
+      `https://railway.com/project/014bc898-408b-4e38-9b92-0137b7b605a2`
+      (conta `davidrocha.analista@gmail.com`), depois pedir pra rodar
+      `railway up -c` nos 2 serviços reais. Depois disso, **transferir
+      o projeto inteiro pra `davidrocha.coitinho@gmail.com`** (decisão
+      do usuário, unificar conta) — só pelo painel web, sem comando de
+      CLI pra isso.
+- [ ] **Vagas de entregador (item 119) não testado no navegador ainda**
+      — só via `tests/vagas_entregador.test.js` (14/14). Testar de
+      verdade em `painel-loja.html` (publicar/cancelar vaga) e
+      `app-entregador.html` (ver/aceitar vaga de uma loja sem vínculo
+      nenhum) assim que o motor voltar ao ar.
 - [ ] **Vercel não faz deploy automático — convenção nova, igual já
       valia pro Railway** (achado no item 75, 02/09/2026): ficou **9
       dias sem publicar nada**, mesmo com vários `git push` no meio.

@@ -331,6 +331,46 @@
         </p>
         <div id="listaEntregadoresBox"><div class="empty">Carregando…</div></div>
       </div>
+
+      <!-- item 119 (18/09/2026, pedido direto do usuário): loja publica
+      vaga de vínculo fixo (local, dia da semana, período, diária, taxa
+      opcional); qualquer entregador vê no app e pode aceitar — aceitar já
+      cria o vínculo fixo na hora (ver aceitar_vaga_entregador() no
+      schema), a loja só acompanha o resultado aqui. -->
+      <div class="card" style="margin-top:18px;">
+        <div class="card-title" style="margin-bottom:8px;">Publicar vaga de entregador</div>
+        <p style="color:var(--gray);font-size:13px;margin:0 0 10px;">
+          Publique uma vaga de vínculo fixo — qualquer entregador cadastrado no app vê e pode aceitar. Ao aceitar, ele já vira fixo pra esse dia e período.
+        </p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+          <input type="text" id="vagaLocal" placeholder="Local (ex: retirada na loja)" style="grid-column:1 / -1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+          <select id="vagaDiaSemana" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+            <option value="1">Segunda-feira</option>
+            <option value="2">Terça-feira</option>
+            <option value="3">Quarta-feira</option>
+            <option value="4">Quinta-feira</option>
+            <option value="5">Sexta-feira</option>
+            <option value="6">Sábado</option>
+            <option value="0">Domingo</option>
+          </select>
+          <select id="vagaPeriodo" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+            <option value="manha">Manhã</option>
+            <option value="tarde">Tarde</option>
+            <option value="noite">Noite</option>
+          </select>
+          <input type="time" id="vagaHorarioInicio" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+          <input type="time" id="vagaHorarioFim" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+          <input type="number" id="vagaValorDiaria" placeholder="Diária (R$)" min="0" step="0.01" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+          <input type="number" id="vagaTaxaEntrega" placeholder="Taxa por entrega, R$ (opcional)" min="0" step="0.01" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+          <textarea id="vagaObservacoes" placeholder="Observações (opcional)" style="grid-column:1 / -1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;min-height:50px;"></textarea>
+        </div>
+        <button class="action-btn" onclick="publicarVaga()">Publicar vaga</button>
+      </div>
+
+      <div class="card" style="margin-top:18px;">
+        <div class="card-title" style="margin-bottom:8px;">Vagas publicadas</div>
+        <div id="listaVagasBox"><div class="empty">Carregando…</div></div>
+      </div>
     </div>
     <div class="main mainview" id="mv-relatorios" style="display:none;">
       <h1>Relatórios</h1>
@@ -870,6 +910,7 @@ function abrirEntregadores(){
   carregarListaEntregadores();
   carregarSaldoDevedor();
   carregarPagamentosFixosPendentes();
+  carregarVagasPublicadas();
 }
 
 async function carregarSolicitacoesSaque(){
@@ -996,6 +1037,90 @@ async function marcarPagamentoFixoManualNaLoja(pagamentoId){
   if(error){ alert('Não deu pra marcar como pago: ' + error.message); return; }
   carregarSaldoDevedor();
   carregarPagamentosFixosPendentes();
+}
+
+// ------------------------------------------------------------
+// item 119 (18/09/2026, pedido direto do usuário): loja publica vaga de
+// vínculo fixo; entregador vê no app e aceita (ver aceitar_vaga_entregador()
+// no schema) — a loja só publica e acompanha o status aqui, o resto é
+// automático.
+// ------------------------------------------------------------
+const DIAS_SEMANA_LABEL = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+const PERIODO_LABEL = { manha: 'Manhã', tarde: 'Tarde', noite: 'Noite' };
+const STATUS_VAGA_LABEL = { aberta: 'Aberta', preenchida: 'Preenchida', cancelada: 'Cancelada' };
+
+async function publicarVaga(){
+  const local = document.getElementById('vagaLocal').value.trim();
+  const diaSemana = Number(document.getElementById('vagaDiaSemana').value);
+  const periodo = document.getElementById('vagaPeriodo').value;
+  const horarioInicio = document.getElementById('vagaHorarioInicio').value || null;
+  const horarioFim = document.getElementById('vagaHorarioFim').value || null;
+  const valorDiaria = Number(document.getElementById('vagaValorDiaria').value);
+  const taxaEntregaRaw = document.getElementById('vagaTaxaEntrega').value;
+  const taxaEntrega = taxaEntregaRaw ? Number(taxaEntregaRaw) : null;
+  const observacoes = document.getElementById('vagaObservacoes').value.trim() || null;
+
+  if(!local){ alert('Informe o local.'); return; }
+  if(!valorDiaria || valorDiaria <= 0){ alert('Informe o valor da diária.'); return; }
+
+  const { error } = await supabaseClient.from('vagas_entregador').insert({
+    tenant_id: tenantId, local, dia_semana: diaSemana, periodo,
+    horario_inicio: horarioInicio, horario_fim: horarioFim,
+    valor_diaria: valorDiaria, taxa_entrega: taxaEntrega, observacoes,
+  });
+  if(error){ alert('Não deu pra publicar a vaga: ' + error.message); return; }
+
+  document.getElementById('vagaLocal').value = '';
+  document.getElementById('vagaHorarioInicio').value = '';
+  document.getElementById('vagaHorarioFim').value = '';
+  document.getElementById('vagaValorDiaria').value = '';
+  document.getElementById('vagaTaxaEntrega').value = '';
+  document.getElementById('vagaObservacoes').value = '';
+  carregarVagasPublicadas();
+}
+
+async function carregarVagasPublicadas(){
+  const box = document.getElementById('listaVagasBox');
+  box.innerHTML = '<div class="empty">Carregando…</div>';
+
+  const { data, error } = await supabaseClient
+    .from('vagas_entregador')
+    .select('id, local, dia_semana, periodo, horario_inicio, horario_fim, valor_diaria, taxa_entrega, status, entregador_id, criada_em')
+    .eq('tenant_id', tenantId)
+    .order('criada_em', { ascending: false });
+  if(error){ box.innerHTML = '<div class="empty">Não deu pra carregar.</div>'; return; }
+  if(!data || !data.length){ box.innerHTML = '<div class="empty">Nenhuma vaga publicada ainda.</div>'; return; }
+
+  const idsPreenchidas = data.filter(v => v.entregador_id).map(v => v.entregador_id);
+  let nomesPorEntregador = {};
+  if(idsPreenchidas.length){
+    const { data: entregadoresPreenchidos } = await supabaseClient
+      .from('entregadores_completo')
+      .select('id, nome')
+      .in('id', idsPreenchidas);
+    (entregadoresPreenchidos || []).forEach(e => { nomesPorEntregador[e.id] = e.nome; });
+  }
+
+  box.innerHTML = data.map(v => {
+    const horario = (v.horario_inicio || v.horario_fim) ? ` (${(v.horario_inicio || '').slice(0,5)}${v.horario_fim ? ' às ' + v.horario_fim.slice(0,5) : ''})` : '';
+    const nomeEntregador = v.entregador_id ? (nomesPorEntregador[v.entregador_id] || 'Entregador') : null;
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);">
+        <div>
+          <div style="font-weight:700;font-size:13.5px;">${DIAS_SEMANA_LABEL[v.dia_semana]} — ${PERIODO_LABEL[v.periodo]}${horario} — R$ ${Number(v.valor_diaria).toFixed(2).replace('.', ',')}</div>
+          <div style="font-size:12px;color:var(--gray);">${escapeHtml(v.local)} · ${STATUS_VAGA_LABEL[v.status]}${nomeEntregador ? ' por ' + escapeHtml(nomeEntregador) : ''}</div>
+        </div>
+        ${v.status === 'aberta' ? `<button class="action-btn" onclick="cancelarVaga('${v.id}')">Cancelar</button>` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+async function cancelarVaga(vagaId){
+  if(!confirm('Cancelar essa vaga? Ela some da lista pro entregador.')) return;
+  const { error } = await supabaseClient.from('vagas_entregador').update({ status: 'cancelada' }).eq('id', vagaId).eq('status', 'aberta');
+  if(error){ alert('Não deu pra cancelar: ' + error.message); return; }
+  carregarVagasPublicadas();
 }
 
 // ------------------------------------------------------------

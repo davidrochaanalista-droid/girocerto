@@ -8316,3 +8316,136 @@ begin
 end;
 $$;
 revoke execute on function registrar_deposito_subconta(uuid, numeric, text) from public, authenticated, anon;
+
+-- ==============================================================
+-- ITEM 119 (18/09/2026) — VAGAS DE ENTREGADOR
+-- Loja publica vaga de vínculo fixo (local, dia da semana, período,
+-- diária, taxa por entrega opcional). Qualquer entregador logado pode
+-- ver vagas abertas de qualquer loja e aceitar -- mesmo princípio de
+-- solicitar_vinculo_loja() (cria o vínculo `entregadores` na hora se
+-- ainda não existir), só que força tipo_vinculo='fixo' (aceitar vaga é
+-- um compromisso mais forte que freelance solto, mesmo que ele já
+-- fosse freelance dessa loja antes).
+--
+-- Um entregador pode acumular vários turnos fixos -- inclusive em
+-- lojas diferentes, ou na mesma loja em dias/períodos diferentes --
+-- por isso o turno fixo vive em tabela própria
+-- (entregador_turno_fixo), não em colunas soltas de `entregadores`
+-- (que já é 1 linha por pessoa+loja, não dá pra guardar mais de um
+-- dia/período ali sem duplicar a linha inteira).
+-- ==============================================================
+
+create table if not exists vagas_entregador (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references tenants(id) on delete cascade,
+  local text not null,
+  dia_semana smallint not null check (dia_semana between 0 and 6), -- 0=domingo..6=sábado, mesmo padrão de dia_semana_pagamento_fixo
+  periodo text not null check (periodo in ('manha','tarde','noite')),
+  horario_inicio time,
+  horario_fim time,
+  valor_diaria numeric(10,2) not null check (valor_diaria >= 0),
+  taxa_entrega numeric(10,2) check (taxa_entrega is null or taxa_entrega >= 0), -- valor por entrega, além da diária -- opcional
+  observacoes text,
+  status text not null default 'aberta' check (status in ('aberta','preenchida','cancelada')),
+  entregador_id uuid references entregadores(id), -- preenchido quando alguém aceita
+  criada_em timestamptz not null default now(),
+  preenchida_em timestamptz
+);
+
+create index if not exists idx_vagas_entregador_tenant on vagas_entregador(tenant_id);
+create index if not exists idx_vagas_entregador_status on vagas_entregador(status) where status = 'aberta';
+
+create table if not exists entregador_turno_fixo (
+  id uuid primary key default gen_random_uuid(),
+  entregador_id uuid not null references entregadores(id) on delete cascade,
+  vaga_id uuid references vagas_entregador(id),
+  dia_semana smallint not null check (dia_semana between 0 and 6),
+  periodo text not null check (periodo in ('manha','tarde','noite')),
+  horario_inicio time,
+  horario_fim time,
+  valor_diaria numeric(10,2) not null,
+  taxa_entrega numeric(10,2),
+  ativo boolean not null default true,
+  criado_em timestamptz not null default now()
+);
+
+-- um entregador só pode ter 1 turno ATIVO por dia da semana + período
+-- (não dá pra estar fixo em 2 lugares ao mesmo tempo no mesmo turno,
+-- mesmo em lojas diferentes) -- índice parcial, permite reaproveitar o
+-- dia/período depois que um turno antigo for desativado.
+create unique index if not exists idx_turno_fixo_unico_ativo
+  on entregador_turno_fixo(entregador_id, dia_semana, periodo) where ativo;
+
+alter table vagas_entregador enable row level security;
+alter table entregador_turno_fixo enable row level security;
+
+create policy "loja gerencia vagas do seu tenant" on vagas_entregador for all using (
+  tenant_id in (select minhas_tenant_ids_dono())
+) with check (
+  tenant_id in (select minhas_tenant_ids_dono())
+);
+create policy "entregador ve vagas abertas de qualquer loja" on vagas_entregador for select using (
+  status = 'aberta' or entregador_id in (select id from entregadores where pessoa_id = minha_pessoa_id())
+);
+
+create policy "entregador ve seus proprios turnos fixos" on entregador_turno_fixo for select using (
+  entregador_id in (select id from entregadores where pessoa_id = minha_pessoa_id())
+);
+create policy "loja ve turnos fixos dos seus entregadores" on entregador_turno_fixo for select using (
+  entregador_id in (select id from entregadores where tenant_id in (select minhas_tenant_ids()))
+);
+
+-- entregador aceita uma vaga aberta: cria (ou reaproveita) o vínculo
+-- com a loja, vira fixo, e registra o turno específico (dia+período) --
+-- tudo atômico (lock na vaga evita 2 entregadores aceitando a mesma ao
+-- mesmo tempo).
+create or replace function aceitar_vaga_entregador(p_vaga_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_pessoa_id uuid;
+  v_vaga record;
+  v_entregador_id uuid;
+begin
+  select id into v_pessoa_id from pessoas_entregadoras where auth_user_id = auth.uid();
+  if v_pessoa_id is null then
+    raise exception 'nenhum cadastro de entregador encontrado pra este login' using errcode = '42501';
+  end if;
+
+  select * into v_vaga from vagas_entregador where id = p_vaga_id for update;
+  if v_vaga is null then
+    raise exception 'vaga não encontrada' using errcode = '02000';
+  end if;
+  if v_vaga.status <> 'aberta' then
+    raise exception 'essa vaga já não está mais aberta' using errcode = '22023';
+  end if;
+
+  select id into v_entregador_id from entregadores where pessoa_id = v_pessoa_id and tenant_id = v_vaga.tenant_id;
+  if v_entregador_id is null then
+    insert into entregadores (tenant_id, pessoa_id, tipo_vinculo, valor_fixo, periodicidade_fixo)
+    values (v_vaga.tenant_id, v_pessoa_id, 'fixo', v_vaga.valor_diaria, 'diaria')
+    returning id into v_entregador_id;
+  else
+    update entregadores
+      set tipo_vinculo = 'fixo', valor_fixo = v_vaga.valor_diaria, periodicidade_fixo = 'diaria'
+      where id = v_entregador_id;
+  end if;
+
+  if exists (
+    select 1 from entregador_turno_fixo
+    where entregador_id = v_entregador_id and dia_semana = v_vaga.dia_semana and periodo = v_vaga.periodo and ativo
+  ) then
+    raise exception 'você já tem um turno fixo nesse dia e período' using errcode = '23505';
+  end if;
+
+  insert into entregador_turno_fixo (entregador_id, vaga_id, dia_semana, periodo, horario_inicio, horario_fim, valor_diaria, taxa_entrega)
+  values (v_entregador_id, v_vaga.id, v_vaga.dia_semana, v_vaga.periodo, v_vaga.horario_inicio, v_vaga.horario_fim, v_vaga.valor_diaria, v_vaga.taxa_entrega);
+
+  update vagas_entregador set status = 'preenchida', entregador_id = v_entregador_id, preenchida_em = now() where id = p_vaga_id;
+
+  return v_entregador_id;
+end;
+$$;
